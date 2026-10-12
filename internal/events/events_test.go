@@ -211,6 +211,27 @@ func TestSessionDeathPayload(t *testing.T) {
 	}
 }
 
+func TestStateUnknownPayload(t *testing.T) {
+	if TypeStateUnknown != "state_unknown" {
+		t.Errorf("TypeStateUnknown = %q, want state_unknown", TypeStateUnknown)
+	}
+	p := StateUnknownPayload("gt-gastown-alpha", "assigned_work", "bd list: exit status 1", "daemon")
+	want := map[string]string{
+		"subject": "gt-gastown-alpha",
+		"check":   "assigned_work",
+		"reason":  "bd list: exit status 1",
+		"caller":  "daemon",
+	}
+	for k, v := range want {
+		if p[k] != v {
+			t.Errorf("%s = %v, want %q", k, p[k], v)
+		}
+	}
+	if len(p) != len(want) {
+		t.Errorf("payload has %d keys, want %d: %v", len(p), len(want), p)
+	}
+}
+
 func TestMassDeathPayload_WithCause(t *testing.T) {
 	sessions := []string{"s1", "s2"}
 	p := MassDeathPayload(2, "5s", sessions, "rate limit")
