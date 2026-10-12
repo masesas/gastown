@@ -146,3 +146,14 @@ Posisi guard dijamin sebelum semua efek samping jarak jauh: push langsung (:1223
 - **Known edge case:** auto-commit lokal `gt done` terjadi sebelum guard kepemilikan; commit tetap ada di worktree lokal bila guard menolak (tidak di-push).
 - **Known edge case:** outage `bd` berkepanjangan membuat polecat idle tidak pernah di-reap; ditangani dengan eskalasi, bukan kill.
 - **Known limitation:** heartbeat legacy (tanpa generation) tetap rentan #4890 sampai sesi lama berganti; hilang dengan sendirinya setelah semua sesi restart.
+
+## Catatan eksekusi (13 Okt 2026)
+
+Branch `fix/s1b-state-fail-closed` (worktree `../gastown-s1b`), satu commit per PR:
+
+| PR | Commit | Penyimpangan dari plan |
+| --- | --- | --- |
+| PR-0 | `7445fcd9` | — |
+| PR-1 | `d8a6461a` | Ditemukan bug kedua: refresh heartbeat setelah runtime siap berjalan di proses pemanggil, sehingga generation-nya `GT_RUN` milik pemanggil. Kedua titik tulis memakai `claimSessionHeartbeat(runID)`. AC2 diuji di level helper + review urutan panggilan (tidak ada seam `Start` lengkap). Pembaca heartbeat witness hanya memakai heartbeat segar untuk menahan aksi, tidak diubah |
+| PR-2 | `af2541b9` | Hanya reaper daemon. `hookBeadSafeForCleanup`/`p.Issue` di jalur nuke/recovery butuh analisis sumber `p.Issue`; dipindah ke `gt-pd1c.25` |
+| PR-3 | (lihat git log) | Bead tanpa assignee diizinkan; guard hanya untuk `COMPLETED`; `ensureAgentBeadExists` (tulis agent bead) tetap terjadi sebelum guard, bukan efek remote |

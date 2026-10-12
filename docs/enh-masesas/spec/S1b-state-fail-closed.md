@@ -28,7 +28,7 @@ Tiga titik memperlakukan "tidak tahu" sebagai "aman untuk bertindak":
 
 ### 2.3 Guard kepemilikan di `gt done`
 
-- Sebelum push atau membuat MR, `gt done` memastikan bead di hook masih ter-assign ke agent yang menjalankannya.
+- Sebelum push atau membuat MR, `gt done` memastikan bead di hook masih ter-assign ke agent yang menjalankannya. Bead tanpa assignee diizinkan (tidak ada pemilik lain yang diketahui). Guard berlaku untuk exit `COMPLETED`; `DEFERRED`/`ESCALATED` tidak melakukan push.
 - Bila assignee berbeda atau lookup `unknown`: `gt done` gagal dengan exit nonzero dan pesan yang menyebut assignee saat ini (atau alasan unknown). Tidak ada push dan tidak ada MR.
 - Override disengaja tidak disediakan di slice ini.
 
@@ -60,3 +60,4 @@ False kill (sesi di-kill tetapi bead-nya kemudian selesai normal oleh sesi berik
 
 - 12 Okt 2026: dibuat dari `09` Rank 5. Ditambahkan: kompatibilitas heartbeat lama (AC4), eskalasi saat unknown berkepanjangan (AC6), `gt done` saat unknown (AC8).
 - 12 Okt 2026: aturan orphan untuk heartbeat generation lain (≥ 3× timeout) dari verifikasi kode.
+- 13 Okt 2026: implementasi: bead tanpa assignee diizinkan (test existing bergantung padanya); guard hanya untuk `COMPLETED`; jalur nuke/recovery polecat dipisah ke bead `gt-pd1c.25`.
