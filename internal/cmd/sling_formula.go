@@ -300,6 +300,10 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 	if len(args) > 1 {
 		target = args[1]
 	}
+	formulaRig, _ := IsRigName(target)
+	if err := validateFormulaTemplateVars(formulaName, townRoot, formulaRig); err != nil {
+		return err
+	}
 	var admission *polecatAdmissionHandle
 	if !slingDryRun && target != "" {
 		admissionRig := ""

@@ -122,6 +122,8 @@ var (
 	// Flags migrated for polecat spawning (used by sling for work assignment)
 	slingCreate        bool   // --create: create polecat if it doesn't exist
 	slingForce         bool   // --force: force spawn even if polecat has unread mail
+	slingForceUnready  bool   // --force-unready: bypass enforce-mode readiness check (needs --reason)
+	slingReason        string // --reason: why readiness is bypassed
 	slingAccount       string // --account: Claude Code account handle to use
 	slingAgent         string // --agent: override runtime agent for this sling/spawn
 	slingNoConvoy      bool   // --no-convoy: skip auto-convoy creation
@@ -151,6 +153,8 @@ func init() {
 	// Flags for polecat spawning (when target is a rig)
 	slingCmd.Flags().BoolVar(&slingCreate, "create", false, "Create polecat if it doesn't exist")
 	slingCmd.Flags().BoolVar(&slingForce, "force", false, "Force spawn even if polecat has unread mail")
+	slingCmd.Flags().BoolVar(&slingForceUnready, "force-unready", false, "Bypass the enforce-mode readiness check (requires --reason)")
+	slingCmd.Flags().StringVar(&slingReason, "reason", "", "Reason for --force-unready (recorded as a bead comment)")
 	slingCmd.Flags().StringVar(&slingAccount, "account", "", "Claude Code account handle to use")
 	slingCmd.Flags().StringVar(&slingAgent, "agent", "", "Override agent/runtime for this sling (e.g., claude, gemini, codex, or custom alias)")
 	slingCmd.Flags().BoolVar(&slingNoConvoy, "no-convoy", false, "Skip auto-convoy creation for single-issue sling")
@@ -224,6 +228,11 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	} else if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" {
 		return fmt.Errorf("polecats cannot sling (use gt done for handoff)")
+	}
+
+	// --force-unready must carry a reason in every readiness mode (S1a-AC7).
+	if slingForceUnready && slingReason == "" {
+		return fmt.Errorf("--force-unready requires --reason")
 	}
 
 	// Validate --merge flag if provided
@@ -396,6 +405,9 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 				Agent:        slingAgent,
 				HookRawBead:  slingHookRawBead,
 				Ralph:        slingRalph,
+
+				ForceUnready:  slingForceUnready,
+				UnreadyReason: slingReason,
 			})
 		}
 	}
@@ -437,6 +449,9 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 			Agent:        slingAgent,
 			HookRawBead:  slingHookRawBead,
 			Ralph:        slingRalph,
+
+			ForceUnready:  slingForceUnready,
+			UnreadyReason: slingReason,
 		})
 	}
 
@@ -482,6 +497,9 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 				Agent:        slingAgent,
 				HookRawBead:  slingHookRawBead,
 				Ralph:        slingRalph,
+
+				ForceUnready:  slingForceUnready,
+				UnreadyReason: slingReason,
 			})
 		}
 		// Dog targets (deacon/dogs, deacon/dogs/<name>, dog:, dog:<name>) fall through
@@ -636,6 +654,16 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	// Use --force to override when intentionally re-activating deferred work.
 	if isDeferredBead(info) && !slingForce {
 		return fmt.Errorf("refusing to sling deferred bead %s: %q\nDeferred work should not consume polecat slots. Use --force to override", beadID, info.Title)
+	}
+
+	// Readiness check (S1a). The target rig's mode applies when slinging to a
+	// rig (or an agent inside one); otherwise the bead's own rig decides.
+	readinessRig := readinessRigFor(slingTargetRig(args), resolveRigForBead(townRoot, beadID))
+	if err := enforceReadiness(townRoot, readinessRig, beadID, info, nil, slingForceUnready, slingReason); err != nil {
+		return err
+	}
+	if err := validateFormulaTemplateVars(formulaName, townRoot, readinessRig); err != nil {
+		return err
 	}
 
 	originalStatus := info.Status
@@ -1424,4 +1452,18 @@ func rollbackSlingArtifacts(spawnInfo *SpawnedPolecatInfo, beadID, hookWorkDir, 
 
 	// 3. Clean up the spawned polecat (worktree, agent bead, convoy, etc.)
 	cleanupSpawnedPolecat(spawnInfo, spawnInfo.RigName, convoyID)
+}
+
+// slingTargetRig returns the rig named by the sling target argument: the
+// target itself when it is a rig, or the first segment of a rig path such as
+// "gastown/polecats/nux". Empty when there is no rig target.
+func slingTargetRig(args []string) string {
+	if len(args) < 2 || args[1] == "" {
+		return ""
+	}
+	first := strings.SplitN(args[1], "/", 2)[0]
+	if rigName, ok := IsRigName(first); ok {
+		return rigName
+	}
+	return ""
 }

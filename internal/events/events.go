@@ -58,6 +58,9 @@ const (
 	// destructive action (kill, cleanup, push) was taken.
 	TypeStateUnknown = "state_unknown"
 
+	// Dispatch readiness check outcome (rejected, warned, overridden).
+	TypeTaskReadiness = "task_readiness"
+
 	// Witness patrol events
 	TypePatrolStarted   = "patrol_started"
 	TypePolecatChecked  = "polecat_checked"
@@ -103,6 +106,22 @@ func LogFeed(eventType, actor string, payload map[string]interface{}) error {
 	return Log(eventType, actor, payload, VisibilityFeed)
 }
 
+// LogFeedAt is LogFeed with an explicit town root, for callers whose working
+// directory is not inside the town (e.g. the daemon).
+func LogFeedAt(townRoot, eventType, actor string, payload map[string]interface{}) error {
+	if townRoot == "" {
+		return nil
+	}
+	return writeAt(townRoot, Event{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Source:     "gt",
+		Type:       eventType,
+		Actor:      actor,
+		Payload:    payload,
+		Visibility: VisibilityFeed,
+	})
+}
+
 // LogAudit is a convenience wrapper for audit-only events.
 func LogAudit(eventType, actor string, payload map[string]interface{}) error {
 	return Log(eventType, actor, payload, VisibilityAudit)
@@ -118,7 +137,11 @@ func write(event Event) error {
 		// Silently ignore - we're not in a Gas Town workspace
 		return nil
 	}
+	return writeAt(townRoot, event)
+}
 
+// writeAt appends an event to the events file under townRoot.
+func writeAt(townRoot string, event Event) error {
 	eventsPath := filepath.Join(townRoot, EventsFile)
 
 	// Marshal event to JSON
@@ -322,6 +345,26 @@ func StateUnknownPayload(subject, check, reason, caller string) map[string]inter
 		"reason":  reason,
 		"caller":  caller,
 	}
+}
+
+// TaskReadinessPayload creates a payload for task_readiness events.
+// outcome: "rejected", "warned", or "overridden"; problems: readiness problem codes;
+// actor/reason: who overrode the check and why (overrides only).
+func TaskReadinessPayload(beadID, rig, mode, outcome string, problems []string, actor, reason string) map[string]interface{} {
+	p := map[string]interface{}{
+		"bead":     beadID,
+		"rig":      rig,
+		"mode":     mode,
+		"outcome":  outcome,
+		"problems": problems,
+	}
+	if actor != "" {
+		p["actor"] = actor
+	}
+	if reason != "" {
+		p["reason"] = reason
+	}
+	return p
 }
 
 // MassDeathPayload creates a payload for mass death events.

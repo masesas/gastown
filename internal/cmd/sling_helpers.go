@@ -98,6 +98,8 @@ type beadInfo struct {
 	Labels       []string         `json:"labels,omitempty"`
 	Dependencies []beads.IssueDep `json:"dependencies,omitempty"`
 	IssueType    string           `json:"issue_type,omitempty"`
+
+	AcceptanceCriteria string `json:"acceptance_criteria,omitempty"`
 }
 
 // isDeferredBead checks whether a bead should be rejected from slinging because
@@ -1027,6 +1029,10 @@ func formulaBeadBdCmd(beadID, formulaWorkDir, townRoot string, args ...string) *
 // Returns the spawned molecule root ID while leaving the base bead as the hook target.
 func InstantiateFormulaOnBead(ctx context.Context, formulaName, beadID, title, hookWorkDir, townRoot string, skipCook bool, extraVars []string) (_ *FormulaOnBeadResult, retErr error) {
 	defer func() { telemetry.RecordFormulaInstantiate(ctx, formulaName, beadID, retErr) }()
+	// Undefined {{vars}} fail before cook/bond; the bead's rig decides warn vs enforce (S1a).
+	if err := validateFormulaTemplateVars(formulaName, townRoot, resolveRigForBead(townRoot, beadID)); err != nil {
+		return nil, err
+	}
 	// Route bd mutations to the correct beads context for the target bead.
 	formulaWorkDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
 

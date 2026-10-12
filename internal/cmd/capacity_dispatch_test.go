@@ -146,3 +146,64 @@ func TestIsScheduledWorkBeadReadyFailsClosedForBlockedUnknown(t *testing.T) {
 		t.Fatalf("blocked-unknown source must not be scheduler-ready")
 	}
 }
+
+func writeReadinessRigSettings(t *testing.T, townRoot, rig, mode string) {
+	t.Helper()
+	dir := filepath.Join(townRoot, rig, "settings")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := fmt.Sprintf(`{"type":"rig-settings","version":1,"readiness":%q}`, mode)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readinessAssessment(id, rig string, info beadStatusInfo, fields capacity.SlingContextFields) scheduledContextAssessment {
+	fields.WorkBeadID = id
+	fields.TargetRig = rig
+	info.Status = "open"
+	return scheduledContextAssessment{
+		context: slingContextRecord{issue: &beads.Issue{ID: "ctx-" + id}},
+		fields:  &fields,
+		info:    info,
+		found:   true,
+		ready:   true,
+	}
+}
+
+func TestReadySlingContexts_SkipsNotReady_OthersDispatched(t *testing.T) {
+	townRoot := t.TempDir()
+	writeReadinessRigSettings(t, townRoot, "strict", "enforce")
+	writeReadinessRigSettings(t, townRoot, "lenient", "warn")
+
+	good := beadStatusInfo{IssueType: "task", Description: "d", AcceptanceCriteria: "- [ ] a"}
+	bad := beadStatusInfo{IssueType: "feature", Description: "d"}
+	epic := beadStatusInfo{IssueType: "epic"}
+
+	assessments := []scheduledContextAssessment{
+		readinessAssessment("gt-bad", "strict", bad, capacity.SlingContextFields{}),
+		readinessAssessment("gt-good", "strict", good, capacity.SlingContextFields{}),
+		readinessAssessment("gt-epic", "strict", epic, capacity.SlingContextFields{}),
+		readinessAssessment("gt-override", "strict", bad, capacity.SlingContextFields{ForceUnready: true, UnreadyReason: "hotfix"}),
+		readinessAssessment("gt-warnrig", "lenient", bad, capacity.SlingContextFields{}),
+	}
+
+	got := readySlingContextsFromAssessments(townRoot, assessments)
+
+	var ids []string
+	for _, b := range got {
+		ids = append(ids, b.WorkBeadID)
+	}
+	want := []string{"gt-good", "gt-epic", "gt-override", "gt-warnrig"}
+	if fmt.Sprint(ids) != fmt.Sprint(want) {
+		t.Fatalf("dispatched = %v, want %v (gt-bad must be skipped as not_ready)", ids, want)
+	}
+}
+
+func TestBeadStatusInfoFromBeadInfo_CarriesContractFields(t *testing.T) {
+	got := beadStatusInfoFromBeadInfo(&beadInfo{IssueType: "bug", Description: "d", AcceptanceCriteria: "- [ ] a"})
+	if got.IssueType != "bug" || got.Description != "d" || got.AcceptanceCriteria != "- [ ] a" {
+		t.Fatalf("contract fields not carried: %+v", got)
+	}
+}

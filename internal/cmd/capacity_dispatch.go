@@ -126,7 +126,7 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 		return nil, fmt.Errorf("loading polecat capacity: %w", err)
 	}
 
-	ready := readySlingContextsFromAssessments(assessments)
+	ready := readySlingContextsFromAssessments(townRoot, assessments)
 	dispatchPlan := capacity.PlanDispatch(snapshot.Free, batchSize, ready)
 	if len(ready) > 0 {
 		switch {
@@ -478,6 +478,11 @@ type beadStatusInfo struct {
 	Status string
 	Title  string
 	Labels []string
+
+	// Task contract fields used by the readiness filter (S1a).
+	IssueType          string
+	Description        string
+	AcceptanceCriteria string
 }
 
 func beadStatusInfoFromBeadInfo(info *beadInfo) beadStatusInfo {
@@ -488,6 +493,10 @@ func beadStatusInfoFromBeadInfo(info *beadInfo) beadStatusInfo {
 		Status: info.Status,
 		Title:  info.Title,
 		Labels: info.Labels,
+
+		IssueType:          info.IssueType,
+		Description:        info.Description,
+		AcceptanceCriteria: info.AcceptanceCriteria,
 	}
 }
 
@@ -515,10 +524,13 @@ func batchFetchBeadInfoByIDs(townRoot string, ids []string) map[string]beadStatu
 			continue
 		}
 		var items []struct {
-			ID     string   `json:"id"`
-			Status string   `json:"status"`
-			Title  string   `json:"title"`
-			Labels []string `json:"labels"`
+			ID                 string   `json:"id"`
+			Status             string   `json:"status"`
+			Title              string   `json:"title"`
+			Labels             []string `json:"labels"`
+			IssueType          string   `json:"issue_type"`
+			Description        string   `json:"description"`
+			AcceptanceCriteria string   `json:"acceptance_criteria"`
 		}
 		if err := json.Unmarshal(out, &items); err != nil {
 			continue
@@ -528,6 +540,10 @@ func batchFetchBeadInfoByIDs(townRoot string, ids []string) map[string]beadStatu
 				Status: item.Status,
 				Title:  item.Title,
 				Labels: item.Labels,
+
+				IssueType:          item.IssueType,
+				Description:        item.Description,
+				AcceptanceCriteria: item.AcceptanceCriteria,
 			}
 		}
 	}
@@ -647,10 +663,10 @@ func getReadySlingContexts(townRoot string) ([]capacity.PendingBead, error) {
 	if blockedErr != nil {
 		return nil, blockedErr
 	}
-	return readySlingContextsFromAssessments(assessments), nil
+	return readySlingContextsFromAssessments(townRoot, assessments), nil
 }
 
-func readySlingContextsFromAssessments(assessments []scheduledContextAssessment) []capacity.PendingBead {
+func readySlingContextsFromAssessments(townRoot string, assessments []scheduledContextAssessment) []capacity.PendingBead {
 	var result []capacity.PendingBead
 	for _, assessment := range assessments {
 		if !assessment.ready {
@@ -660,6 +676,13 @@ func readySlingContextsFromAssessments(assessments []scheduledContextAssessment)
 		if capacity.IsMessagingBead(workLabels) {
 			fmt.Fprintf(os.Stderr, "%s dispatch_skip reason=messaging_label bead=%s labels=%v\n",
 				style.Dim.Render("○"), assessment.fields.WorkBeadID, workLabels)
+			continue
+		}
+		if problems := notReadyProblems(townRoot, assessment); len(problems) > 0 {
+			// Skipped here, not routed through OnFailure, so the bead does not
+			// count toward the dispatch-failure circuit breaker.
+			fmt.Fprintf(os.Stderr, "%s dispatch_skip reason=not_ready bead=%s problems=%v\n",
+				style.Dim.Render("○"), assessment.fields.WorkBeadID, problems)
 			continue
 		}
 
@@ -711,6 +734,8 @@ func dispatchSingleBead(b capacity.PendingBead, townRoot, _ string) (*SlingResul
 		Agent:            dp.Agent,
 		HookRawBead:      dp.HookRawBead,
 		Mode:             dp.Mode,
+		ForceUnready:     dp.ForceUnready,
+		UnreadyReason:    dp.UnreadyReason,
 		FormulaFailFatal: true,
 		CallerContext:    "scheduler-dispatch",
 		NoConvoy:         true,
@@ -924,4 +949,17 @@ func isScheduledWorkBeadReady(workBeadID string, info beadStatusInfo, found bool
 		return false
 	}
 	return info.Status == "open"
+}
+
+// notReadyProblems returns why a scheduled work bead must be skipped under the
+// target rig's enforce-mode readiness check, or nil when it may dispatch.
+// Contexts carrying an explicit --force-unready override are never skipped.
+func notReadyProblems(townRoot string, a scheduledContextAssessment) []string {
+	if a.fields.ForceUnready && a.fields.UnreadyReason != "" {
+		return nil
+	}
+	if readinessModeForRig(townRoot, a.fields.TargetRig) != config.ReadinessEnforce {
+		return nil
+	}
+	return beads.ReadinessProblems(a.info.IssueType, a.info.Description, a.info.AcceptanceCriteria)
 }

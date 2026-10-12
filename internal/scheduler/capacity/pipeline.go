@@ -36,6 +36,8 @@ type SlingContextFields struct {
 	HookRawBead      bool   `json:"hook_raw_bead,omitempty"`
 	Owned            bool   `json:"owned,omitempty"`
 	Mode             string `json:"mode,omitempty"`
+	ForceUnready     bool   `json:"force_unready,omitempty"`
+	UnreadyReason    string `json:"unready_reason,omitempty"`
 	DispatchFailures int    `json:"dispatch_failures,omitempty"`
 	LastFailure      string `json:"last_failure,omitempty"`
 }
@@ -228,6 +230,9 @@ type DispatchParams struct {
 	NoMerge      bool
 	ReviewOnly   bool
 	HookRawBead  bool
+
+	ForceUnready  bool
+	UnreadyReason string
 }
 
 // ReconstructFromContext builds DispatchParams from sling context fields.
@@ -246,6 +251,9 @@ func ReconstructFromContext(ctx *SlingContextFields) DispatchParams {
 		NoMerge:      ctx.NoMerge,
 		ReviewOnly:   ctx.ReviewOnly,
 		HookRawBead:  ctx.HookRawBead,
+
+		ForceUnready:  ctx.ForceUnready,
+		UnreadyReason: ctx.UnreadyReason,
 	}
 	if ctx.Vars != "" {
 		p.Vars = splitVars(ctx.Vars)

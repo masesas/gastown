@@ -1443,3 +1443,66 @@ func TestErrHookUnresolvable_IsErrors(t *testing.T) {
 		t.Fatalf("errors.Is should report wrapped err matches ErrHookUnresolvable")
 	}
 }
+
+func stubPrimeShowBead(t *testing.T, fn func(ctx RoleContext, id string) (*beads.Issue, error)) {
+	t.Helper()
+	orig := primeShowBead
+	primeShowBead = fn
+	t.Cleanup(func() { primeShowBead = orig })
+}
+
+func TestCheckSlungWork_UsesFullContract(t *testing.T) {
+	// The list item (from `bd list --json`) carries only a short description.
+	listItem := &beads.Issue{ID: "gt-full", Title: "Full contract", Description: "short"}
+	stubPrimeShowBead(t, func(_ RoleContext, id string) (*beads.Issue, error) {
+		if id != "gt-full" {
+			t.Fatalf("Show called with %q", id)
+		}
+		return &beads.Issue{
+			ID:                 id,
+			Title:              "Full contract",
+			Description:        numberedLines("desc", 30),
+			AcceptanceCriteria: "- [ ] first\n- [ ] second\n- [ ] third\n- [ ] fourth",
+			Design:             "design body",
+			Notes:              "notes body",
+		}, nil
+	})
+
+	output := captureStdout(t, func() {
+		if _, err := checkSlungWork(RoleContext{Role: RoleCrew}, listItem); err != nil {
+			t.Fatalf("checkSlungWork() error = %v", err)
+		}
+	})
+
+	for _, want := range []string{"desc 30", "Acceptance Criteria:", "- [ ] fourth", "design body", "notes body"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "contract incomplete") {
+		t.Errorf("unexpected warning in output:\n%s", output)
+	}
+	if n := strings.Count(output, "Acceptance Criteria:"); n != 1 {
+		t.Errorf("contract rendered %d times, want once:\n%s", n, output)
+	}
+}
+
+func TestCheckSlungWork_ShowFails_WarnsIncompleteContract(t *testing.T) {
+	stubPrimeShowBead(t, func(RoleContext, string) (*beads.Issue, error) {
+		return nil, fmt.Errorf("dolt unreachable")
+	})
+	listItem := &beads.Issue{ID: "gt-warn", Title: "Warn", Description: "list description"}
+
+	output := captureStdout(t, func() {
+		if _, err := checkSlungWork(RoleContext{Role: RoleCrew}, listItem); err != nil {
+			t.Fatalf("checkSlungWork() error = %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "contract incomplete: could not read bead gt-warn") {
+		t.Errorf("expected incomplete-contract warning, got:\n%s", output)
+	}
+	if !strings.Contains(output, "list description") {
+		t.Errorf("expected fallback to list item description, got:\n%s", output)
+	}
+}

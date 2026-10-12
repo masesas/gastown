@@ -278,3 +278,19 @@ func TestSessionPayload_Minimal(t *testing.T) {
 		t.Error("expected no cwd key when empty")
 	}
 }
+
+func TestTaskReadinessPayload(t *testing.T) {
+	if TypeTaskReadiness != "task_readiness" {
+		t.Errorf("TypeTaskReadiness = %q", TypeTaskReadiness)
+	}
+	p := TaskReadinessPayload("gt-1", "be", "enforce", "overridden", []string{"missing_acceptance_criteria"}, "mayor", "hotfix")
+	if p["bead"] != "gt-1" || p["rig"] != "be" || p["mode"] != "enforce" || p["outcome"] != "overridden" || p["actor"] != "mayor" || p["reason"] != "hotfix" {
+		t.Errorf("unexpected payload: %v", p)
+	}
+	if problems, ok := p["problems"].([]string); !ok || len(problems) != 1 {
+		t.Errorf("problems = %v", p["problems"])
+	}
+	if _, ok := TaskReadinessPayload("gt-1", "be", "warn", "warned", nil, "", "")["reason"]; ok {
+		t.Error("empty reason should be omitted")
+	}
+}

@@ -61,6 +61,9 @@ type ScheduleOptions struct {
 	Agent        string   // Agent override (e.g., "gemini", "codex")
 	HookRawBead  bool     // Hook raw bead without default formula
 	Ralph        bool     // Ralph Wiggum loop mode
+
+	ForceUnready  bool   // Bypass enforce-mode readiness rejection (requires UnreadyReason)
+	UnreadyReason string // Why the readiness check is bypassed
 }
 
 // scheduleBead schedules a bead for deferred dispatch via the capacity scheduler.
@@ -128,6 +131,14 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 		return fmt.Errorf("bead %s is already %s to %s\nUse --force to override", beadID, info.Status, info.Assignee)
 	}
 
+	// Readiness check (S1a): refuse before the bead enters the scheduler queue.
+	if err := enforceReadiness(townRoot, rigName, beadID, info, nil, opts.ForceUnready, opts.UnreadyReason); err != nil {
+		return err
+	}
+	if err := validateFormulaTemplateVars(opts.Formula, townRoot, rigName); err != nil {
+		return err
+	}
+
 	if opts.Formula != "" {
 		if err := verifyFormulaExists(opts.Formula, filepath.Dir(rigBeadsDir), townRoot); err != nil {
 			return fmt.Errorf("formula %q not found: %w", opts.Formula, err)
@@ -177,6 +188,10 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 		fields.ResumeBranch = opts.ResumeBranch
 	}
 	fields.NoMerge = opts.NoMerge
+	if opts.ForceUnready {
+		fields.ForceUnready = true
+		fields.UnreadyReason = opts.UnreadyReason
+	}
 	fields.ReviewOnly = opts.ReviewOnly
 	if opts.Account != "" {
 		fields.Account = opts.Account

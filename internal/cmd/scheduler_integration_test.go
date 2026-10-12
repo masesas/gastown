@@ -800,6 +800,46 @@ func TestSchedulerSlingContextWorkBeadPristine(t *testing.T) {
 	}
 }
 
+// TestScheduleBead_RefusesNotReady_Enforce verifies that in enforce mode a task
+// without acceptance criteria is refused before it enters the scheduler queue,
+// and that --force-unready --reason lets it through (S1a-AC6, AC7).
+func TestScheduleBead_RefusesNotReady_Enforce(t *testing.T) {
+	hqPath, rigPath, gtBinary, env := setupSchedulerIntegrationTown(t)
+
+	settingsDir := filepath.Join(hqPath, "testrig", "settings")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"type":"rig-settings","version":1,"readiness":"enforce"}`
+	if err := os.WriteFile(filepath.Join(settingsDir, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	beadID := createTestBead(t, rigPath, "Not ready")
+
+	out, err := runGTCmdMayFail(t, gtBinary, hqPath, env, "sling", beadID, "testrig", "--hook-raw-bead")
+	if err == nil {
+		t.Fatalf("enforce mode must refuse a bead without acceptance criteria; output:\n%s", out)
+	}
+	if !strings.Contains(out, "missing_acceptance_criteria") {
+		t.Errorf("refusal should name the problem; output:\n%s", out)
+	}
+	if hasSlingContext(t, hqPath, beadID) {
+		t.Errorf("refused bead must not get a sling context")
+	}
+
+	// --force-unready without --reason is rejected in every mode.
+	if _, err := runGTCmdMayFail(t, gtBinary, hqPath, env, "sling", beadID, "testrig", "--hook-raw-bead", "--force-unready"); err == nil {
+		t.Errorf("--force-unready without --reason must fail")
+	}
+
+	slingToScheduler(t, gtBinary, hqPath, env, beadID, "testrig", "--force-unready", "--reason", "integration override")
+	fields := findSlingContext(t, hqPath, beadID)
+	if fields == nil || !fields.ForceUnready || fields.UnreadyReason != "integration override" {
+		t.Errorf("override must persist on the sling context, got %+v", fields)
+	}
+}
+
 // --------------------------------------------------------------------------
 // Multi-rig tests
 // --------------------------------------------------------------------------

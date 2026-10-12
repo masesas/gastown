@@ -358,3 +358,13 @@ func TestSplitVars(t *testing.T) {
 		})
 	}
 }
+
+func TestReconstructFromContext_CarriesReadinessOverride(t *testing.T) {
+	p := ReconstructFromContext(&SlingContextFields{WorkBeadID: "gt-1", ForceUnready: true, UnreadyReason: "hotfix"})
+	if !p.ForceUnready || p.UnreadyReason != "hotfix" {
+		t.Fatalf("override not carried: %+v", p)
+	}
+	if q := ReconstructFromContext(&SlingContextFields{WorkBeadID: "gt-2"}); q.ForceUnready || q.UnreadyReason != "" {
+		t.Fatalf("override must default off: %+v", q)
+	}
+}
