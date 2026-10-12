@@ -184,3 +184,19 @@ func TestReapIdlePolecat_SessionRunLookupFails_NotKilled(t *testing.T) {
 		t.Errorf("expected a state unknown log line, got: %q", out)
 	}
 }
+
+func TestReapIdlePolecat_LegacyExitingHeartbeat_StillReaped(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeTmuxIdleSession(t, binDir)
+	bdPath := writeFakeBDLookupFail(t, binDir, false)
+	d, logBuf := newReapTestDaemon(t, binDir, bdPath)
+
+	// Heartbeat written by a pre-generation binary: behavior is unchanged.
+	writeReapTestHeartbeat(t, d.config.TownRoot, heartbeatJSON(t, 2*reapTestTimeout, polecat.HeartbeatExiting, ""))
+
+	d.reapIdlePolecat("myr", "mycat", reapTestTimeout)
+
+	if !strings.Contains(logBuf.String(), "Reaping idle polecat") {
+		t.Errorf("legacy exiting heartbeat should still be reaped, got: %q", logBuf.String())
+	}
+}

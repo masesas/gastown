@@ -2942,7 +2942,8 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 
 	staleDuration := time.Since(hb.Timestamp)
 	if staleDuration < timeout {
-		return // Heartbeat is fresh — polecat is active
+		d.unknownWork.forget(sessionName) // Active again: end any unknown episode
+		return                            // Heartbeat is fresh — polecat is active
 	}
 
 	state := hb.EffectiveState()
@@ -2962,7 +2963,7 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 			}
 			// The current session never wrote a heartbeat. Ignore the old
 			// generation's idle/exiting claim and use the "working" checks,
-			// which require no assigned work and a dead agent before killing.
+			// which require a definite "no assigned work" before killing.
 			state = polecat.HeartbeatWorking
 		}
 	}
@@ -3046,7 +3047,10 @@ func (d *Daemon) reapAllowedByAssignedWork(sessionName, rigName, assignee string
 		if d.unknownWork.record(sessionName) {
 			d.logger.Printf("Reaper: assigned work for %s unknown for %d cycles; escalating to %s/witness",
 				sessionName, unknownEscalationCycles, rigName)
-			d.notifyWitnessOfUnknownWork(rigName, sessionName, assignee)
+			if err := d.notifyWitnessOfUnknownWork(rigName, sessionName, assignee); err != nil {
+				d.logger.Printf("Warning: failed to notify witness of unknown assigned work (will retry next cycle): %v", err)
+				d.unknownWork.retryEscalation(sessionName)
+			}
 		}
 		return false
 	}
@@ -3054,18 +3058,19 @@ func (d *Daemon) reapAllowedByAssignedWork(sessionName, rigName, assignee string
 
 // notifyWitnessOfUnknownWork tells the rig witness that the reaper cannot
 // determine whether a polecat has work, so a human or the witness can look.
-func (d *Daemon) notifyWitnessOfUnknownWork(rigName, sessionName, assignee string) {
+func (d *Daemon) notifyWitnessOfUnknownWork(rigName, sessionName, assignee string) error {
 	subject := fmt.Sprintf("STATE_UNKNOWN: %s assigned work undeterminable", sessionName)
 	body := fmt.Sprintf("The idle reaper could not determine assigned work for %s (session %s) for %d consecutive cycles.\n"+
 		"The session was NOT reaped. Check bead store health (bd list) and the polecat manually.",
 		assignee, sessionName, unknownEscalationCycles)
-	cmd := exec.Command(d.gtPath, "mail", "send", rigName+"/witness", "-s", subject, "-m", body) //nolint:gosec // G204: args are constructed internally
+	// Bounded so a hung mail send cannot stall the reaper loop.
+	ctx, cancel := context.WithTimeout(context.Background(), unknownWorkNotifyTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, d.gtPath, "mail", "send", rigName+"/witness", "-s", subject, "-m", body) //nolint:gosec // G204: args are constructed internally
 	setSysProcAttr(cmd)
 	cmd.Dir = d.config.TownRoot
 	cmd.Env = append(os.Environ(), "BD_ACTOR=daemon")
-	if err := cmd.Run(); err != nil {
-		d.logger.Printf("Warning: failed to notify witness of unknown assigned work: %v", err)
-	}
+	return cmd.Run()
 }
 
 // reportReapStateUnknown records that the reaper skipped a session because a

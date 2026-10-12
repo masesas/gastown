@@ -1,6 +1,9 @@
 package daemon
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // WorkAssignment is the answer to "does this agent have open assigned work?".
 // The zero value is WorkUnknown so an unset answer never permits a kill.
@@ -29,6 +32,9 @@ func (w WorkAssignment) String() string {
 // unknownEscalationCycles is how many consecutive reaper cycles may report
 // unknown assigned work for a session before the witness is notified.
 const unknownEscalationCycles = 3
+
+// unknownWorkNotifyTimeout bounds the witness mail sent on escalation.
+const unknownWorkNotifyTimeout = 30 * time.Second
 
 // unknownWorkTracker counts consecutive unknown lookups per session and
 // remembers whether the current episode was already escalated.
@@ -60,5 +66,13 @@ func (u *unknownWorkTracker) forget(session string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	delete(u.counts, session)
+	delete(u.escalated, session)
+}
+
+// retryEscalation re-arms escalation for session after a failed notification,
+// so the next unknown cycle tries again.
+func (u *unknownWorkTracker) retryEscalation(session string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	delete(u.escalated, session)
 }

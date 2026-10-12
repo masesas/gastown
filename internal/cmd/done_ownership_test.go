@@ -47,6 +47,10 @@ func TestCheckDoneOwnership(t *testing.T) {
 // installOwnershipBDStub answers "show bd-source" with the given assignee (or
 // fails when failShow is set) and logs every bd invocation.
 func installOwnershipBDStub(t *testing.T, assignee string, failShow bool) string {
+	return installOwnershipBDStubWithList(t, assignee, failShow, false)
+}
+
+func installOwnershipBDStubWithList(t *testing.T, assignee string, failShow, failList bool) string {
 	t.Helper()
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "bd.log")
@@ -68,9 +72,13 @@ printf '%%s\n' "$*" >> %q
 if [ "$1" = "show" ] && [ "$2" = "bd-source" ]; then
 %s
 fi
+if [ "$1" = "list" ] && [ %q = "true" ]; then
+  echo "database is locked" >&2
+  exit 1
+fi
 echo '[]'
 exit 0
-`, logPath, show)
+`, logPath, show, fmt.Sprint(failList))
 	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write bd stub: %v", err)
 	}
@@ -152,5 +160,32 @@ func TestQueryAssignedBeadsE_ErrorNotMaskedByEmpty(t *testing.T) {
 	issues, err = mergeAssignedLookups([]*beads.Issue{}, nil, []*beads.Issue{}, nil)
 	if err != nil || len(issues) != 0 {
 		t.Fatalf("both empty: issues=%v err=%v", issues, err)
+	}
+}
+
+func TestRunDone_EscalatedWithAssignmentLookupError_NotBlockedByLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix shell script bd stub")
+	}
+	workDir, _, _ := setupRoutedSourceTestTown(t)
+	setupRoutedSubmitCommandTown(t, workDir)
+	setupRoutedSubmitGitRepo(t, workDir, false)
+	installOwnershipBDStubWithList(t, "", false, true)
+	resetDoneFlagsForTest(t)
+	townRoot := routedSourceTestTownRoot(workDir)
+	t.Setenv("GT_TEST_NUDGE_LOG", filepath.Join(t.TempDir(), "nudge.log"))
+	t.Setenv("GT_TOWN_ROOT", townRoot)
+	t.Setenv("GT_ROOT", townRoot)
+	t.Setenv("GT_ROLE", "gastown/polecats/refuge")
+	t.Setenv("GT_RIG", "gastown")
+	t.Setenv("GT_POLECAT", "refuge")
+	t.Setenv("BD_ACTOR", "gastown/polecats/refuge")
+	t.Chdir(workDir)
+
+	doneStatus = "ESCALATED"
+	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID string) error { return nil }
+	err := runDone(nil, nil)
+	if err != nil && strings.Contains(err.Error(), "hooked issue") {
+		t.Fatalf("ESCALATED must not be blocked by the assignment lookup, got: %v", err)
 	}
 }

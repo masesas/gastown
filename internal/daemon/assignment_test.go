@@ -100,16 +100,97 @@ func TestReapIdlePolecat_AssignedWorkUnknown_EscalatesOncePerEpisode(t *testing.
 	writeFakeTmuxIdleSession(t, binDir)
 	bdPath := writeFakeBDByStatus(t, binDir, map[string]string{"hooked": "fail", "in_progress": "fail", "open": "fail"})
 	d, logBuf := newReapTestDaemon(t, binDir, bdPath)
+	gtPath, gtLog := writeFakeGT(t, binDir, 0)
+	d.gtPath = gtPath
 	writeReapTestHeartbeat(t, d.config.TownRoot, heartbeatJSON(t, 4*reapTestTimeout, polecat.HeartbeatWorking, ""))
 
 	for i := 0; i < unknownEscalationCycles+2; i++ {
 		d.reapIdlePolecat("myr", "mycat", reapTestTimeout)
 	}
 
+	if got := countLines(t, gtLog); got != 1 {
+		data, _ := os.ReadFile(gtLog)
+		t.Errorf("witness mails = %d, want exactly 1; gt log:\n%s", got, data)
+	}
 	if got := strings.Count(logBuf.String(), "escalating"); got != 1 {
 		t.Errorf("escalations = %d, want exactly 1; log: %q", got, logBuf.String())
 	}
 	if strings.Contains(logBuf.String(), "Reaping idle polecat") {
 		t.Errorf("must never reap while state is unknown, got: %q", logBuf.String())
+	}
+}
+
+// writeFakeGT writes a gt script that logs each invocation and fails the
+// first failFirst calls.
+func writeFakeGT(t *testing.T, dir string, failFirst int) (path, logPath string) {
+	t.Helper()
+	logPath = filepath.Join(dir, "gt.log")
+	script := fmt.Sprintf("#!/bin/sh\n"+
+		"echo call >> %q\n"+
+		"n=$(wc -l < %q)\n"+
+		"if [ \"$n\" -le %d ]; then exit 1; fi\n"+
+		"exit 0\n", logPath, logPath, failFirst)
+	path = filepath.Join(dir, "gt")
+	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
+		t.Fatalf("writing fake gt: %v", err)
+	}
+	return path, logPath
+}
+
+func countLines(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(data), "\n")
+}
+
+func TestReapIdlePolecat_UnknownEscalation_RetriesFailedNotification(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeTmuxIdleSession(t, binDir)
+	bdPath := writeFakeBDByStatus(t, binDir, map[string]string{"hooked": "fail", "in_progress": "fail", "open": "fail"})
+	d, _ := newReapTestDaemon(t, binDir, bdPath)
+	gtPath, gtLog := writeFakeGT(t, binDir, 1)
+	d.gtPath = gtPath
+	writeReapTestHeartbeat(t, d.config.TownRoot, heartbeatJSON(t, 4*reapTestTimeout, polecat.HeartbeatWorking, ""))
+
+	for i := 0; i < unknownEscalationCycles+2; i++ {
+		d.reapIdlePolecat("myr", "mycat", reapTestTimeout)
+	}
+
+	// Cycle 3 escalates and the mail fails; cycle 4 retries and succeeds;
+	// cycle 5 does not send again.
+	if got := countLines(t, gtLog); got != 2 {
+		t.Errorf("gt mail invocations = %d, want 2 (failed + retry)", got)
+	}
+}
+
+func TestReapIdlePolecat_FreshHeartbeatEndsUnknownEpisode(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeTmuxIdleSession(t, binDir)
+	bdPath := writeFakeBDByStatus(t, binDir, map[string]string{"hooked": "fail", "in_progress": "fail", "open": "fail"})
+	d, _ := newReapTestDaemon(t, binDir, bdPath)
+	gtPath, gtLog := writeFakeGT(t, binDir, 0)
+	d.gtPath = gtPath
+
+	stale := heartbeatJSON(t, 4*reapTestTimeout, polecat.HeartbeatWorking, "")
+	for i := 0; i < unknownEscalationCycles-1; i++ {
+		writeReapTestHeartbeat(t, d.config.TownRoot, stale)
+		d.reapIdlePolecat("myr", "mycat", reapTestTimeout)
+	}
+	// The polecat becomes active again in between.
+	writeReapTestHeartbeat(t, d.config.TownRoot, heartbeatJSON(t, 0, polecat.HeartbeatWorking, ""))
+	d.reapIdlePolecat("myr", "mycat", reapTestTimeout)
+	for i := 0; i < unknownEscalationCycles-1; i++ {
+		writeReapTestHeartbeat(t, d.config.TownRoot, stale)
+		d.reapIdlePolecat("myr", "mycat", reapTestTimeout)
+	}
+
+	if got := countLines(t, gtLog); got != 0 {
+		t.Errorf("non-consecutive unknown cycles must not escalate, got %d mails", got)
 	}
 }

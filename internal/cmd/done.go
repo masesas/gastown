@@ -892,7 +892,11 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	if issueID == "" && sender != "" {
 		assigned, lookupErr := loadAssignedIssueIDs()
 		if lookupErr != nil {
-			return fmt.Errorf("cannot determine the hooked issue for %s: %w\nNothing was pushed; retry gt done when beads is reachable, or pass --issue", sender, lookupErr)
+			if exitType == ExitCompleted {
+				return fmt.Errorf("cannot determine the hooked issue for %s: %w\nNothing was pushed; retry gt done when beads is reachable, or pass --issue", sender, lookupErr)
+			}
+			// ESCALATED/DEFERRED do not push; let the agent report even when beads is down.
+			style.PrintWarning("could not look up assigned work for %s: %v", sender, lookupErr)
 		}
 		if hookIssue, ambiguous := selectAssignedIssue("", assigned); hookIssue != "" {
 			issueID = hookIssue
@@ -911,7 +915,11 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	if doneIssue == "" && info.Issue != "" && sender != "" {
 		assigned, lookupErr := loadAssignedIssueIDs()
 		if lookupErr != nil {
-			return fmt.Errorf("cannot verify the hooked issue for %s: %w\nNothing was pushed; retry gt done when beads is reachable, or pass --issue", sender, lookupErr)
+			if exitType == ExitCompleted {
+				return fmt.Errorf("cannot verify the hooked issue for %s: %w\nNothing was pushed; retry gt done when beads is reachable, or pass --issue", sender, lookupErr)
+			}
+			// ESCALATED/DEFERRED do not push; let the agent report even when beads is down.
+			style.PrintWarning("could not look up assigned work for %s: %v", sender, lookupErr)
 		}
 		if hookIssue, ambiguous := selectAssignedIssue(info.Issue, assigned); isStaleBranchIssue(info.Issue, hookIssue) {
 			style.PrintWarning("branch %q embeds issue %s but your hooked bead is %s — submitting for %s (stale branch reuse?)", branch, info.Issue, hookIssue, hookIssue)
