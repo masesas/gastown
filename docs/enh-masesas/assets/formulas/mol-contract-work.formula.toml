@@ -1,0 +1,87 @@
+description = """
+Work loop for the contract-owner crew of a rig (S1c).
+
+The contract owner is the only writer of the paths in the brief's ownership
+map for this rig. The skeleton comes first because it unblocks consumers;
+shared implementation runs in parallel with consumers.
+
+## Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| epic | yes | Epic bead ID |
+| brief | yes | Brief bead ID |
+| skeleton | yes | Skeleton bead ID |
+"""
+formula = "mol-contract-work"
+type = "workflow"
+version = 1
+
+[[steps]]
+id = "skeleton"
+title = "Implement the contract skeleton"
+description = """
+Implement skeleton bead {{skeleton}} exactly as the approved brief {{brief}} says:
+endpoints/DTOs/interfaces/empty migrations/shared component APIs, with tests
+for the contract shape. Also commit the approved brief as
+docs/briefs/{{epic}}.md so it is pinned with the code.
+
+Submit through the normal refinery path (PR to epic/<name>). Do not touch
+paths outside the ownership map.
+
+**Exit criteria:** skeleton PR merged to epic/<name>.
+"""
+
+[[steps]]
+id = "pin"
+title = "Pin the contract reference"
+needs = ["skeleton"]
+description = """
+After the skeleton is merged, record the pin on the skeleton bead and every
+consumer bead listed in the brief:
+
+`bd update <bead> --notes "contract_ref: <repo>:<path>@<merged-sha>"`
+
+Then mail the Mayor: subject "Contract pinned: {{epic}}" with the ref.
+
+**Exit criteria:** every consumer bead carries contract_ref in its notes.
+"""
+
+[[steps]]
+id = "shared"
+title = "Implement shared code"
+needs = ["pin"]
+description = """
+Work the shared implementation bead(s) for this epic. These do not block
+consumers unless the brief says so. Same path discipline as the skeleton.
+
+**Exit criteria:** shared implementation PRs merged.
+"""
+
+[[steps]]
+id = "contract-change"
+title = "Handle contract-change requests"
+needs = ["pin"]
+description = """
+When a consumer files a contract-change bead:
+1. Revise the contract (new PR); never edit consumer code.
+2. Record the new contract_ref on the affected consumer beads.
+3. Mail the Mayor and the affected consumers' rig witness.
+
+Repeat until the epic is merged. Untracked contract edits are not allowed.
+
+**Exit criteria:** no open contract-change beads for {{epic}}.
+"""
+
+[vars]
+[vars.epic]
+description = "Epic bead ID"
+required = true
+
+[vars.brief]
+description = "Brief bead ID"
+required = true
+
+[vars.skeleton]
+description = "Skeleton bead ID"
+required = true
