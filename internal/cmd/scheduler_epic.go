@@ -313,15 +313,9 @@ func getEpicChildren(epicID string) ([]epicChild, error) {
 		}
 	}
 
-	// Prefer raw SQL — handles cross-database deps. Falls back to bd dep list
-	// if bd sql is not available (older bd versions).
-	childIDs, err := bdDepListRawIDs(sqlDir, epicID, "down", "depends_on")
+	childIDs, err := epicChildIDs(sqlDir, dir, epicID)
 	if err != nil {
-		// bd sql not supported — fall back to bd dep list.
-		childIDs, err = bdDepListFallback(dir, epicID)
-		if err != nil {
-			return nil, fmt.Errorf("querying epic children for %s: %w", epicID, err)
-		}
+		return nil, fmt.Errorf("querying epic children for %s: %w", epicID, err)
 	}
 
 	children := make([]epicChild, 0, len(childIDs))
@@ -345,13 +339,60 @@ func getEpicChildren(epicID string) ([]epicChild, error) {
 	return children, nil
 }
 
+// epicChildDepTypes are the dependency types that link an epic to its
+// children: "parent-child" is how current bd records them (bd create --parent,
+// issue_id=epic); "depends_on" is the legacy type still present in stores
+// written by older bd. bd >= 1.3 treats "depends-on" as an alias for "blocks",
+// so querying only "depends_on" finds no children on current stores.
+var epicChildDepTypes = []string{"parent-child", "depends_on"}
+
+// epicChildIDs returns the epic's direct children across epicChildDepTypes.
+// It prefers raw SQL (handles cross-database deps) and falls back to bd dep
+// list when bd sql is unavailable (older bd, embedded mode).
+func epicChildIDs(sqlDir, dir, epicID string) ([]string, error) {
+	var ids []string
+	seen := make(map[string]bool)
+	add := func(found []string) {
+		for _, id := range found {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+
+	sqlFailed := false
+	for _, depType := range epicChildDepTypes {
+		found, err := bdDepListRawIDs(sqlDir, epicID, "down", depType)
+		if err != nil {
+			sqlFailed = true
+			break
+		}
+		add(found)
+	}
+	if !sqlFailed {
+		return ids, nil
+	}
+
+	// bd sql not supported — fall back to bd dep list.
+	ids, seen = nil, make(map[string]bool)
+	for _, depType := range epicChildDepTypes {
+		found, err := bdDepListFallback(dir, epicID, depType)
+		if err != nil {
+			return nil, err
+		}
+		add(found)
+	}
+	return ids, nil
+}
+
 // bdDepListFallback uses bd dep list to get child dependency IDs.
 // This is the legacy path — it uses a SQL JOIN with the issues table which
 // silently drops cross-database dependencies. Used as fallback when bd sql
 // is not available.
-func bdDepListFallback(dir, epicID string) ([]string, error) {
+func bdDepListFallback(dir, epicID, depType string) ([]string, error) {
 	stdout, err := BdCmd("dep", "list", epicID,
-		"--direction=down", "--type=depends_on", "--json").
+		"--direction=down", "--type="+depType, "--json").
 		AllowStale().
 		Dir(dir).
 		StripBeadsDir().
