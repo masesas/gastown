@@ -47,3 +47,22 @@ func TestGetReadinessMode(t *testing.T) {
 		t.Errorf("off: got %q", got)
 	}
 }
+
+func TestGetReadinessMode_InvalidSettingsKeepsExplicitMode(t *testing.T) {
+	rigPath := t.TempDir()
+	path := RigSettingsPath(rigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Another field fails validation; the explicit enforce must still apply.
+	body := `{"type":"rig-settings","version":1,"readiness":"enforce","merge_queue":{"on_conflict":"bogus"}}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRigSettings(path); err == nil {
+		t.Fatal("test setup: settings should fail validation")
+	}
+	if got := GetReadinessMode(rigPath); got != ReadinessEnforce {
+		t.Errorf("GetReadinessMode = %q, want enforce despite unrelated invalid field", got)
+	}
+}

@@ -656,9 +656,13 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("refusing to sling deferred bead %s: %q\nDeferred work should not consume polecat slots. Use --force to override", beadID, info.Title)
 	}
 
-	// Readiness check (S1a). The sling target can be crew/mayor, so the rig
-	// (and its readiness mode) comes from the bead prefix, not the target.
-	if err := enforceReadiness(townRoot, resolveRigForBead(townRoot, beadID), beadID, info, nil, slingForceUnready, slingReason); err != nil {
+	// Readiness check (S1a). The target rig's mode applies when slinging to a
+	// rig (or an agent inside one); otherwise the bead's own rig decides.
+	readinessRig := readinessRigFor(slingTargetRig(args), resolveRigForBead(townRoot, beadID))
+	if err := enforceReadiness(townRoot, readinessRig, beadID, info, nil, slingForceUnready, slingReason); err != nil {
+		return err
+	}
+	if err := validateFormulaTemplateVars(formulaName, townRoot, readinessRig); err != nil {
 		return err
 	}
 
@@ -1448,4 +1452,18 @@ func rollbackSlingArtifacts(spawnInfo *SpawnedPolecatInfo, beadID, hookWorkDir, 
 
 	// 3. Clean up the spawned polecat (worktree, agent bead, convoy, etc.)
 	cleanupSpawnedPolecat(spawnInfo, spawnInfo.RigName, convoyID)
+}
+
+// slingTargetRig returns the rig named by the sling target argument: the
+// target itself when it is a rig, or the first segment of a rig path such as
+// "gastown/polecats/nux". Empty when there is no rig target.
+func slingTargetRig(args []string) string {
+	if len(args) < 2 || args[1] == "" {
+		return ""
+	}
+	first := strings.SplitN(args[1], "/", 2)[0]
+	if rigName, ok := IsRigName(first); ok {
+		return rigName
+	}
+	return ""
 }

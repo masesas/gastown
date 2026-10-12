@@ -75,3 +75,16 @@ func TestCheckReadiness(t *testing.T) {
 		})
 	}
 }
+
+func TestReadinessRigFor(t *testing.T) {
+	tests := []struct{ target, bead, want string }{
+		{"be", "pro", "be"},
+		{"", "pro", "pro"},
+		{"", "", ""},
+	}
+	for _, tt := range tests {
+		if got := readinessRigFor(tt.target, tt.bead); got != tt.want {
+			t.Errorf("readinessRigFor(%q, %q) = %q, want %q", tt.target, tt.bead, got, tt.want)
+		}
+	}
+}

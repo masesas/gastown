@@ -1,6 +1,11 @@
 package config
 
-import "fmt"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+)
 
 // ReadinessMode controls the per-rig readiness check before dispatch.
 type ReadinessMode string
@@ -28,11 +33,38 @@ func validateReadinessMode(mode string) error {
 
 // GetReadinessMode returns the readiness mode for a rig from
 // settings/config.json, falling back to DefaultReadinessMode when the file
-// is missing, unreadable, or the field is unset.
+// is missing or the field is unset. When the file exists but fails to load
+// (e.g. an unrelated field is invalid), an explicit valid "readiness" value
+// in the raw JSON still applies, so enforce does not silently drop to warn.
 func GetReadinessMode(rigPath string) ReadinessMode {
-	settings, err := LoadRigSettings(RigSettingsPath(rigPath))
-	if err != nil || settings == nil || settings.Readiness == "" {
-		return DefaultReadinessMode
+	path := RigSettingsPath(rigPath)
+	settings, err := LoadRigSettings(path)
+	if err == nil && settings != nil {
+		if settings.Readiness == "" {
+			return DefaultReadinessMode
+		}
+		return ReadinessMode(settings.Readiness)
 	}
-	return ReadinessMode(settings.Readiness)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		if mode, ok := readinessFromRawSettings(path); ok {
+			return mode
+		}
+	}
+	return DefaultReadinessMode
+}
+
+// readinessFromRawSettings reads only the "readiness" key from a settings
+// file that failed full validation.
+func readinessFromRawSettings(path string) (ReadinessMode, bool) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: rig settings path
+	if err != nil {
+		return "", false
+	}
+	var raw struct {
+		Readiness string `json:"readiness"`
+	}
+	if json.Unmarshal(data, &raw) != nil || raw.Readiness == "" || validateReadinessMode(raw.Readiness) != nil {
+		return "", false
+	}
+	return ReadinessMode(raw.Readiness), true
 }

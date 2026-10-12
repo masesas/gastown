@@ -171,8 +171,14 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 
 	// Readiness check (S1a): description + acceptance criteria checklist.
 	// Runs before any state change so a rejected bead is left untouched.
-	if err := enforceReadiness(townRoot, params.RigName, params.BeadID, info, nil, params.ForceUnready, params.UnreadyReason); err != nil {
+	readinessRig := readinessRigFor(params.RigName, resolveRigForBead(townRoot, params.BeadID))
+	if err := enforceReadiness(townRoot, readinessRig, params.BeadID, info, nil, params.ForceUnready, params.UnreadyReason); err != nil {
 		result.ErrMsg = readinessRejectedErrMsg
+		return result, err
+	}
+	// Validate formula {{vars}} before spawn/convoy/cook side effects.
+	if err := validateFormulaTemplateVars(params.FormulaName, townRoot, readinessRig); err != nil {
+		result.ErrMsg = "formula_invalid"
 		return result, err
 	}
 

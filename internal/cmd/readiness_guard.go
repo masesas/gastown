@@ -63,6 +63,16 @@ func checkReadiness(mode config.ReadinessMode, info *beadInfo, readErr error, fo
 	return readinessDecision{Allow: true, Outcome: readinessWarned, Problems: problems}, nil
 }
 
+// readinessRigFor picks the rig whose readiness mode applies: the target rig
+// when work is dispatched to a rig (its policy governs what it accepts),
+// otherwise the rig that owns the bead's prefix.
+func readinessRigFor(targetRig, beadRig string) string {
+	if targetRig != "" {
+		return targetRig
+	}
+	return beadRig
+}
+
 // readinessModeForRig returns the readiness mode of rigName, or the default
 // when the bead does not belong to a rig.
 func readinessModeForRig(townRoot, rigName string) config.ReadinessMode {
