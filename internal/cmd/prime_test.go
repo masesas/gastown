@@ -1482,6 +1482,9 @@ func TestCheckSlungWork_UsesFullContract(t *testing.T) {
 	if strings.Contains(output, "contract incomplete") {
 		t.Errorf("unexpected warning in output:\n%s", output)
 	}
+	if n := strings.Count(output, "Acceptance Criteria:"); n != 1 {
+		t.Errorf("contract rendered %d times, want once:\n%s", n, output)
+	}
 }
 
 func TestCheckSlungWork_ShowFails_WarnsIncompleteContract(t *testing.T) {

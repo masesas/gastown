@@ -1131,14 +1131,15 @@ func quoteForRalphLoop(s string) string {
 	return `"` + s + `"`
 }
 
-// outputBeadPreview runs `bd show` and displays a truncated preview of the bead.
+// outputBeadPreview displays the bead's ID, title and status. The contract
+// itself is rendered once by outputHookedBeadDetails.
 func outputBeadPreview(hookedBead *beads.Issue) {
 	fmt.Println("**Bead details:**")
 	fmt.Printf("  %s: %s\n", hookedBead.ID, hookedBead.Title)
 	if hookedBead.Status != "" {
 		fmt.Printf("  status: %s\n", hookedBead.Status)
 	}
-	printContract(hookedBead, "  ")
+	// The full contract is already printed under "Hooked Work"; do not repeat it.
 	fmt.Println()
 }
 
@@ -1146,9 +1147,11 @@ func outputBeadPreview(hookedBead *beads.Issue) {
 func printContract(issue *beads.Issue, indent string) {
 	contract := renderTaskContract(issue, defaultContractLimits())
 	for _, line := range strings.Split(strings.TrimSuffix(contract, "\n"), "\n") {
-		if line != "" {
-			fmt.Printf("%s%s\n", indent, line)
+		if strings.TrimSpace(line) == "" {
+			fmt.Println()
+			continue
 		}
+		fmt.Printf("%s%s\n", indent, line)
 	}
 }
 
