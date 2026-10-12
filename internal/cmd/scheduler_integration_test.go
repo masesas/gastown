@@ -105,7 +105,10 @@ func cleanupSchedulerBeadsDatabases(t *testing.T, prefixes ...string) {
 	t.Cleanup(func() {
 		port := schedulerDoltPort()
 		if port == "" {
-			port = "3307"
+			// Never fall back to the default production port (3307): dropping
+			// databases there could destroy real data.
+			t.Logf("cleanup: no Dolt test port set; skipping database drop")
+			return
 		}
 		dsn := fmt.Sprintf("root@tcp(127.0.0.1:%s)/", port)
 		db, err := sql.Open("mysql", dsn)

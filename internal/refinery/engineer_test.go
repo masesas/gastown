@@ -293,6 +293,7 @@ func setupEngineerTerminalCloseTest(t *testing.T, activeMR string) (*Engineer, *
 	testutil.RequireDoltContainer(t)
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	rigPath := t.TempDir()
+	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
