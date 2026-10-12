@@ -179,8 +179,10 @@ check-version-tag:
 clean:
 	rm -f $(BUILD_DIR)/$(BINARY)
 
+# BEADS_DOLT_AUTO_START=0: tests use temp .beads dirs or the Dolt test
+# container; auto-started servers leak on macOS (no parent-death signal).
 test: test-makefile
-	go test ./...
+	BEADS_DOLT_AUTO_START=$${BEADS_DOLT_AUTO_START:-0} go test ./...
 
 test-makefile:
 	bash scripts/check-install-path_test.sh
