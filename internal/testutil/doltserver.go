@@ -15,7 +15,14 @@ import (
 	_ "github.com/go-sql-driver/mysql" // required by testcontainers Dolt module
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/dolt"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
+
+// doltEntrypointDoneLog is printed by the dolt image entrypoint once it has
+// created the configured database and user. The dolt module only waits for
+// "Server ready", which the server prints earlier; work started in between
+// can make the entrypoint (set -e) exit and take the container down.
+const doltEntrypointDoneLog = "Dolt init process done. Ready for connections."
 
 // DoltDockerImage is the Docker image used for Dolt test containers.
 // DOLT_ROOT_HOST=% tells the entrypoint to create root@'%' (available
@@ -68,6 +75,7 @@ func runDoltContainer(ctx context.Context) (ctr *dolt.DoltContainer, err error) 
 	return dolt.Run(ctx, DoltDockerImage,
 		dolt.WithDatabase("gt_test"),
 		testcontainers.WithEnv(map[string]string{"DOLT_ROOT_HOST": "%"}),
+		testcontainers.WithAdditionalWaitStrategy(wait.ForLog(doltEntrypointDoneLog)),
 	)
 }
 
