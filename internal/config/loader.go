@@ -236,6 +236,9 @@ func validateRigSettings(c *RigSettings) error {
 			return err
 		}
 	}
+	if err := validateReadinessMode(c.Readiness); err != nil {
+		return err
+	}
 	return nil
 }
 

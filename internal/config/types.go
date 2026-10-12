@@ -707,6 +707,11 @@ type RigSettings struct {
 	// Values are effort levels: "low", "medium", "high", "max".
 	// Example: {"crew": "max", "witness": "low"}
 	RoleEffort map[string]string `json:"role_effort,omitempty"`
+
+	// Readiness controls the dispatch readiness check for task/feature/bug
+	// beads (description + acceptance criteria): "off", "warn", or "enforce".
+	// Empty means DefaultReadinessMode ("warn").
+	Readiness string `json:"readiness,omitempty"`
 }
 
 // CrewConfig represents crew workspace settings for a rig.

@@ -58,6 +58,9 @@ const (
 	// destructive action (kill, cleanup, push) was taken.
 	TypeStateUnknown = "state_unknown"
 
+	// Dispatch readiness check outcome (rejected, warned, overridden).
+	TypeTaskReadiness = "task_readiness"
+
 	// Witness patrol events
 	TypePatrolStarted   = "patrol_started"
 	TypePolecatChecked  = "polecat_checked"
@@ -322,6 +325,26 @@ func StateUnknownPayload(subject, check, reason, caller string) map[string]inter
 		"reason":  reason,
 		"caller":  caller,
 	}
+}
+
+// TaskReadinessPayload creates a payload for task_readiness events.
+// outcome: "rejected", "warned", or "overridden"; problems: readiness problem codes;
+// actor/reason: who overrode the check and why (overrides only).
+func TaskReadinessPayload(beadID, rig, mode, outcome string, problems []string, actor, reason string) map[string]interface{} {
+	p := map[string]interface{}{
+		"bead":     beadID,
+		"rig":      rig,
+		"mode":     mode,
+		"outcome":  outcome,
+		"problems": problems,
+	}
+	if actor != "" {
+		p["actor"] = actor
+	}
+	if reason != "" {
+		p["reason"] = reason
+	}
+	return p
 }
 
 // MassDeathPayload creates a payload for mass death events.
