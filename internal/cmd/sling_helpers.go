@@ -98,6 +98,8 @@ type beadInfo struct {
 	Labels       []string         `json:"labels,omitempty"`
 	Dependencies []beads.IssueDep `json:"dependencies,omitempty"`
 	IssueType    string           `json:"issue_type,omitempty"`
+
+	AcceptanceCriteria string `json:"acceptance_criteria,omitempty"`
 }
 
 // isDeferredBead checks whether a bead should be rejected from slinging because

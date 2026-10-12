@@ -106,6 +106,22 @@ func LogFeed(eventType, actor string, payload map[string]interface{}) error {
 	return Log(eventType, actor, payload, VisibilityFeed)
 }
 
+// LogFeedAt is LogFeed with an explicit town root, for callers whose working
+// directory is not inside the town (e.g. the daemon).
+func LogFeedAt(townRoot, eventType, actor string, payload map[string]interface{}) error {
+	if townRoot == "" {
+		return nil
+	}
+	return writeAt(townRoot, Event{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Source:     "gt",
+		Type:       eventType,
+		Actor:      actor,
+		Payload:    payload,
+		Visibility: VisibilityFeed,
+	})
+}
+
 // LogAudit is a convenience wrapper for audit-only events.
 func LogAudit(eventType, actor string, payload map[string]interface{}) error {
 	return Log(eventType, actor, payload, VisibilityAudit)
@@ -121,7 +137,11 @@ func write(event Event) error {
 		// Silently ignore - we're not in a Gas Town workspace
 		return nil
 	}
+	return writeAt(townRoot, event)
+}
 
+// writeAt appends an event to the events file under townRoot.
+func writeAt(townRoot string, event Event) error {
 	eventsPath := filepath.Join(townRoot, EventsFile)
 
 	// Marshal event to JSON

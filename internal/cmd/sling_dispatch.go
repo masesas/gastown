@@ -39,6 +39,10 @@ type SlingParams struct {
 	Mode         string   // --ralph: "" (normal) or "ralph"
 	ReviewOnly   bool     // --review-only: review and report back only, no merge/commit/push
 
+	// Readiness override (S1a): bypasses enforce-mode readiness rejection.
+	ForceUnready  bool   // --force-unready
+	UnreadyReason string // --reason (required with ForceUnready)
+
 	// Execution behavior (set by caller, not serialized to queue)
 	SkipCook         bool   // Batch optimization: formula already cooked
 	FormulaFailFatal bool   // true=rollback+error (single/queue), false=hook raw bead (batch)
@@ -163,6 +167,13 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 	if isDeferredBead(info) && !explicitForce {
 		result.ErrMsg = "deferred"
 		return result, fmt.Errorf("bead %s is deferred (use --force to override)", params.BeadID)
+	}
+
+	// Readiness check (S1a): description + acceptance criteria checklist.
+	// Runs before any state change so a rejected bead is left untouched.
+	if err := enforceReadiness(townRoot, params.RigName, params.BeadID, info, nil, params.ForceUnready, params.UnreadyReason); err != nil {
+		result.ErrMsg = readinessRejectedErrMsg
+		return result, err
 	}
 
 	if params.RigName != "" {

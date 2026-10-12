@@ -161,6 +161,8 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 			NoMerge:          slingNoMerge,
 			ReviewOnly:       slingReviewOnly,
 			Force:            slingForce,
+			ForceUnready:     slingForceUnready,
+			UnreadyReason:    slingReason,
 			HookRawBead:      slingHookRawBead,
 			NoBoot:           slingNoBoot,
 			Mode:             slingMode,
