@@ -11,6 +11,7 @@ Pilot Gas Town bisa berjalan di atas toolchain yang konsisten, terisolasi dari d
 ### S0.1 Toolchain
 
 - `gt` dibangun dari fork (`make build`, flag ICU).
+- `tmux` terpasang (Gas Town menjalankan agent di sesi tmux; belum terpasang di mesin ini per baseline).
 - Beads yang di-embed fork sama versinya dengan `bd` CLI yang dipakai town (D2-A). Bila naik versi butuh > 2 hari, pilot berjalan dengan `bd` terisolasi lewat PATH khusus town (fallback C), dan upgrade dilanjutkan paralel.
 - Baseline test fork diketahui: `go test ./...` hijau, atau setiap kegagalan tercatat dengan penyebab (environment vs bug).
 - `gt daemon start` di pilot town tidak terblokir pemeriksaan versi store.
@@ -38,7 +39,8 @@ Pilot Gas Town bisa berjalan di atas toolchain yang konsisten, terisolasi dari d
 ## 3. Acceptance criteria
 
 - [ ] **S0-AC1** `gt version` di pilot menunjukkan commit fork; versi Beads embed dan `bd` CLI town tercatat dan cocok (atau fallback C aktif dan tercatat).
-- [ ] **S0-AC2** Hasil `go test ./...` tercatat. Dua test `internal/beads` yang gagal sebelumnya punya root cause tertulis; bila bug, ada bead perbaikan.
+- [x] **S0-AC2** Hasil `go test ./...` tercatat dengan root cause setiap kegagalan (`../baseline/go-test-baseline.md`: 27 test, 4 kelompok).
+- [ ] **S0-AC11** `tmux` terpasang; `go test ./...` dengan `TMPDIR` non-symlink hanya menyisakan kegagalan kelompok C (skew `bd`) sebelum upgrade Beads, dan 0 setelahnya.
 - [ ] **S0-AC3** `gt daemon start` sukses di pilot town.
 - [ ] **S0-AC4** Backup kedua DB per-repo ada dan uji restore ke direktori sementara berhasil.
 - [ ] **S0-AC5** Checksum/`bd count` DB per-repo sama sebelum dan sesudah seluruh Tahap 0.
@@ -65,3 +67,4 @@ Migrasi backlog existing (E15 penuh); retention/restore drill otomatis (E19 penu
 - 12 Okt 2026: dibuat dari `09` § 2.
 - 12 Okt 2026: patrol dan template branch dipertajam dari verifikasi kode (`wisp_reaper` memuat auto-close stale; variabel template `{issue}`).
 - 12 Okt 2026: pendaftaran akun Claude dipindah ke S2b.
+- 12 Okt 2026: baseline test: 27 kegagalan (bukan 2); tambah prasyarat tmux dan S0-AC11.

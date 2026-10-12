@@ -25,6 +25,8 @@ Konvensi: `$FORK` = checkout fork ini; `$TOWN` = direktori pilot town baru (usul
 3. Selidiki dua test `internal/beads` yang gagal: `go test ./internal/beads -run '<nama>' -v`. Klasifikasikan: environment (mis. butuh `bd`/Dolt versi tertentu) vs bug. Tulis hasil ke `../baseline/go-test-baseline.md`.
 4. Bila bug: **[ubah]** buat bead perbaikan di `.beads` fork (setelah Anda setujui pembuatan bead).
 
+**Hasil Langkah 1 (12 Okt 2026):** lihat `../baseline/go-test-baseline.md`. Tambahan: **[ubah]** `brew install tmux`, lalu ulangi `go test ./...` dengan `TMPDIR` non-symlink sebagai baseline pembanding (S0-AC11).
+
 ### Langkah 2 — Spike upgrade Beads (P0.1, D2-A, timebox 2 hari)
 
 Branch: `chore/beads-upgrade`.
@@ -32,7 +34,7 @@ Branch: `chore/beads-upgrade`.
 1. Tentukan target: versi modul `github.com/steveyegge/beads` yang sama dengan `bd version` di mesin (1.3.0). Cek tag tersedia: `go list -m -versions github.com/steveyegge/beads`.
 2. **[ubah]** `go get github.com/steveyegge/beads@v1.3.0 && go mod tidy`.
 3. `go build ./...` → perbaiki error kompilasi di ±11 file pemakai SDK. Prinsip: perubahan mekanis saja, tanpa refactor.
-4. `go test ./...` → bandingkan dengan baseline Langkah 1. Regresi baru wajib diperbaiki atau dijelaskan.
+4. `go test ./...` → bandingkan dengan baseline Langkah 1. Regresi baru wajib diperbaiki atau dijelaskan. Kriteria tambahan: 12 test refinery kelompok C (`PROJECT IDENTITY MISMATCH`) hijau.
 5. Test khusus: `go test ./internal/daemon -run Compatibility -v` (`daemon_compatibility_test.go`), tambahkan kasus: store `bd_version=1.3.0` + embed 1.3.0 → start diizinkan.
 6. Review: agent `go-reviewer` atas diff.
 7. Keputusan di akhir timebox:
