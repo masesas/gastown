@@ -704,18 +704,37 @@ func checkSlungWork(ctx RoleContext, hookedBead *beads.Issue) (bool, error) {
 	attachment := beads.ParseAttachmentFields(hookedBead)
 	hasWorkflow := hasWorkflowAttachment(attachment)
 
+	// bd list --json may omit design/notes/acceptance_criteria; re-read the
+	// bead so the full contract is rendered.
+	contractBead, contractWarning := loadContractBead(ctx, hookedBead)
+
 	outputAutonomousDirective(ctx, hookedBead, hasWorkflow)
-	outputHookedBeadDetails(hookedBead)
+	outputHookedBeadDetails(contractBead, contractWarning)
 
 	if hasWorkflow {
 		if err := outputMoleculeWorkflow(ctx, attachment); err != nil {
 			return true, err
 		}
 	} else {
-		outputBeadPreview(hookedBead)
+		outputBeadPreview(contractBead)
 	}
 
 	return true, nil
+}
+
+// primeShowBead reads a bead by ID; a variable so tests can stub the lookup.
+var primeShowBead = func(ctx RoleContext, id string) (*beads.Issue, error) {
+	return beads.New(beads.ResolveHookDir(ctx.TownRoot, id, ctx.WorkDir)).Show(id)
+}
+
+// loadContractBead returns the bead to render the task contract from. When the
+// re-read fails it returns the list item plus a warning, never silently.
+func loadContractBead(ctx RoleContext, listed *beads.Issue) (*beads.Issue, string) {
+	full, err := primeShowBead(ctx, listed.ID)
+	if err != nil || full == nil {
+		return listed, fmt.Sprintf("contract incomplete: could not read bead %s (%v) — run: bd show %s", listed.ID, err, listed.ID)
+	}
+	return full, ""
 }
 
 func outputRefinerySafetyStopDirective(ctx RoleContext, stop *refinery.SafetyStop) {
@@ -956,23 +975,16 @@ func outputAutonomousDirective(ctx RoleContext, hookedBead *beads.Issue, hasMole
 	fmt.Println()
 }
 
-// outputHookedBeadDetails displays the hooked bead's ID, title, and description summary.
-func outputHookedBeadDetails(hookedBead *beads.Issue) {
+// outputHookedBeadDetails displays the hooked bead's ID, title, and full task
+// contract. A non-empty warning is printed as-is (contract could not be fully read).
+func outputHookedBeadDetails(hookedBead *beads.Issue, warning string) {
 	fmt.Printf("%s\n\n", style.Bold.Render("## Hooked Work"))
 	fmt.Printf("  Bead ID: %s\n", style.Bold.Render(hookedBead.ID))
 	fmt.Printf("  Title: %s\n", hookedBead.Title)
-	if hookedBead.Description != "" {
-		lines := strings.Split(hookedBead.Description, "\n")
-		maxLines := 5
-		if len(lines) > maxLines {
-			lines = lines[:maxLines]
-			lines = append(lines, "...")
-		}
-		fmt.Println("  Description:")
-		for _, line := range lines {
-			fmt.Printf("    %s\n", line)
-		}
+	if warning != "" {
+		fmt.Printf("  %s\n", warning)
 	}
+	printContract(hookedBead, "  ")
 	fmt.Println()
 }
 
@@ -1126,18 +1138,18 @@ func outputBeadPreview(hookedBead *beads.Issue) {
 	if hookedBead.Status != "" {
 		fmt.Printf("  status: %s\n", hookedBead.Status)
 	}
-	if hookedBead.Description != "" {
-		lines := strings.Split(hookedBead.Description, "\n")
-		maxLines := 12
-		if len(lines) > maxLines {
-			lines = lines[:maxLines]
-			lines = append(lines, "...")
-		}
-		for _, line := range lines {
-			fmt.Printf("  %s\n", line)
+	printContract(hookedBead, "  ")
+	fmt.Println()
+}
+
+// printContract prints the rendered task contract, each line prefixed with indent.
+func printContract(issue *beads.Issue, indent string) {
+	contract := renderTaskContract(issue, defaultContractLimits())
+	for _, line := range strings.Split(strings.TrimSuffix(contract, "\n"), "\n") {
+		if line != "" {
+			fmt.Printf("%s%s\n", indent, line)
 		}
 	}
-	fmt.Println()
 }
 
 // buildRoleAnnouncement creates the role announcement string for autonomous mode.
