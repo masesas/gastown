@@ -62,11 +62,8 @@ func runTapPolecatStop(cmd *cobra.Command, args []string) error {
 
 	// Check heartbeat state: if already "exiting" or "idle", gt done already ran
 	hb := polecat.ReadSessionHeartbeat(townRoot, sessionName)
-	if hb != nil {
-		state := hb.EffectiveState()
-		if state == polecat.HeartbeatExiting || state == polecat.HeartbeatIdle {
-			return nil // gt done already ran or polecat is idle — nothing to do
-		}
+	if heartbeatShowsDoneOrIdle(hb, os.Getenv(polecat.EnvRunID)) {
+		return nil // gt done already ran or polecat is idle — nothing to do
 	}
 
 	// Check if the polecat is on a feature branch with work to submit.
@@ -156,4 +153,16 @@ func polecatStopPendingWork(cloneDir, branch string) (bool, string, error) {
 	}
 
 	return false, "", nil
+}
+
+// heartbeatShowsDoneOrIdle reports whether this session's heartbeat says gt done
+// already ran or the polecat is idle. A heartbeat left by a previous session of
+// the same polecat says nothing about this one, so it only counts when its
+// generation matches run (#4890).
+func heartbeatShowsDoneOrIdle(hb *polecat.SessionHeartbeat, run string) bool {
+	if hb == nil || !polecat.HeartbeatMatchesRun(hb, run) {
+		return false
+	}
+	state := hb.EffectiveState()
+	return state == polecat.HeartbeatExiting || state == polecat.HeartbeatIdle
 }

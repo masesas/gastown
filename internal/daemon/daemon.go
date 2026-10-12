@@ -67,6 +67,9 @@ type Daemon struct {
 	// mayor/daemon.json. Checked by isPatrolActive alongside patrolConfig.
 	disabledPatrols map[string]bool
 
+	// Idle reaper: consecutive "assigned work unknown" cycles per session.
+	unknownWork unknownWorkTracker
+
 	// Mass death detection: track recent session deaths
 	deathsMu     sync.Mutex
 	recentDeaths []sessionDeath
@@ -2818,15 +2821,19 @@ func (d *Daemon) isBeadClosed(beadID string) bool {
 	return issues[0].Status == "closed"
 }
 
-// hasAssignedOpenWork checks if any work bead is assigned to the given polecat
+// assignedOpenWork checks if any work bead is assigned to the given polecat
 // with a non-terminal status (hooked, in_progress, or open). This is the
 // authoritative source of polecat work — the sling code sets status=hooked +
 // assignee on the work bead, but no longer maintains the agent bead's hook_bead
 // field (updateAgentHookBead is a no-op). Without this fallback, the idle reaper
 // kills working polecats whose agent bead hook_bead is stale.
-func (d *Daemon) hasAssignedOpenWork(rigName, assignee string) bool {
+//
+// Any query that fails or returns unparseable output makes the answer
+// WorkUnknown unless another query already found work.
+func (d *Daemon) assignedOpenWork(rigName, assignee string) WorkAssignment {
 	rigDir := beads.GetRigDirForName(d.config.TownRoot, rigName)
 
+	lookupFailed := false
 	for _, status := range []string{"hooked", "in_progress", "open"} {
 		args := beads.InjectFlatForListJSON([]string{"list", "--assignee=" + assignee, "--status=" + status, "--json"})
 		cmd := exec.Command(d.bdPath, args...) //nolint:gosec // G204: args are constructed internally
@@ -2838,14 +2845,22 @@ func (d *Daemon) hasAssignedOpenWork(rigName, assignee string) bool {
 		}
 		output, err := cmd.Output()
 		if err != nil {
+			lookupFailed = true
 			continue
 		}
 		var issues []json.RawMessage
-		if json.Unmarshal(output, &issues) == nil && len(issues) > 0 {
-			return true
+		if err := json.Unmarshal(output, &issues); err != nil {
+			lookupFailed = true
+			continue
+		}
+		if len(issues) > 0 {
+			return WorkYes
 		}
 	}
-	return false
+	if lookupFailed {
+		return WorkUnknown
+	}
+	return WorkNo
 }
 
 // notifyWitnessOfCrashedPolecat notifies the witness when a polecat crash is detected.
@@ -2909,21 +2924,49 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 	// Only check sessions that are actually alive
 	alive, err := d.tmux.HasSession(sessionName)
 	if err != nil || !alive {
+		if err == nil {
+			d.unknownWork.forget(sessionName)
+		}
 		return
 	}
 
 	// Read heartbeat to check state and idle duration
-	hb := polecat.ReadSessionHeartbeat(d.config.TownRoot, sessionName)
+	hb, err := polecat.ReadSessionHeartbeatE(d.config.TownRoot, sessionName)
+	if err != nil {
+		d.reportReapStateUnknown(sessionName, "heartbeat", err.Error())
+		return // Unreadable heartbeat — state unknown, never reap on it
+	}
 	if hb == nil {
 		return // No heartbeat file — can't determine state
 	}
 
 	staleDuration := time.Since(hb.Timestamp)
 	if staleDuration < timeout {
-		return // Heartbeat is fresh — polecat is active
+		d.unknownWork.forget(sessionName) // Active again: end any unknown episode
+		return                            // Heartbeat is fresh — polecat is active
 	}
 
 	state := hb.EffectiveState()
+
+	// A heartbeat written by a previous session of this polecat must not
+	// decide the fate of the current one (#4890): between session creation and
+	// the new session's first heartbeat, the old "exiting" file is still on disk.
+	if hb.Generation != "" {
+		run, err := d.tmux.GetEnvironment(sessionName, polecat.EnvRunID)
+		if err != nil && staleDuration < timeout*3 {
+			d.reportReapStateUnknown(sessionName, "heartbeat_generation", err.Error())
+			return
+		}
+		if err != nil || !polecat.HeartbeatMatchesRun(hb, run) {
+			if staleDuration < timeout*3 {
+				return // New session has not written its heartbeat yet
+			}
+			// The current session never wrote a heartbeat. Ignore the old
+			// generation's idle/exiting claim and use the "working" checks,
+			// which require a definite "no assigned work" before killing.
+			state = polecat.HeartbeatWorking
+		}
+	}
 
 	// Explicitly idle or exiting — safe to reap
 	if state == polecat.HeartbeatIdle || state == polecat.HeartbeatExiting {
@@ -2945,7 +2988,7 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 			// Bead infrastructure failures (Dolt issues, version mismatches) cause
 			// spurious lookup errors while the polecat is actively working (GH#3342).
 			assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-			if d.hasAssignedOpenWork(rigName, assignee) {
+			if !d.reapAllowedByAssignedWork(sessionName, rigName, assignee) {
 				return
 			}
 			// No assigned work and agent not running — safe to reap.
@@ -2973,7 +3016,7 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 		// whose agent bead hook_bead points to a closed bead from a previous swarm
 		// while the polecat is actively working on a newly-slung bead.
 		assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-		if d.hasAssignedOpenWork(rigName, assignee) {
+		if !d.reapAllowedByAssignedWork(sessionName, rigName, assignee) {
 			return
 		}
 
@@ -2985,6 +3028,57 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 		}
 		d.killIdlePolecat(rigName, polecatName, sessionName, staleDuration, timeout, "working-no-hook")
 	}
+}
+
+// reapAllowedByAssignedWork reports whether the assigned-work lookup permits
+// reaping: only a definite "no work" does. An unknown answer is logged, and
+// after unknownEscalationCycles consecutive cycles the witness is notified once
+// per episode. Unknown never leads to a kill.
+func (d *Daemon) reapAllowedByAssignedWork(sessionName, rigName, assignee string) bool {
+	switch d.assignedOpenWork(rigName, assignee) {
+	case WorkYes:
+		d.unknownWork.forget(sessionName)
+		return false
+	case WorkNo:
+		d.unknownWork.forget(sessionName)
+		return true
+	default:
+		d.reportReapStateUnknown(sessionName, "assigned_work", "bd list failed for "+assignee)
+		if d.unknownWork.record(sessionName) {
+			d.logger.Printf("Reaper: assigned work for %s unknown for %d cycles; escalating to %s/witness",
+				sessionName, unknownEscalationCycles, rigName)
+			if err := d.notifyWitnessOfUnknownWork(rigName, sessionName, assignee); err != nil {
+				d.logger.Printf("Warning: failed to notify witness of unknown assigned work (will retry next cycle): %v", err)
+				d.unknownWork.retryEscalation(sessionName)
+			}
+		}
+		return false
+	}
+}
+
+// notifyWitnessOfUnknownWork tells the rig witness that the reaper cannot
+// determine whether a polecat has work, so a human or the witness can look.
+func (d *Daemon) notifyWitnessOfUnknownWork(rigName, sessionName, assignee string) error {
+	subject := fmt.Sprintf("STATE_UNKNOWN: %s assigned work undeterminable", sessionName)
+	body := fmt.Sprintf("The idle reaper could not determine assigned work for %s (session %s) for %d consecutive cycles.\n"+
+		"The session was NOT reaped. Check bead store health (bd list) and the polecat manually.",
+		assignee, sessionName, unknownEscalationCycles)
+	// Bounded so a hung mail send cannot stall the reaper loop.
+	ctx, cancel := context.WithTimeout(context.Background(), unknownWorkNotifyTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, d.gtPath, "mail", "send", rigName+"/witness", "-s", subject, "-m", body) //nolint:gosec // G204: args are constructed internally
+	setSysProcAttr(cmd)
+	cmd.Dir = d.config.TownRoot
+	cmd.Env = append(os.Environ(), "BD_ACTOR=daemon")
+	return cmd.Run()
+}
+
+// reportReapStateUnknown records that the reaper skipped a session because a
+// lifecycle lookup could not decide its state.
+func (d *Daemon) reportReapStateUnknown(sessionName, check, reason string) {
+	d.logger.Printf("Reaper: state unknown for %s (%s: %s); not reaping", sessionName, check, reason)
+	_ = events.LogFeed(events.TypeStateUnknown, "daemon",
+		events.StateUnknownPayload(sessionName, check, reason, "daemon"))
 }
 
 // killIdlePolecat terminates an idle polecat session and cleans up.

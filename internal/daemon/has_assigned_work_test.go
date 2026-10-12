@@ -58,8 +58,8 @@ printf '[{"id":"gt-123"}]\n'
 		bdPath: bdPath,
 	}
 
-	if !d.hasAssignedOpenWork("gastown", "polecats/rust") {
-		t.Fatal("expected assigned work lookup to succeed")
+	if got := d.assignedOpenWork("gastown", "polecats/rust"); got != WorkYes {
+		t.Fatalf("assignedOpenWork = %v, want yes", got)
 	}
 
 	logOutput, err := os.ReadFile(logPath)

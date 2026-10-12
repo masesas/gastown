@@ -54,6 +54,10 @@ const (
 	TypeSessionDeath = "session_death" // Feed-visible session termination
 	TypeMassDeath    = "mass_death"    // Multiple sessions died in short window
 
+	// Fail-closed lifecycle events: a state lookup could not decide, so no
+	// destructive action (kill, cleanup, push) was taken.
+	TypeStateUnknown = "state_unknown"
+
 	// Witness patrol events
 	TypePatrolStarted   = "patrol_started"
 	TypePolecatChecked  = "polecat_checked"
@@ -301,6 +305,20 @@ func SessionDeathPayload(session, agent, reason, caller string) map[string]inter
 	return map[string]interface{}{
 		"session": session,
 		"agent":   agent,
+		"reason":  reason,
+		"caller":  caller,
+	}
+}
+
+// StateUnknownPayload creates a payload for state_unknown events.
+// subject: what the check was about (session name, bead ID, agent)
+// check: which lookup failed (e.g., "heartbeat", "assigned_work", "done_ownership")
+// reason: the underlying error or why the state was undecidable
+// caller: what performed the check (e.g., "daemon", "gt done")
+func StateUnknownPayload(subject, check, reason, caller string) map[string]interface{} {
+	return map[string]interface{}{
+		"subject": subject,
+		"check":   check,
 		"reason":  reason,
 		"caller":  caller,
 	}

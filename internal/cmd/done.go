@@ -876,18 +876,29 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// The agent bead keeps lifecycle metadata for witness/refinery cleanup.
 	}
 	var assignedIssueIDs []string
-	loadAssignedIssueIDs := func() []string {
-		if assignedIssueIDs == nil && sender != "" {
-			assignedIssueIDs = findAssignedBeadsForAgent(cwd, sender)
+	var assignedLookupErr error
+	assignedLoaded := false
+	loadAssignedIssueIDs := func() ([]string, error) {
+		if !assignedLoaded && sender != "" {
+			assignedIssueIDs, assignedLookupErr = findAssignedBeadsForAgent(cwd, sender)
+			assignedLoaded = true
 		}
-		return assignedIssueIDs
+		return assignedIssueIDs, assignedLookupErr
 	}
 
 	// If issue ID not set by flag or branch name, query for hooked beads
 	// assigned to this agent. This replaces reading agent_bead.hook_bead
 	// (hq-l6mm5: direct bead tracking instead of agent bead slot).
 	if issueID == "" && sender != "" {
-		if hookIssue, ambiguous := selectAssignedIssue("", loadAssignedIssueIDs()); hookIssue != "" {
+		assigned, lookupErr := loadAssignedIssueIDs()
+		if lookupErr != nil {
+			if exitType == ExitCompleted {
+				return fmt.Errorf("cannot determine the hooked issue for %s: %w\nNothing was pushed; retry gt done when beads is reachable, or pass --issue", sender, lookupErr)
+			}
+			// ESCALATED/DEFERRED do not push; let the agent report even when beads is down.
+			style.PrintWarning("could not look up assigned work for %s: %v", sender, lookupErr)
+		}
+		if hookIssue, ambiguous := selectAssignedIssue("", assigned); hookIssue != "" {
 			issueID = hookIssue
 		} else if ambiguous {
 			return fmt.Errorf("multiple active assignments found for %s; cannot infer issue from hook. Use --issue to disambiguate", sender)
@@ -902,13 +913,30 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	// wins, and subtask branches of the hooked bead (e.g. gt-abc.1 under
 	// hooked gt-abc) are left alone.
 	if doneIssue == "" && info.Issue != "" && sender != "" {
-		if hookIssue, ambiguous := selectAssignedIssue(info.Issue, loadAssignedIssueIDs()); isStaleBranchIssue(info.Issue, hookIssue) {
+		assigned, lookupErr := loadAssignedIssueIDs()
+		if lookupErr != nil {
+			if exitType == ExitCompleted {
+				return fmt.Errorf("cannot verify the hooked issue for %s: %w\nNothing was pushed; retry gt done when beads is reachable, or pass --issue", sender, lookupErr)
+			}
+			// ESCALATED/DEFERRED do not push; let the agent report even when beads is down.
+			style.PrintWarning("could not look up assigned work for %s: %v", sender, lookupErr)
+		}
+		if hookIssue, ambiguous := selectAssignedIssue(info.Issue, assigned); isStaleBranchIssue(info.Issue, hookIssue) {
 			style.PrintWarning("branch %q embeds issue %s but your hooked bead is %s — submitting for %s (stale branch reuse?)", branch, info.Issue, hookIssue, hookIssue)
 			fmt.Printf("  Fresh branches must be named polecat/<name>/<bead-id>+<suffix> for the bead you are working.\n")
 			fmt.Printf("  Use --issue to override if the branch-derived id is actually correct.\n\n")
 			issueID = hookIssue
 		} else if ambiguous {
 			return fmt.Errorf("branch %q embeds issue %s but %s has multiple active assignments; use --issue to disambiguate", branch, info.Issue, sender)
+		}
+	}
+
+	// Ownership guard: a session whose bead was re-slung to another agent must
+	// not push or open a merge request for it. Runs before the done-intent
+	// label and every remote side effect.
+	if issueID != "" && exitType == ExitCompleted {
+		if err := verifyDoneOwnership(cwd, issueID, sender); err != nil {
+			return err
 		}
 	}
 
@@ -2524,19 +2552,27 @@ func selectAssignedIssue(branchIssue string, assigned []string) (string, bool) {
 // findAssignedBeadsForAgent queries the same assignment locations as gt hook:
 // the current rig, the target rig for rig agents, then town beads. The assigned
 // work bead is authoritative; agent-bead hook slots are intentionally ignored.
-func findAssignedBeadsForAgent(workDir, agentID string) []string {
+func findAssignedBeadsForAgent(workDir, agentID string) ([]string, error) {
 	if agentID == "" {
-		return nil
+		return nil, nil
 	}
 
-	assigned := assignedIssueIDs(queryAssignedBeads(beads.New(workDir), agentID))
-	if len(assigned) > 0 {
-		return assigned
+	var firstErr error
+	query := func(bd *beads.Beads) []string {
+		issues, err := queryAssignedBeadsE(bd, agentID)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return assignedIssueIDs(issues)
+	}
+
+	if assigned := query(beads.New(workDir)); len(assigned) > 0 {
+		return assigned, nil
 	}
 
 	townRoot, err := findTownRoot()
 	if err != nil || townRoot == "" {
-		return nil
+		return nil, firstErr
 	}
 
 	parts := strings.Split(agentID, "/")
@@ -2547,44 +2583,53 @@ func findAssignedBeadsForAgent(workDir, agentID string) []string {
 	if rigName != "" && rigName != "mayor" && rigName != "deacon" {
 		rigWorkDir := filepath.Join(townRoot, rigName, "mayor", "rig")
 		if rigWorkDir != workDir {
-			assigned = assignedIssueIDs(queryAssignedBeads(beads.New(rigWorkDir), agentID))
-			if len(assigned) > 0 {
-				return assigned
+			if assigned := query(beads.New(rigWorkDir)); len(assigned) > 0 {
+				return assigned, nil
 			}
 		}
 	}
 
 	townBeadsDir := filepath.Join(townRoot, ".beads")
 	if _, err := os.Stat(townBeadsDir); err == nil {
-		assigned = assignedIssueIDs(queryAssignedBeads(beads.New(townBeadsDir), agentID))
-		if len(assigned) > 0 {
-			return assigned
+		if assigned := query(beads.New(townBeadsDir)); len(assigned) > 0 {
+			return assigned, nil
 		}
 	}
 	if isTownLevelRole(agentID) {
-		return assignedIssueIDs(scanAllRigsForHookedBeads(townRoot, agentID))
+		if assigned := assignedIssueIDs(scanAllRigsForHookedBeads(townRoot, agentID)); len(assigned) > 0 {
+			return assigned, nil
+		}
 	}
-	return nil
+	// No assignment found anywhere. If any location failed to answer, the
+	// empty result is not trustworthy.
+	return nil, firstErr
 }
 
+// queryAssignedBeads returns the agent's hooked (preferred) or in_progress
+// assignments, ignoring lookup errors. Use queryAssignedBeadsE when an empty
+// answer drives a decision.
 func queryAssignedBeads(bd *beads.Beads, agentID string) []*beads.Issue {
-	hooked, err := bd.List(beads.ListOptions{
+	issues, _ := queryAssignedBeadsE(bd, agentID)
+	return issues
+}
+
+// queryAssignedBeadsE is queryAssignedBeads with errors surfaced: an empty
+// result is only returned without error when both queries succeeded.
+func queryAssignedBeadsE(bd *beads.Beads, agentID string) ([]*beads.Issue, error) {
+	hooked, hookedErr := bd.List(beads.ListOptions{
 		Status:   beads.StatusHooked,
 		Assignee: agentID,
 		Priority: -1,
 	})
-	if err == nil && len(hooked) > 0 {
-		return hooked
+	if hookedErr == nil && len(hooked) > 0 {
+		return hooked, nil
 	}
-	inProgress, err := bd.List(beads.ListOptions{
+	inProgress, inProgressErr := bd.List(beads.ListOptions{
 		Status:   "in_progress",
 		Assignee: agentID,
 		Priority: -1,
 	})
-	if err == nil {
-		return inProgress
-	}
-	return nil
+	return mergeAssignedLookups(hooked, hookedErr, inProgress, inProgressErr)
 }
 
 func assignedIssueIDs(assigned []*beads.Issue) []string {
