@@ -99,3 +99,7 @@ Kondisi kapan item-item ini layak naik prioritas ada di `11` § 2.
 ### Tidak ada klaim angka produktivitas
 
 Tidak ada benchmark yang dijalankan. Semua dampak bersifat kualitatif. Target numerik ditetapkan setelah baseline P0.4.
+
+## Spec dan impl plan (12 Oktober 2026)
+
+Dokumen 07–14 adalah analisis. Keadaan akhir untuk eksekusi ada di [`spec/`](spec/README.md) (apa dan kenapa, dengan ID AC) dan [`plan/`](plan/README.md) (bagaimana). Bila ada perbedaan, spec yang berlaku.
