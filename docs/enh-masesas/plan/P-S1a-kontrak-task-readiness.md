@@ -144,3 +144,17 @@ Bila `TestEmbeddedFormulas_PassTemplateValidation` menemukan false positive, per
 - **Known edge case:** bead lama dengan AC teks bebas akan diperingatkan (`warn`); naik ke `enforce` hanya setelah satu epic tanpa false reject.
 - **Known edge case:** bead yang sudah di antrean scheduler sebelum upgrade tidak membawa field override; diperlakukan tanpa override.
 - **Known limitation:** prime menambah token konteks; dibatasi oleh limit baris.
+
+## Catatan eksekusi (13 Okt 2026)
+
+Branch `feat/s1a-formula-vars` (rebase di atas `main` yang berisi Beads v1.3.0 dan S1b). PR-2 dan PR-3 dikerjakan paralel oleh dua agent di worktree terpisah, lalu disatukan linear.
+
+| PR | Commit | Penyimpangan dari plan |
+| --- | --- | --- |
+| PR-1 | `bfdd9ae1` | `HumanDescription` menyaring baris metadata (termasuk `workflow_target`); tipe kosong dianggap `task` |
+| PR-3 | `743c30f3` | `readySlingContextsFromAssessments` menerima `townRoot`; error baca bead di jalur sling sudah gagal lebih awal di semua mode (lebih ketat dari tabel); override menghasilkan komentar/event lagi saat dispatch; `events.LogFeedAt` ditambahkan |
+| PR-4 | `3a375706` | Hanya `extends` yang di-resolve (hanya itu yang mewariskan `[vars]`); formula yang gagal diparse parser gt (mis. `security-audit`) hanya diperingatkan |
+| PR-2 | `3089bd25`, `a04195e7` | Kontrak dirender sekali (preview hanya ID/judul/status); baris kosong dipertahankan |
+| Review | `5791580d` | Fallback mode dari JSON mentah; aturan rig penentu mode; validasi formula sebelum spawn di `executeSling`/`gt sling` |
+
+Keterbatasan diketahui: formula default `mol-polecat-work` tidak divalidasi saat `scheduleBead` (baru di-resolve saat dispatch, lalu divalidasi di `executeSling`); log `dispatch_skip reason=not_ready` berulang tiap siklus scheduler untuk bead yang tidak siap; batas prime berbasis baris, bukan byte.

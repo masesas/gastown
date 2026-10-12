@@ -19,7 +19,7 @@ Bead yang ditulis lengkap (deskripsi, AC, design, notes) tidak sampai utuh ke ag
 
 - Berlaku untuk bead tipe `task`, `feature`, `bug` saat di-dispatch lewat `gt sling` maupun scheduler.
 - Bead **siap** bila: deskripsi tidak kosong (setelah baris lampiran mesin seperti `attached_formula:` diabaikan), dan AC berisi minimal satu item checklist (`- [ ]` atau `- [x]`). AC berbentuk teks bebas tanpa checkbox dianggap tidak siap.
-- Mode per rig `readiness: off | warn | enforce`, default `warn`.
+- Mode per rig `readiness: off | warn | enforce`, default `warn`. Rig yang menentukan: rig tujuan bila dispatch ke rig (atau agent di dalamnya), selain itu rig pemilik prefix bead. Bead tingkat town (`hq-`) tanpa rig tujuan memakai default. Bila file settings rig ada tetapi gagal validasi, nilai `readiness` eksplisit di JSON tetap berlaku.
 
 | Mode | Bead tidak siap |
 | --- | --- |
@@ -66,3 +66,4 @@ Bead ditolak/diperingatkan per minggu; rasio request-changes karena salah tafsir
 
 - 12 Okt 2026: dibuat dari `09` Rank 1. Ditambahkan: fail-closed saat baca bead gagal (AC10), `--reason` wajib (AC7), pengecualian tipe (AC9).
 - 12 Okt 2026: hasil verifikasi kode: definisi item AC = checkbox; override dicatat sebagai komentar; validasi variabel formula mengikuti mode readiness (risiko false positive pada formula extends/compose).
+- 13 Okt 2026: implementasi: aturan rig penentu mode; fallback `readiness` dari JSON mentah; validasi formula dijalankan tepat setelah cek readiness (sebelum spawn/cook) dan juga di `InstantiateFormulaOnBead`; formula yang tidak bisa dimuat validator hanya diperingatkan.
