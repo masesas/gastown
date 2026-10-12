@@ -458,7 +458,7 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	// BD_DOLT_AUTO_COMMIT, etc. Layer in polecat-session-specific vars.
 	envVars["GT_POLECAT_PATH"] = workDir
 	envVars["GT_TOWN_ROOT"] = townRoot
-	envVars["GT_RUN"] = runID
+	envVars[EnvRunID] = runID
 	envVars["POLECAT_SLOT"] = fmt.Sprintf("%d", m.polecatSlot(polecat))
 	envVars["GT_PROCESS_NAMES"] = strings.Join(config.ResolveProcessNames(runtimeConfig.ResolvedAgent, runtimeConfig.Command, runtimeConfig.Args...), ",")
 	if polecatGitBranch != "" {
@@ -474,6 +474,10 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	if runtimeConfig.Session != nil && runtimeConfig.Session.ConfigDirEnv != "" && opts.RuntimeConfigDir != "" {
 		envVars[runtimeConfig.Session.ConfigDirEnv] = opts.RuntimeConfigDir
 	}
+
+	// Claim the heartbeat for this run before the session exists, so a previous
+	// session's "exiting" heartbeat is never read as this session's state (#4890).
+	claimSessionHeartbeat(townRoot, sessionID, runID)
 
 	// Create session with command and env vars via -e flags so the initial
 	// shell — and Claude's subprocesses (notably bd) — inherit them from the start.
@@ -600,9 +604,10 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	// Track PID for defense-in-depth orphan cleanup (non-fatal)
 	_ = session.TrackSessionPID(townRoot, sessionID, m.tmux)
 
-	// Touch initial heartbeat so liveness detection works from the start (gt-qjtq).
+	// Refresh the heartbeat now that the runtime is up (gt-qjtq). This process
+	// is not the session, so the generation must be set explicitly from runID.
 	// Subsequent touches happen on every gt command via persistentPreRun.
-	TouchSessionHeartbeat(townRoot, sessionID)
+	claimSessionHeartbeat(townRoot, sessionID, runID)
 
 	// Stream polecat's Claude Code JSONL conversation log to VictoriaLogs (opt-in).
 	if os.Getenv("GT_LOG_AGENT_OUTPUT") == "true" && os.Getenv("GT_OTEL_LOGS_URL") != "" {

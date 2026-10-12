@@ -2913,7 +2913,11 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 	}
 
 	// Read heartbeat to check state and idle duration
-	hb := polecat.ReadSessionHeartbeat(d.config.TownRoot, sessionName)
+	hb, err := polecat.ReadSessionHeartbeatE(d.config.TownRoot, sessionName)
+	if err != nil {
+		d.reportReapStateUnknown(sessionName, "heartbeat", err.Error())
+		return // Unreadable heartbeat — state unknown, never reap on it
+	}
 	if hb == nil {
 		return // No heartbeat file — can't determine state
 	}
@@ -2924,6 +2928,26 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 	}
 
 	state := hb.EffectiveState()
+
+	// A heartbeat written by a previous session of this polecat must not
+	// decide the fate of the current one (#4890): between session creation and
+	// the new session's first heartbeat, the old "exiting" file is still on disk.
+	if hb.Generation != "" {
+		run, err := d.tmux.GetEnvironment(sessionName, polecat.EnvRunID)
+		if err != nil && staleDuration < timeout*3 {
+			d.reportReapStateUnknown(sessionName, "heartbeat_generation", err.Error())
+			return
+		}
+		if err != nil || !polecat.HeartbeatMatchesRun(hb, run) {
+			if staleDuration < timeout*3 {
+				return // New session has not written its heartbeat yet
+			}
+			// The current session never wrote a heartbeat. Ignore the old
+			// generation's idle/exiting claim and use the "working" checks,
+			// which require no assigned work and a dead agent before killing.
+			state = polecat.HeartbeatWorking
+		}
+	}
 
 	// Explicitly idle or exiting — safe to reap
 	if state == polecat.HeartbeatIdle || state == polecat.HeartbeatExiting {
@@ -2985,6 +3009,14 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 		}
 		d.killIdlePolecat(rigName, polecatName, sessionName, staleDuration, timeout, "working-no-hook")
 	}
+}
+
+// reportReapStateUnknown records that the reaper skipped a session because a
+// lifecycle lookup could not decide its state.
+func (d *Daemon) reportReapStateUnknown(sessionName, check, reason string) {
+	d.logger.Printf("Reaper: state unknown for %s (%s: %s); not reaping", sessionName, check, reason)
+	_ = events.LogFeed(events.TypeStateUnknown, "daemon",
+		events.StateUnknownPayload(sessionName, check, reason, "daemon"))
 }
 
 // killIdlePolecat terminates an idle polecat session and cleans up.
