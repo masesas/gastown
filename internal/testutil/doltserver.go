@@ -116,6 +116,9 @@ func startSharedDoltContainer() {
 	os.Setenv("GT_DOLT_PORT", doltCtrPort)    //nolint:tenv // intentional process-wide env
 	os.Setenv("BEADS_DOLT_PORT", doltCtrPort) //nolint:tenv // intentional process-wide env
 	os.Setenv("GT_TEST_EXTERNAL_DOLT", "1")   //nolint:tenv // integration tests reuse this container
+	// beads >= 1.3 refuses to open test databases on a server unless it is
+	// marked as a dedicated test server; this container is one.
+	os.Setenv("BEADS_TEST_SERVER", "1") //nolint:tenv // intentional process-wide env
 }
 
 // StartIsolatedDoltContainer starts a per-test Dolt container and returns the
@@ -148,6 +151,7 @@ func StartIsolatedDoltContainer(t *testing.T) string {
 
 	portStr := port.Port()
 	t.Setenv("GT_DOLT_PORT", portStr)
+	t.Setenv("BEADS_TEST_SERVER", "1")
 	return portStr
 }
 
