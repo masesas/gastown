@@ -135,6 +135,9 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 	if err := enforceReadiness(townRoot, rigName, beadID, info, nil, opts.ForceUnready, opts.UnreadyReason); err != nil {
 		return err
 	}
+	if err := validateFormulaTemplateVars(opts.Formula, townRoot, rigName); err != nil {
+		return err
+	}
 
 	if opts.Formula != "" {
 		if err := verifyFormulaExists(opts.Formula, filepath.Dir(rigBeadsDir), townRoot); err != nil {
