@@ -15,7 +15,7 @@ func TestIsAgentSessionHealthy_DeadPane(t *testing.T) {
 		t.Skip("tmux not installed")
 	}
 
-	tm := tmux.NewTmux()
+	tm := useIsolatedTmuxSocket(t)
 	sessionName := "zzrig-dead-pane-test"
 	_ = tm.KillSession(sessionName)
 	t.Cleanup(func() { _ = tm.KillSession(sessionName) })
@@ -130,7 +130,7 @@ func TestFindRigSessions(t *testing.T) {
 	}
 	setupRigTestRegistry(t)
 
-	tm := tmux.NewTmux()
+	tm := useIsolatedTmuxSocket(t)
 
 	// Create sessions that match our test rig prefix (zztr- for testrig1223)
 	matching := []string{
@@ -193,7 +193,7 @@ func TestFindRigSessions_NoSessions(t *testing.T) {
 	session.SetDefaultRegistry(reg)
 	defer session.SetDefaultRegistry(old)
 
-	tm := tmux.NewTmux()
+	tm := useIsolatedTmuxSocket(t)
 	got, err := findRigSessions(tm, "nonexistentrig999")
 	if err != nil {
 		t.Fatalf("findRigSessions: %v", err)
