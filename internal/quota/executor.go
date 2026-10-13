@@ -20,8 +20,6 @@ type TmuxExecutor interface {
 	ClearHistory(pane string) error
 	RespawnPane(pane, command string) error
 	AcceptStartupDialogs(session string) error
-	AcceptWorkspaceTrustDialog(session string) error
-	AcceptBypassPermissionsWarning(session string) error
 }
 
 // Logger allows the Rotator to emit non-fatal warnings without depending

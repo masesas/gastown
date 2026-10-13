@@ -35,8 +35,6 @@ type tmuxOps interface {
 	WaitForCommand(session string, excludeCommands []string, timeout time.Duration) error
 	SetAutoRespawnHook(session string) error
 	AcceptStartupDialogs(session string) error
-	AcceptWorkspaceTrustDialog(session string) error
-	AcceptBypassPermissionsWarning(session string) error
 	SendKeysRaw(session, keys string) error
 	GetSessionInfo(name string) (*tmux.SessionInfo, error)
 }
@@ -202,7 +200,10 @@ func (m *Manager) Start(agentOverride string) error {
 	}
 
 	// Accept startup dialogs (workspace trust + bypass permissions) if they appear.
-	_ = t.AcceptStartupDialogs(sessionID)
+	if err := t.AcceptStartupDialogs(sessionID); err != nil {
+		_ = t.KillSessionWithProcesses(sessionID)
+		return fmt.Errorf("deacon startup blocked: %w", err)
+	}
 	m.startNudgePoller(sessionID)
 
 	time.Sleep(constants.ShutdownNotifyDelay)

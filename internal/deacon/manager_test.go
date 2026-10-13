@@ -20,6 +20,7 @@ type mockTmux struct {
 	sessionInfo      *tmux.SessionInfo
 	sessionInfoErr   error
 	sendKeysErr      error
+	acceptErr        error
 
 	// Call tracking
 	killCalls       []string
@@ -60,11 +61,9 @@ func (m *mockTmux) WaitForCommand(_ string, _ []string, _ time.Duration) error {
 	return m.waitErr
 }
 
-func (m *mockTmux) SetAutoRespawnHook(_ string) error             { return nil }
-func (m *mockTmux) AcceptStartupDialogs(_ string) error           { return nil }
-func (m *mockTmux) AcceptWorkspaceTrustDialog(_ string) error     { return nil }
-func (m *mockTmux) AcceptBypassPermissionsWarning(_ string) error { return nil }
-func (m *mockTmux) SendKeysRaw(_, _ string) error                 { return m.sendKeysErr }
+func (m *mockTmux) SetAutoRespawnHook(_ string) error   { return nil }
+func (m *mockTmux) AcceptStartupDialogs(_ string) error { return m.acceptErr }
+func (m *mockTmux) SendKeysRaw(_, _ string) error       { return m.sendKeysErr }
 func (m *mockTmux) GetSessionInfo(_ string) (*tmux.SessionInfo, error) {
 	return m.sessionInfo, m.sessionInfoErr
 }
@@ -509,5 +508,32 @@ func TestStatus_GetSessionInfoError(t *testing.T) {
 	}
 	if info != nil {
 		t.Error("Status() should return nil info on error")
+	}
+}
+
+func TestStart_StartupDialogBlockedKillsSession(t *testing.T) {
+	// A startup dialog that cannot be accepted must not leave the deacon
+	// parked on it: kill the session and report the failure (gt-i81z).
+	acceptErr := errors.New("interactive startup dialog still visible")
+	mock := &mockTmux{
+		hasSessionResult: false,
+		acceptErr:        acceptErr,
+	}
+	m := newTestManager(t.TempDir(), mock)
+	var pollerCalls int
+	m.startPoller = func(_, _ string) (int, error) {
+		pollerCalls++
+		return 0, nil
+	}
+
+	err := m.Start("claude")
+	if !errors.Is(err, acceptErr) {
+		t.Fatalf("Start() error = %v, want it to wrap %v", err, acceptErr)
+	}
+	if len(mock.killCalls) != 1 || mock.killCalls[0] != m.SessionName() {
+		t.Errorf("killCalls = %v, want [%s]", mock.killCalls, m.SessionName())
+	}
+	if pollerCalls != 0 {
+		t.Errorf("startPoller calls = %d, want 0 for a blocked session", pollerCalls)
 	}
 }

@@ -259,7 +259,8 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 
 	// Accept startup dialogs (workspace trust + bypass permissions) if they appear.
 	if err := t.AcceptStartupDialogs(sessionID); err != nil {
-		log.Printf("warning: accepting startup dialogs for %s: %v", sessionID, err)
+		_ = t.KillSessionWithProcesses(sessionID)
+		return fmt.Errorf("witness startup blocked: %w", err)
 	}
 
 	// Track PID for defense-in-depth orphan cleanup (non-fatal)

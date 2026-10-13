@@ -886,7 +886,10 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 				// Non-fatal — agent might still start
 				style.PrintWarning("timeout waiting for agent to start: %v", err)
 			}
-			_ = t.AcceptStartupDialogs(sessionID)
+			if err := t.AcceptStartupDialogs(sessionID); err != nil {
+				_ = t.KillSessionWithProcesses(sessionID)
+				return fmt.Errorf("crew %s startup blocked: %w", name, err)
+			}
 		}
 
 		// Start background nudge-queue poller for ALL agents (gt-dgf).

@@ -295,7 +295,10 @@ func (m *Manager) start(foreground bool, agentOverride string, allowForkRig bool
 
 	// Accept startup dialogs (workspace trust + bypass permissions) if they appear.
 	// Must be before WaitForRuntimeReady to avoid race where dialog blocks prompt detection.
-	_ = t.AcceptStartupDialogs(sessionID)
+	if err := t.AcceptStartupDialogs(sessionID); err != nil {
+		_ = t.KillSessionWithProcesses(sessionID)
+		return fmt.Errorf("refinery startup blocked: %w", err)
+	}
 
 	// Wait for Claude to start and show its prompt - fatal if Claude fails to launch
 	// WaitForRuntimeReady waits for the runtime to be ready

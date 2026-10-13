@@ -430,7 +430,10 @@ func (d *Daemon) restartSession(sessionName, identity string) error {
 	if err := d.tmux.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
 		// Non-fatal - Claude might still start
 	}
-	_ = d.tmux.AcceptStartupDialogs(sessionName)
+	if err := d.tmux.AcceptStartupDialogs(sessionName); err != nil {
+		_ = d.tmux.KillSessionWithProcesses(sessionName)
+		return fmt.Errorf("startup blocked: %w", err)
+	}
 	time.Sleep(constants.ShutdownNotifyDelay)
 
 	return nil
