@@ -435,19 +435,34 @@ func validRepoAliasBeadsDir(townRoot, beadsDir string) bool {
 }
 
 func pathWithin(root, path string) bool {
-	if resolvedRoot, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolvedRoot
-	}
-	if resolvedPath, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolvedPath
-	}
-	root = filepath.Clean(root)
-	path = filepath.Clean(path)
+	root = resolveExistingPrefix(root)
+	path = resolveExistingPrefix(path)
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+// resolveExistingPrefix cleans p and resolves symlinks in its longest existing
+// ancestor, keeping the not-yet-existing remainder. Resolving only paths that
+// exist made a missing rig dir under a symlinked town root (e.g. macOS TMPDIR
+// under /var -> /private/var) compare unresolved against a resolved root.
+func resolveExistingPrefix(p string) string {
+	p = filepath.Clean(p)
+	var rest []string
+	for dir := p; ; {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			parts := append([]string{resolved}, rest...)
+			return filepath.Join(parts...)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return p
+		}
+		rest = append([]string{filepath.Base(dir)}, rest...)
+		dir = parent
+	}
 }
 
 // GetRigNameForPrefix returns the rig name that owns a given bead prefix.
