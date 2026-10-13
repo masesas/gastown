@@ -525,8 +525,8 @@ returns allow/deny with reason
   - OpenCode: env `OPENCODE_PERMISSION={"*":"allow"}`
   - Copilot: `--yolo`
 - `internal/tmux/tmux.go` — `AcceptBypassPermissionsWarning()` (line ~1509):
-  polls for "Bypass Permissions mode" dialog, sends Down+Enter;
-  `DismissStartupDialogsBlind()` (line ~1558): blind key sequence fallback
+  polls for "Bypass Permissions mode" dialog, reads the focused option from the
+  pane and moves to "Yes, I accept" before Enter (Claude focuses "No, exit")
 
 **Flow**: GT→Agent (at startup). Always-on, no per-role granularity.
 
