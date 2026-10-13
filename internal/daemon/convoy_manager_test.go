@@ -14,6 +14,7 @@ import (
 	"time"
 
 	beadsdk "github.com/steveyegge/beads"
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
 // setupTestStore opens a real beads database for integration tests.
@@ -30,11 +31,11 @@ func setupTestStore(t *testing.T) (beadsdk.Storage, func()) {
 	ctx := context.Background()
 	store, err := beadsdk.Open(ctx, doltPath)
 	if err != nil {
-		t.Skipf("beads store unavailable: %v", err)
+		testutil.StoreUnavailable(t, "beads store unavailable: %v", err)
 	}
 	if err := store.SetConfig(ctx, "issue_prefix", "test"); err != nil {
 		_ = store.Close()
-		t.Skipf("SetConfig: %v", err)
+		testutil.StoreUnavailable(t, "SetConfig: %v", err)
 	}
 	return store, func() { _ = store.Close() }
 }
