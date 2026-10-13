@@ -59,5 +59,8 @@ Gate keluar per tahap mengikuti `../11` § 1, dan disalin ke spec masing-masing.
 | #5 | Child epic `parent-child` (bd 1.3) + suite integrasi andal (container Dolt, Ryuk, identity mismatch) |
 | #6 | Nuke polecat menolak bila masih memegang pekerjaan / tidak terverifikasi |
 | #7 | Suite test hijau di macOS + crash plugin `stuck-agent-dog` |
+| #8 | Dokumentasi `docs/enh-masesas/` (spec, plan, baseline, spike, aset S1c) |
+| #9 | Test store gagal (bukan skip) bila container Dolt test hidup tapi store tak terjangkau |
+| #10 | Test tmux `internal/cmd` memakai socket terisolasi per test; kegagalan `internal/tmux` di bawah beban berat = kehabisan sumber daya, lulus pada beban normal |
 
 Gate Tahap 1 belum ditutup: AC S1c (epic pilot BE + mobile) membutuhkan pilot town (S0 Langkah 3–8, ditahan; Dolt CLI perlu ≥ 2.0.7).
