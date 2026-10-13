@@ -93,6 +93,7 @@ type SafetyCheckResult struct {
 	HookStale     bool // true if hooked bead is closed
 	ActiveMR      string
 	OpenMR        string
+	AssignedIssue string // open work bead still assigned to the polecat
 	GitState      *GitState
 }
 
@@ -110,9 +111,12 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 	bd := beads.New(target.r.Path)
 	agentBeadID := polecatBeadIDForRig(target.r, target.rigName, target.polecatName)
 	agentIssue, fields, err := bd.GetAgentBead(agentBeadID)
+	if blocker := agentBeadLookupBlocker(err); blocker != "" {
+		result.Reasons = append(result.Reasons, blocker)
+	}
 
 	if err != nil || fields == nil {
-		// No agent bead - fall back to git check
+		// No agent bead (or unreadable, blocked above) - fall back to git check
 		if infoErr == nil && polecatInfo != nil {
 			gitState, gitErr := getGitState(polecatInfo.ClonePath)
 			result.GitState = gitState
@@ -203,6 +207,16 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 				result.Reasons = append(result.Reasons, blocker)
 			}
 		}
+	}
+
+	// Check 4: Open work still assigned to this polecat (hooked/in_progress/open).
+	assignee := fmt.Sprintf("%s/polecats/%s", target.rigName, target.polecatName)
+	assignedIssue, assignedErr := bd.GetAssignedIssue(assignee)
+	if blocker := assignedWorkBlocker(assignedIssue, assignedErr); blocker != "" {
+		if assignedIssue != nil {
+			result.AssignedIssue = assignedIssue.ID
+		}
+		result.Reasons = append(result.Reasons, blocker)
 	}
 
 	// Check 2: Open MR beads for this branch
@@ -341,5 +355,41 @@ func displayDryRunSafetyCheck(target polecatTarget) bool {
 		fmt.Printf("    - Open MR: %s\n", style.Dim.Render("unknown (no branch info)"))
 	}
 
+	// Check 4: Assigned work (from the safety result, which failed closed on errors)
+	assignedBlocker := ""
+	for _, reason := range result.Reasons {
+		if strings.HasPrefix(reason, "has assigned work") || strings.HasPrefix(reason, "assigned work unknown") {
+			assignedBlocker = reason
+		}
+	}
+	if assignedBlocker != "" {
+		fmt.Printf("    - Assigned work: %s (%s)\n", style.Error.Render("blocked"), assignedBlocker)
+	} else {
+		fmt.Printf("    - Assigned work: %s\n", style.Success.Render("none"))
+	}
+
 	return result.Blocked
+}
+
+// assignedWorkBlocker returns a nuke blocker when the polecat still owns open
+// work, or when that cannot be determined (fail closed). The agent bead's
+// hook_bead is no longer maintained, so the assigned work bead is the
+// authoritative signal.
+func assignedWorkBlocker(issue *beads.Issue, lookupErr error) string {
+	if lookupErr != nil {
+		return fmt.Sprintf("assigned work unknown: %v", lookupErr)
+	}
+	if issue != nil {
+		return fmt.Sprintf("has assigned work (%s, %s)", issue.ID, issue.Status)
+	}
+	return ""
+}
+
+// agentBeadLookupBlocker returns a nuke blocker when reading the agent bead
+// failed. A missing agent bead is not an error (GetAgentBead returns nil).
+func agentBeadLookupBlocker(err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("agent bead lookup failed: %v", err)
 }
