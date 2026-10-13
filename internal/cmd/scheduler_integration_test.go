@@ -105,7 +105,10 @@ func cleanupSchedulerBeadsDatabases(t *testing.T, prefixes ...string) {
 	t.Cleanup(func() {
 		port := schedulerDoltPort()
 		if port == "" {
-			port = "3307"
+			// Never fall back to the default production port (3307): dropping
+			// databases there could destroy real data.
+			t.Logf("cleanup: no Dolt test port set; skipping database drop")
+			return
 		}
 		dsn := fmt.Sprintf("root@tcp(127.0.0.1:%s)/", port)
 		db, err := sql.Open("mysql", dsn)
@@ -1087,12 +1090,12 @@ func TestSchedulerMultiRigEpicAutoResolve(t *testing.T) {
 
 	// Link children to epic via depends_on (epic → child).
 	// child1 is local to rig1 — resolves directly.
-	addBeadDependencyOfType(t, epicID, child1, "depends_on", rig1Path)
+	addBeadDependencyOfType(t, epicID, child1, "parent-child", rig1Path)
 	// child2 is in rig2 — use external ref format so bd doesn't try to resolve
 	// the target in the local store. bd v1.0.0+ validates targets exist locally.
 	child2Prefix := strings.TrimSuffix(beads.ExtractPrefix(child2), "-")
 	child2ExtRef := fmt.Sprintf("external:%s:%s", child2Prefix, child2)
-	addBeadDependencyOfType(t, epicID, child2ExtRef, "depends_on", rig1Path)
+	addBeadDependencyOfType(t, epicID, child2ExtRef, "parent-child", rig1Path)
 
 	// Dry-run: verify auto-rig-resolution routes each child correctly.
 	// Uses --dry-run to avoid needing formula infrastructure (mol-polecat-work).
@@ -1171,7 +1174,7 @@ func TestSchedulerEpicFlagRejection(t *testing.T) {
 	epicID := createTestBeadOfType(t, rig1Path, "Flag rejection epic", "epic")
 	// Create a child so the epic has something to schedule.
 	child := createTestBead(t, rig1Path, "Epic child")
-	addBeadDependencyOfType(t, epicID, child, "depends_on", rig1Path)
+	addBeadDependencyOfType(t, epicID, child, "parent-child", rig1Path)
 
 	// Attempt to schedule epic with task-only flag --account.
 	out, err := runGTCmdMayFail(t, gtBinary, hqPath, env, "sling", epicID, "--account", "foo")
@@ -1195,10 +1198,10 @@ func TestSchedulerEpicDetection(t *testing.T) {
 	epicID := createTestBeadOfType(t, rig1Path, "Detection epic", "epic")
 	child1 := createTestBead(t, rig1Path, "Rig1 child")
 	child2 := createTestBead(t, rig2Path, "Rig2 child")
-	addBeadDependencyOfType(t, epicID, child1, "depends_on", rig1Path)
+	addBeadDependencyOfType(t, epicID, child1, "parent-child", rig1Path)
 	child2Prefix := strings.TrimSuffix(beads.ExtractPrefix(child2), "-")
 	child2ExtRef := fmt.Sprintf("external:%s:%s", child2Prefix, child2)
-	addBeadDependencyOfType(t, epicID, child2ExtRef, "depends_on", rig1Path)
+	addBeadDependencyOfType(t, epicID, child2ExtRef, "parent-child", rig1Path)
 
 	// gt sling <epic-id> deferred dispatch (max_polecats > 0) --dry-run should auto-detect epic and list children.
 	out := runGTCmdOutput(t, gtBinary, hqPath, env, "sling", epicID, "--dry-run")
@@ -1458,10 +1461,10 @@ func TestSchedulerDirectEpicDispatch(t *testing.T) {
 	epicID := createTestBeadOfType(t, rig1Path, "Direct dispatch epic", "epic")
 	child1 := createTestBead(t, rig1Path, "Rig1 direct child")
 	child2 := createTestBead(t, rig2Path, "Rig2 direct child")
-	addBeadDependencyOfType(t, epicID, child1, "depends_on", rig1Path)
+	addBeadDependencyOfType(t, epicID, child1, "parent-child", rig1Path)
 	child2Prefix := strings.TrimSuffix(beads.ExtractPrefix(child2), "-")
 	child2ExtRef := fmt.Sprintf("external:%s:%s", child2Prefix, child2)
-	addBeadDependencyOfType(t, epicID, child2ExtRef, "depends_on", rig1Path)
+	addBeadDependencyOfType(t, epicID, child2ExtRef, "parent-child", rig1Path)
 
 	// gt sling <epic-id> --dry-run in direct mode should show direct dispatch, not scheduling
 	out := runGTCmdOutput(t, gtBinary, hqPath, env, "sling", epicID, "--dry-run")
