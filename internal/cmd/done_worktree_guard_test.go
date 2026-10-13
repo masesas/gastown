@@ -316,6 +316,7 @@ func TestPersistentPreRunDoneRejectsBeforeRegistryFallback(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
 	done := &cobra.Command{Use: "done"}
+	markBuiltProperlyForTest(t)
 	err = persistentPreRun(done, nil)
 	if err == nil || !strings.Contains(err.Error(), "assigned polecat worktree") {
 		t.Fatalf("persistentPreRun error = %v, want assigned worktree rejection", err)
