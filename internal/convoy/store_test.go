@@ -12,7 +12,8 @@ import (
 )
 
 // setupTestStore opens a real beads database in a temp dir for integration tests.
-// Skips the test if the store cannot be opened (e.g. no CGO, no Dolt).
+// Skips when no Dolt test container is available (Docker or CGO/Dolt missing);
+// fails if the container is running but the store cannot be opened.
 // Caller must run the returned cleanup when done.
 func setupTestStore(t *testing.T) (beadsdk.Storage, func()) {
 	t.Helper()
