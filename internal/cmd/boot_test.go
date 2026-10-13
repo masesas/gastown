@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/steveyegge/gastown/internal/tmux"
 )
 
 func TestBootSpawnAgentFlag(t *testing.T) {
@@ -78,7 +76,7 @@ func TestExecuteWarrants_MarksPendingAsExecuted(t *testing.T) {
 	}
 	writeTestWarrant(t, warrantDir, pending)
 
-	tm := tmux.NewTmux()
+	tm := useIsolatedTmuxSocket(t)
 	executeWarrants(warrantDir, tm)
 
 	result := readTestWarrant(t, warrantDir, pending.Target)
@@ -109,7 +107,7 @@ func TestExecuteWarrants_SkipsAlreadyExecuted(t *testing.T) {
 	}
 	writeTestWarrant(t, warrantDir, done)
 
-	tm := tmux.NewTmux()
+	tm := useIsolatedTmuxSocket(t)
 	executeWarrants(warrantDir, tm)
 
 	result := readTestWarrant(t, warrantDir, done.Target)
@@ -125,7 +123,7 @@ func TestExecuteWarrants_SkipsAlreadyExecuted(t *testing.T) {
 // TestExecuteWarrants_MissingDir verifies that executeWarrants handles a
 // missing warrants directory gracefully (no panic, no error).
 func TestExecuteWarrants_MissingDir(t *testing.T) {
-	tm := tmux.NewTmux()
+	tm := useIsolatedTmuxSocket(t)
 	missingDir := filepath.Join(t.TempDir(), "does-not-exist")
 	executeWarrants(missingDir, tm) // should not panic
 }
@@ -134,7 +132,7 @@ func TestExecuteWarrants_MissingDir(t *testing.T) {
 // empty warrants directory gracefully.
 func TestExecuteWarrants_EmptyDir(t *testing.T) {
 	warrantDir := t.TempDir()
-	tm := tmux.NewTmux()
+	tm := useIsolatedTmuxSocket(t)
 	executeWarrants(warrantDir, tm) // should not panic
 }
 
@@ -145,6 +143,6 @@ func TestExecuteWarrants_IgnoresNonWarrantFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(warrantDir, "readme.txt"), []byte("ignore me"), 0644); err != nil {
 		t.Fatalf("writing test file: %v", err)
 	}
-	tm := tmux.NewTmux()
+	tm := useIsolatedTmuxSocket(t)
 	executeWarrants(warrantDir, tm) // should not panic or error
 }
