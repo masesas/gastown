@@ -4,10 +4,10 @@ Spec: [`../spec/`](../spec/README.md). Setiap plan merujuk ID AC spec. Plan hany
 
 | Plan | Spec | Bentuk kerja | Status |
 | --- | --- | --- | --- |
-| [P-S0](P-S0-prasyarat-pilot.md) | S0 | Operasional + 1 PR kode (upgrade Beads) | Siap dieksekusi |
-| [P-S1a](P-S1a-kontrak-task-readiness.md) | S1a | 4 PR Go | Siap setelah Tahap 0 |
-| [P-S1b](P-S1b-state-fail-closed.md) | S1b | 4 PR Go (PR-0 event + 3 PR) | Siap setelah Tahap 0 |
-| [P-S1c](P-S1c-koordinasi-prosedural.md) | S1c | Formula, directives, pilot | Siap setelah Tahap 0 |
+| [P-S0](P-S0-prasyarat-pilot.md) | S0 | Operasional + 1 PR kode (upgrade Beads) | Langkah 1–2 selesai (baseline, PR #1); Langkah 3–8 ditahan |
+| [P-S1a](P-S1a-kontrak-task-readiness.md) | S1a | 4 PR Go | Selesai (PR #4) |
+| [P-S1b](P-S1b-state-fail-closed.md) | S1b | 4 PR Go (PR-0 event + 3 PR) | Selesai (PR #2, #6) |
+| [P-S1c](P-S1c-koordinasi-prosedural.md) | S1c | Formula, directives, pilot | Aset selesai; Langkah 2–9 menunggu pilot town |
 | P-S2a, P-S2b | S2a, S2b | — | Ditulis setelah gate Tahap 1 dan spike SP1 |
 
 ## Urutan eksekusi
@@ -24,5 +24,5 @@ Spec: [`../spec/`](../spec/README.md). Setiap plan merujuk ID AC spec. Plan hany
 - Branch per PR dari `main` fork: `<type>/<spec>-<ringkas>` (mis. `fix/s1b-heartbeat-generation`).
 - TDD: test RED di commit pertama PR, implementasi di commit berikutnya.
 - Setiap PR: `make build`, test terarah, `go test ./...` dibanding baseline, review `go-reviewer` + `code-reviewer`, approval Anda.
-- Pelacakan kerja memakai bead di `.beads` fork (satu bead per PR, dependensi mengikuti urutan di atas). Bead dibuat setelah Anda menyetujui plan ini.
+- Pelacakan kerja memakai bead lokal (epic `gt-pd1c`, label `enh-masesas`) di database `.beads` fork yang **tidak** di-sync/push: `sync.remote` repo mengarah ke upstream.
 - Perubahan perilaku yang ditemukan saat implementasi → perbarui spec dulu (bagian Riwayat), baru kode.
