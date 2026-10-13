@@ -510,8 +510,10 @@ func TestHookSlot_StatusTransitions(t *testing.T) {
 		})
 	}
 
-	// Finally close the bead
-	if err := b.Close(issue.ID); err != nil {
+	// Finally close the bead the way the refinery closes a polecat's work bead
+	// (--force): bd >= 1.3 refuses a plain close by an actor other than the
+	// assignee ("reclaim or use --force").
+	if err := b.ForceCloseWithReason("hook slot test complete", issue.ID); err != nil {
 		t.Errorf("close hooked bead: %v", err)
 	}
 
