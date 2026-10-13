@@ -532,13 +532,13 @@ func TestGasTownLocalExcludePatterns_IncludesBeads(t *testing.T) {
 	localPatterns := gasTownLocalExcludePatterns()
 	found := false
 	for _, p := range localPatterns {
-		if p == ".beads/" {
+		if p == "/.beads/" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("gasTownLocalExcludePatterns() must include .beads/ (gas-7vg defense-in-depth)")
+		t.Error("gasTownLocalExcludePatterns() must include /.beads/ (gas-7vg defense-in-depth)")
 	}
 
 	// Regression guard: .gitignore patterns must NOT include .beads/
