@@ -1,6 +1,10 @@
 package tmux
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,34 +35,6 @@ func TestAcceptWorkspaceTrustDialog_NoDialog(t *testing.T) {
 	if elapsed > 6*time.Second {
 		t.Errorf("took %v, expected early exit (< 6s)", elapsed)
 	}
-}
-
-// TestAcceptWorkspaceTrustDialog_DetectsDialog verifies that when trust dialog
-// text appears in the pane, it is detected and accepted (Enter key sent).
-func TestAcceptWorkspaceTrustDialog_DetectsDialog(t *testing.T) {
-	tm := newTestTmux(t)
-	sessionName := "gt-test-trust-dlg-" + t.Name()
-
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer func() { _ = tm.KillSession(sessionName) }()
-
-	// Simulate the trust dialog by echoing its text into the pane
-	if err := tm.SendKeys(sessionName, "echo 'Quick safety check - do you trust this folder?'"); err != nil {
-		t.Fatalf("SendKeys: %v", err)
-	}
-	// Give the echo a moment to execute
-	time.Sleep(300 * time.Millisecond)
-
-	err := tm.AcceptWorkspaceTrustDialog(sessionName)
-	if err != nil {
-		t.Fatalf("AcceptWorkspaceTrustDialog: %v", err)
-	}
-
-	// Verify that Enter was sent (we can't easily verify the exact keypress,
-	// but the function should return without error after detecting the dialog)
 }
 
 // TestAcceptWorkspaceTrustDialog_DetectsCodexDialog verifies that Codex's
@@ -105,30 +81,6 @@ func TestAcceptBypassPermissionsWarning_NoDialog(t *testing.T) {
 
 	if elapsed > 6*time.Second {
 		t.Errorf("took %v, expected early exit (< 6s)", elapsed)
-	}
-}
-
-// TestAcceptBypassPermissionsWarning_DetectsDialog verifies that when bypass
-// permissions dialog text appears in the pane, it is detected and accepted.
-func TestAcceptBypassPermissionsWarning_DetectsDialog(t *testing.T) {
-	tm := newTestTmux(t)
-	sessionName := "gt-test-bypass-dlg-" + t.Name()
-
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer func() { _ = tm.KillSession(sessionName) }()
-
-	// Simulate the bypass permissions dialog
-	if err := tm.SendKeys(sessionName, "echo 'Bypass Permissions mode is enabled'"); err != nil {
-		t.Fatalf("SendKeys: %v", err)
-	}
-	time.Sleep(300 * time.Millisecond)
-
-	err := tm.AcceptBypassPermissionsWarning(sessionName)
-	if err != nil {
-		t.Fatalf("AcceptBypassPermissionsWarning: %v", err)
 	}
 }
 
@@ -306,41 +258,249 @@ Bypass Permissions mode
 	}
 }
 
-// TestDismissStartupDialogsBlind_SendsKeys verifies that the blind dismiss
-// sends keys without error on a valid session (no screen-scraping).
-func TestDismissStartupDialogsBlind_SendsKeys(t *testing.T) {
-	tm := newTestTmux(t)
-	sessionName := "gt-test-blind-dismiss-" + t.Name()
+// fakeSelectDialog is a bash stand-in for Claude Code's select dialog, matching
+// what v2.1.296 does in a real pane: the cursor starts on the given option,
+// Down/Up wrap around, digit keys are ignored (hideIndexes), and the first
+// dropKeys keystrokes are swallowed (refuseInput right after the dialog opens).
+// Enter writes the highlighted label to the result file and clears the dialog.
+const fakeSelectDialog = `result=$1 dropKeys=$2 cur=$3 mark=$4 title=$5; shift 5; opts=("$@")
+render() {
+  printf '\033[2J\033[H %s\n' "$title"
+  for i in "${!opts[@]}"; do
+    if [ "$i" -eq "$cur" ]; then printf ' %s %s\n' "$mark" "${opts[$i]}"; else printf '   %s\n' "${opts[$i]}"; fi
+  done
+  printf ' Enter to confirm · Esc to cancel\n'
+}
+render
+seen=0
+while IFS= read -rsn1 k; do
+  rest=''
+  if [ "$k" = $'\e' ]; then IFS= read -rsn2 -t 1 rest; fi
+  seen=$((seen + 1))
+  [ "$seen" -le "$dropKeys" ] && continue
+  case "$k$rest" in
+    $'\e[B'|$'\eOB') cur=$(( (cur + 1) % ${#opts[@]} )); render ;;
+    $'\e[A'|$'\eOA') cur=$(( (cur + ${#opts[@]} - 1) % ${#opts[@]} )); render ;;
+    '') printf '%s' "${opts[$cur]}" > "$result"; printf '\033[2J\033[H dialog closed\n'; exec sleep 600 ;;
+  esac
+done
+`
 
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
+type fakeDialog struct {
+	title    string
+	options  []string
+	cursor   int
+	mark     string // cursor glyph: Claude "❯", Codex "›"
+	dropKeys int
+}
+
+// startFakeDialog runs fakeSelectDialog in a new session on the isolated test
+// socket and returns the session name plus a func reading the confirmed label
+// ("" when nothing was confirmed).
+func startFakeDialog(t *testing.T, tm *Tmux, d fakeDialog) (string, func() string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "dialog.sh")
+	result := filepath.Join(dir, "result")
+	if err := os.WriteFile(script, []byte(fakeSelectDialog), 0o600); err != nil {
+		t.Fatalf("write fake dialog: %v", err)
 	}
-	defer func() { _ = tm.KillSession(sessionName) }()
-
-	// Should complete quickly — no polling, no CapturePane
-	start := time.Now()
-	err := tm.DismissStartupDialogsBlind(sessionName)
-	elapsed := time.Since(start)
-
-	if err != nil {
-		t.Fatalf("DismissStartupDialogsBlind: %v", err)
+	if d.mark == "" {
+		d.mark = "❯"
+	}
+	args := []string{"bash", script, result, strconv.Itoa(d.dropKeys), strconv.Itoa(d.cursor), d.mark, d.title}
+	args = append(args, d.options...)
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
 	}
 
-	// Should take ~700ms (500ms + 200ms sleeps) — not the 8s+ dialog poll timeout
-	if elapsed > 3*time.Second {
-		t.Errorf("took %v, expected ~700ms (no polling)", elapsed)
+	name := "gt-test-dlg-" + strings.ReplaceAll(t.Name(), "/", "-")
+	_ = tm.KillSession(name)
+	if err := tm.NewSessionWithCommand(name, dir, strings.Join(quoted, " ")); err != nil {
+		t.Fatalf("NewSessionWithCommand: %v", err)
+	}
+	t.Cleanup(func() { _ = tm.KillSession(name) })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		content, _ := tm.CapturePane(name, 30)
+		if strings.Contains(content, "Enter to confirm") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fake dialog never rendered; pane:\n%s", content)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return name, func() string {
+		b, err := os.ReadFile(result)
+		if err != nil {
+			return ""
+		}
+		return string(b)
 	}
 }
 
-// TestDismissStartupDialogsBlind_InvalidSession verifies error handling
-// when the session doesn't exist.
-func TestDismissStartupDialogsBlind_InvalidSession(t *testing.T) {
-	tm := newTestTmux(t)
+const fakeTrustTitle = "Quick safety check: Is this a project you created or one you trust?"
 
-	err := tm.DismissStartupDialogsBlind("gt-nonexistent-session-blind-xyz")
-	// Should return an error since the session doesn't exist
-	if err == nil {
-		t.Error("expected error for nonexistent session, got nil")
+// TestAcceptWorkspaceTrustDialog_ClaudeFocusesNoExit is the gt-swqb regression:
+// Claude 2.1.296 focuses "No, exit", so a bare Enter quit the agent.
+func TestAcceptWorkspaceTrustDialog_ClaudeFocusesNoExit(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:   fakeTrustTitle,
+		options: []string{"No, exit", "Yes, I trust this folder"},
+	})
+
+	if err := tm.AcceptWorkspaceTrustDialog(session); err != nil {
+		t.Fatalf("AcceptWorkspaceTrustDialog: %v", err)
+	}
+	if got := selected(); got != "Yes, I trust this folder" {
+		t.Fatalf("confirmed %q, want %q", got, "Yes, I trust this folder")
+	}
+}
+
+// TestAcceptWorkspaceTrustDialog_ClaudeTrustAlreadyFocused covers older Claude
+// layouts where the trust option is first and focused: Down would wrap past it.
+func TestAcceptWorkspaceTrustDialog_ClaudeTrustAlreadyFocused(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:   fakeTrustTitle,
+		options: []string{"1. Yes, I trust this folder", "2. No, exit"},
+	})
+
+	if err := tm.AcceptWorkspaceTrustDialog(session); err != nil {
+		t.Fatalf("AcceptWorkspaceTrustDialog: %v", err)
+	}
+	if got := selected(); got != "1. Yes, I trust this folder" {
+		t.Fatalf("confirmed %q, want the trust option", got)
+	}
+}
+
+// TestAcceptWorkspaceTrustDialog_ClaudeDropsEarlyKeys verifies the cursor is
+// re-read after every key: Claude ignores input right after the dialog opens.
+func TestAcceptWorkspaceTrustDialog_ClaudeDropsEarlyKeys(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:    fakeTrustTitle,
+		options:  []string{"No, exit", "Yes, I trust this folder"},
+		dropKeys: 2,
+	})
+
+	if err := tm.AcceptWorkspaceTrustDialog(session); err != nil {
+		t.Fatalf("AcceptWorkspaceTrustDialog: %v", err)
+	}
+	if got := selected(); got != "Yes, I trust this folder" {
+		t.Fatalf("confirmed %q, want %q", got, "Yes, I trust this folder")
+	}
+}
+
+// TestAcceptWorkspaceTrustDialog_FailsClosedWhenStuck verifies an error (not a
+// silent nil) when the dialog never reaches the trust option.
+func TestAcceptWorkspaceTrustDialog_FailsClosedWhenStuck(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:    fakeTrustTitle,
+		options:  []string{"No, exit", "Yes, I trust this folder"},
+		dropKeys: 1000,
+	})
+
+	if err := tm.AcceptWorkspaceTrustDialog(session); err == nil {
+		t.Fatal("expected error while trust dialog stays on screen, got nil")
+	}
+	if got := selected(); got != "" {
+		t.Fatalf("confirmed %q, want nothing confirmed", got)
+	}
+}
+
+// TestAcceptWorkspaceTrustDialog_UnknownClaudeOptionsFailClosed verifies no key
+// is guessed when the trust option label is not on screen.
+func TestAcceptWorkspaceTrustDialog_UnknownClaudeOptionsFailClosed(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:   fakeTrustTitle,
+		options: []string{"No, exit", "Proceed anyway"},
+	})
+
+	if err := tm.AcceptWorkspaceTrustDialog(session); err == nil {
+		t.Fatal("expected error for unrecognized trust options, got nil")
+	}
+	if got := selected(); got != "" {
+		t.Fatalf("confirmed %q, want nothing confirmed", got)
+	}
+}
+
+// TestAcceptWorkspaceTrustDialog_CodexPreselected keeps Codex working: its
+// "Yes, continue" option is focused by default, so Enter alone accepts it.
+func TestAcceptWorkspaceTrustDialog_CodexPreselected(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:   "Do you trust the contents of this directory?",
+		options: []string{"1. Yes, continue", "2. No, quit"},
+		mark:    "›",
+	})
+
+	if err := tm.AcceptWorkspaceTrustDialog(session); err != nil {
+		t.Fatalf("AcceptWorkspaceTrustDialog: %v", err)
+	}
+	if got := selected(); got != "1. Yes, continue" {
+		t.Fatalf("confirmed %q, want %q", got, "1. Yes, continue")
+	}
+}
+
+const fakeBypassTitle = "WARNING: Claude Code running in Bypass Permissions mode"
+
+// TestAcceptBypassPermissionsWarning_ClaudeFocusesNoExit covers the real
+// layout: same select component as the trust dialog, "No, exit" focused.
+func TestAcceptBypassPermissionsWarning_ClaudeFocusesNoExit(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:   fakeBypassTitle,
+		options: []string{"No, exit", "Yes, I accept"},
+	})
+
+	if err := tm.AcceptBypassPermissionsWarning(session); err != nil {
+		t.Fatalf("AcceptBypassPermissionsWarning: %v", err)
+	}
+	if got := selected(); got != "Yes, I accept" {
+		t.Fatalf("confirmed %q, want %q", got, "Yes, I accept")
+	}
+}
+
+// TestAcceptBypassPermissionsWarning_AcceptAlreadyFocused guards the old blind
+// Down+Enter, which wrapped onto "No, exit" when "Yes, I accept" was focused.
+func TestAcceptBypassPermissionsWarning_AcceptAlreadyFocused(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:   fakeBypassTitle,
+		options: []string{"No, exit", "Yes, I accept"},
+		cursor:  1,
+	})
+
+	if err := tm.AcceptBypassPermissionsWarning(session); err != nil {
+		t.Fatalf("AcceptBypassPermissionsWarning: %v", err)
+	}
+	if got := selected(); got != "Yes, I accept" {
+		t.Fatalf("confirmed %q, want %q", got, "Yes, I accept")
+	}
+}
+
+// TestAcceptBypassPermissionsWarning_RetriesDroppedEnter covers a dropped
+// Enter while the wanted option is already focused (refuseInput window).
+func TestAcceptBypassPermissionsWarning_RetriesDroppedEnter(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:    fakeBypassTitle,
+		options:  []string{"No, exit", "Yes, I accept"},
+		cursor:   1,
+		dropKeys: 1,
+	})
+
+	if err := tm.AcceptBypassPermissionsWarning(session); err != nil {
+		t.Fatalf("AcceptBypassPermissionsWarning: %v", err)
+	}
+	if got := selected(); got != "Yes, I accept" {
+		t.Fatalf("confirmed %q, want %q", got, "Yes, I accept")
 	}
 }
