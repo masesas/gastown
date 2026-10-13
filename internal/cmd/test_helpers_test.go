@@ -61,3 +61,13 @@ func buildGT(t *testing.T) string {
 	cachedGTBinary = tmpBinary
 	return tmpBinary
 }
+
+// markBuiltProperlyForTest stops persistentPreRun from calling os.Exit on
+// macOS when the test binary was built without `make`'s ldflags; an exit there
+// silently ended the whole package run.
+func markBuiltProperlyForTest(t *testing.T) {
+	t.Helper()
+	old := BuiltProperly
+	BuiltProperly = "1"
+	t.Cleanup(func() { BuiltProperly = old })
+}

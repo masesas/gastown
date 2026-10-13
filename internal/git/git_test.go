@@ -201,8 +201,13 @@ func TestNestedWorkDirResolvingToTownRootGitIsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("raw git top-level: %v", err)
 	}
-	if got := strings.TrimSpace(string(out)); got != root {
-		t.Fatalf("raw git top-level = %q, want %q", got, root)
+	// git reports the symlink-resolved path (macOS /tmp and /var are symlinks).
+	wantRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != wantRoot {
+		t.Fatalf("raw git top-level = %q, want %q", got, wantRoot)
 	}
 
 	before := snapshotTownRootSafety(t, root)

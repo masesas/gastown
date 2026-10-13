@@ -9,7 +9,21 @@ import (
 	"time"
 )
 
+// Timeouts for prime external tool tests. Shell-script stubs can take well
+// over 100ms to start on a loaded macOS machine, so functional tests use a
+// generous timeout; the "bounds slow" tests use a short one against stubs that
+// run much longer than it.
+const (
+	primeToolTestTimeout     = 5 * time.Second
+	primeToolTestSlowTimeout = time.Second
+)
+
 func setupPrimeExternalToolTest(t *testing.T, bdScript, gtScript string) string {
+	t.Helper()
+	return setupPrimeExternalToolTestWithTimeout(t, bdScript, gtScript, primeToolTestTimeout)
+}
+
+func setupPrimeExternalToolTestWithTimeout(t *testing.T, bdScript, gtScript string, timeout time.Duration) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script subprocess test")
@@ -19,7 +33,7 @@ func setupPrimeExternalToolTest(t *testing.T, bdScript, gtScript string) string 
 
 	oldTimeout := primeExternalToolTimeout
 	oldWaitDelay := primeExternalToolWaitDelay
-	primeExternalToolTimeout = 100 * time.Millisecond
+	primeExternalToolTimeout = timeout
 	primeExternalToolWaitDelay = 10 * time.Millisecond
 	t.Cleanup(func() {
 		primeExternalToolTimeout = oldTimeout
@@ -85,7 +99,8 @@ esac
 
 	start := time.Now()
 	output := captureStdout(t, func() { runPrimeExternalTools(RoleContext{Role: RolePolecat}, workDir) })
-	assertElapsedUnder(t, time.Since(start), time.Second)
+	// Generous: guards against hangs, not against slow stub startup under load.
+	assertElapsedUnder(t, time.Since(start), 2*primeToolTestTimeout)
 	assertPrimeToolCalled(t, "bd:kv list --json")
 	assertPrimeToolCalled(t, "gt:mail check --inject")
 
@@ -101,26 +116,27 @@ func TestRunPrimeExternalTools_BoundsSlowMailCheck(t *testing.T) {
 	markerDir := t.TempDir()
 	startedPath := filepath.Join(markerDir, "child-started")
 	survivedPath := filepath.Join(markerDir, "child-survived")
-	workDir := setupPrimeExternalToolTest(t, `
+	workDir := setupPrimeExternalToolTestWithTimeout(t, `
 case "$*" in
   "kv list --json") printf '%s\n' '{"memory.feedback.test":"remembered"}'; exit 0 ;;
 esac
 `, `
 case "$*" in
   "mail check --inject")
-    (: > "$PRIME_CHILD_STARTED"; sleep 0.5; : > "$PRIME_CHILD_SURVIVED") &
+    (: > "$PRIME_CHILD_STARTED"; sleep 3; : > "$PRIME_CHILD_SURVIVED") &
     while [ ! -f "$PRIME_CHILD_STARTED" ]; do sleep 0.01; done
     wait
     exit 0
     ;;
 esac
-`)
+`, primeToolTestSlowTimeout)
 	t.Setenv("PRIME_CHILD_STARTED", startedPath)
 	t.Setenv("PRIME_CHILD_SURVIVED", survivedPath)
 
 	start := time.Now()
 	output := captureStdout(t, func() { runPrimeExternalTools(RoleContext{Role: RolePolecat}, workDir) })
-	assertElapsedUnder(t, time.Since(start), time.Second)
+	// Two calls, each bounded by primeToolTestSlowTimeout, well under the 3s child.
+	assertElapsedUnder(t, time.Since(start), 2500*time.Millisecond)
 	assertPrimeToolCalled(t, "bd:kv list --json")
 	assertPrimeToolCalled(t, "gt:mail check --inject")
 
@@ -131,7 +147,7 @@ esac
 		t.Fatalf("child did not start before timeout: %v", err)
 	}
 
-	time.Sleep(700 * time.Millisecond)
+	time.Sleep(3500 * time.Millisecond)
 	if _, err := os.Stat(survivedPath); err == nil {
 		t.Fatalf("child process survived command timeout and wrote %s", survivedPath)
 	} else if !os.IsNotExist(err) {
@@ -169,18 +185,18 @@ esac
 }
 
 func TestCheckPendingEscalations_BoundsSlowBdList(t *testing.T) {
-	workDir := setupPrimeExternalToolTest(t, `
+	workDir := setupPrimeExternalToolTestWithTimeout(t, `
 case "$*" in
-	  "list --status=open --tag=escalation --json --flat") sleep 2; exit 0 ;;
+	  "list --status=open --tag=escalation --json --flat") sleep 5; exit 0 ;;
 esac
 `, `
-`)
+`, primeToolTestSlowTimeout)
 
 	start := time.Now()
 	output := captureStdout(t, func() {
 		checkPendingEscalations(RoleContext{Role: RoleMayor, WorkDir: workDir})
 	})
-	assertElapsedUnder(t, time.Since(start), time.Second)
+	assertElapsedUnder(t, time.Since(start), 2500*time.Millisecond)
 	assertPrimeToolCalled(t, "bd:list --status=open --tag=escalation --json --flat")
 
 	if strings.Contains(output, "PENDING ESCALATIONS") {

@@ -187,6 +187,7 @@ func TestPersistentPreRunLoadsAgentRegistry(t *testing.T) {
 
 	// Run persistentPreRun (the function under test).
 	cmd := &cobra.Command{Use: "version"}
+	markBuiltProperlyForTest(t)
 	if err := persistentPreRun(cmd, nil); err != nil {
 		t.Fatalf("persistentPreRun: %v", err)
 	}
@@ -238,6 +239,7 @@ func TestPersistentPreRunMalformedAgentRegistry(t *testing.T) {
 
 	// persistentPreRun should succeed despite malformed agents.json.
 	cmd := &cobra.Command{Use: "version"}
+	markBuiltProperlyForTest(t)
 	if err := persistentPreRun(cmd, nil); err != nil {
 		t.Fatalf("persistentPreRun should not fail on malformed agents.json: %v", err)
 	}

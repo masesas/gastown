@@ -182,7 +182,7 @@ clean:
 # BEADS_DOLT_AUTO_START=0: tests use temp .beads dirs or the Dolt test
 # container; auto-started servers leak on macOS (no parent-death signal).
 test: test-makefile
-	BEADS_DOLT_AUTO_START=$${BEADS_DOLT_AUTO_START:-0} go test ./...
+	BEADS_DOLT_AUTO_START=$${BEADS_DOLT_AUTO_START:-0} go test -timeout 30m ./...
 
 test-makefile:
 	bash scripts/check-install-path_test.sh
