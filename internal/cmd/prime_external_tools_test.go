@@ -99,7 +99,8 @@ esac
 
 	start := time.Now()
 	output := captureStdout(t, func() { runPrimeExternalTools(RoleContext{Role: RolePolecat}, workDir) })
-	assertElapsedUnder(t, time.Since(start), time.Second)
+	// Generous: guards against hangs, not against slow stub startup under load.
+	assertElapsedUnder(t, time.Since(start), 2*primeToolTestTimeout)
 	assertPrimeToolCalled(t, "bd:kv list --json")
 	assertPrimeToolCalled(t, "gt:mail check --inject")
 
