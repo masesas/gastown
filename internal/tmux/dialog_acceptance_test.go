@@ -504,3 +504,63 @@ func TestAcceptBypassPermissionsWarning_RetriesDroppedEnter(t *testing.T) {
 		t.Fatalf("confirmed %q, want %q", got, "Yes, I accept")
 	}
 }
+
+// TestAcceptStartupDialogs_FailsWhenBlockerRemains verifies the combined call
+// fails closed when a known blocking modal it cannot accept (Codex update
+// prompt) stays on screen, instead of returning nil and leaving the agent parked.
+func TestAcceptStartupDialogs_FailsWhenBlockerRemains(t *testing.T) {
+	tm := newTestTmux(t)
+	session, selected := startFakeDialog(t, tm, fakeDialog{
+		title:   "Update available! 0.137.0 -> 0.138.0",
+		options: []string{"Update now", "Skip", "Skip until next version"},
+		mark:    "›",
+	})
+
+	err := tm.AcceptStartupDialogs(session)
+	if err == nil {
+		t.Fatal("expected error while a blocking startup dialog stays on screen, got nil")
+	}
+	if !strings.Contains(err.Error(), "codex update prompt") {
+		t.Fatalf("error = %v, want it to name the blocking dialog", err)
+	}
+	if got := selected(); got != "" {
+		t.Fatalf("confirmed %q, want nothing confirmed", got)
+	}
+}
+
+// TestCheckStartupBlocked_IgnoresScrollback verifies dialog text that only
+// remains in scrollback (a long-lived session, e.g. a polecat working on this
+// very file) is not reported as a blocking startup dialog.
+func TestCheckStartupBlocked_IgnoresScrollback(t *testing.T) {
+	tm := newTestTmux(t)
+	name := "gt-test-blocked-scrollback"
+	_ = tm.KillSession(name)
+	script := filepath.Join(t.TempDir(), "scroll.sh")
+	body := "printf 'WARNING: Claude Code running in Bypass Permissions mode\\n'\nseq 1 60\nprintf 'working\\n'\nexec sleep 600\n"
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	if err := tm.NewSessionWithCommand(name, "", "bash "+script); err != nil {
+		t.Fatalf("NewSessionWithCommand: %v", err)
+	}
+	t.Cleanup(func() { _ = tm.KillSession(name) })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		screen, _ := tm.captureScreen(name)
+		if strings.Contains(screen, "working") {
+			if strings.Contains(screen, bypassDialogTitle) {
+				t.Fatalf("setup: dialog text still on the visible screen:\n%s", screen)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("setup never finished; screen:\n%s", screen)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if err := tm.CheckStartupBlocked(name); err != nil {
+		t.Fatalf("CheckStartupBlocked: %v (stale scrollback must not block)", err)
+	}
+}

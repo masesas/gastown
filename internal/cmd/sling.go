@@ -1152,14 +1152,17 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		// Ensure agent is ready before nudging (prevents race condition where
 		// message arrives before Claude has fully started - see issue #115)
 		sessionName := getSessionFromPane(targetPane)
+		var readyErr error
 		if sessionName != "" {
-			if err := ensureAgentReady(sessionName); err != nil {
-				// Non-fatal: warn and continue, agent will discover work via gt prime
-				fmt.Printf("%s Could not verify agent ready: %v\n", style.Dim.Render("○"), err)
-			}
+			readyErr = ensureAgentReady(sessionName)
 		}
 
-		if err := injectStartPrompt(targetPane, beadID, slingSubject, slingArgs); err != nil {
+		if readyErr != nil {
+			// Non-fatal for the sling, but do not type the start prompt into a
+			// pane that may still show a dialog (a stray Enter could pick "No, exit").
+			fmt.Printf("%s Could not verify agent ready, start prompt not sent: %v\n", style.Dim.Render("○"), readyErr)
+			fmt.Printf("  Agent will discover work via gt prime / bd show\n")
+		} else if err := injectStartPrompt(targetPane, beadID, slingSubject, slingArgs); err != nil {
 			// Graceful fallback for no-tmux mode
 			fmt.Printf("%s Could not nudge (no tmux?): %v\n", style.Dim.Render("○"), err)
 			fmt.Printf("  Agent will discover work via gt prime / bd show\n")

@@ -770,11 +770,17 @@ func ensureAgentReady(sessionName string) error {
 		}
 	}
 
-	// Accept startup dialogs (workspace trust + bypass permissions) if they appear
-	_ = t.AcceptWorkspaceTrustDialog(sessionName)
+	// Accept startup dialogs if they appear. Agents that emit the bypass
+	// permissions warning get the full AcceptStartupDialogs check (which also
+	// fails on any remaining blocking modal); others only the trust dialog.
+	// The session is not ours to kill: report the blocked dialog to the caller.
 	agentName, _ := t.GetEnvironment(sessionName, "GT_AGENT")
+	accept := t.AcceptWorkspaceTrustDialog
 	if shouldAcceptPermissionWarning(agentName) {
-		_ = t.AcceptBypassPermissionsWarning(sessionName)
+		accept = t.AcceptStartupDialogs
+	}
+	if err := accept(sessionName); err != nil {
+		return fmt.Errorf("startup dialog: %w", err)
 	}
 
 	// Use prompt-detection polling instead of fixed sleep.

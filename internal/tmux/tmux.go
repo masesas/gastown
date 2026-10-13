@@ -1958,8 +1958,9 @@ func (t *Tmux) NudgePane(pane, message string) error {
 //  1. Workspace trust dialog (Claude "Quick safety check", Codex "Do you trust the contents of this directory?")
 //  2. Bypass permissions warning ("Bypass Permissions mode")
 //
-// Each dialog fails closed: an error means the dialog was seen but could not
-// be confirmed, so the agent must not be treated as started.
+// Fails closed: nil means no known blocking startup dialog is left on screen
+// (CheckStartupBlocked). On error the agent is parked on a dialog and must not
+// be treated as started; callers that own the session kill it.
 //
 // Call this after starting the agent and waiting for it to initialize (WaitForCommand),
 // but before sending any prompts. Idempotent: safe to call on sessions without dialogs.
@@ -1970,7 +1971,7 @@ func (t *Tmux) AcceptStartupDialogs(session string) error {
 	if err := t.AcceptBypassPermissionsWarning(session); err != nil {
 		return fmt.Errorf("bypass permissions warning: %w", err)
 	}
-	return nil
+	return t.CheckStartupBlocked(session)
 }
 
 // CheckStartupBlocked fails fast when a known interactive startup modal is
@@ -1980,9 +1981,11 @@ func (t *Tmux) CheckStartupBlocked(session string) error {
 	deadline := time.Now().Add(constants.DialogPollTimeout)
 	var blocker string
 	for {
-		content, err := t.CapturePane(session, 80)
+		// Visible screen only: an active modal is always on screen, while
+		// scrollback can hold stale dialog text (e.g. in long-lived sessions).
+		content, err := t.captureScreen(session)
 		if err != nil {
-			return err
+			return fmt.Errorf("capturing %s: %w", session, err)
 		}
 		current, ok := containsBlockingStartupDialog(content)
 		if !ok {

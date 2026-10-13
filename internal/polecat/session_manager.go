@@ -513,8 +513,7 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	debugSession("WaitForCommand", m.tmux.WaitForCommand(sessionID, constants.SupportedShells, constants.ClaudeStartTimeout))
 
 	// Accept startup dialogs (workspace trust + bypass permissions) if they appear
-	debugSession("AcceptStartupDialogs", m.tmux.AcceptStartupDialogs(sessionID))
-	if err := m.tmux.CheckStartupBlocked(sessionID); err != nil {
+	if err := m.tmux.AcceptStartupDialogs(sessionID); err != nil {
 		_ = m.tmux.KillSessionWithProcesses(sessionID)
 		return fmt.Errorf("startup blocked: %w", err)
 	}

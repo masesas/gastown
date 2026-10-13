@@ -98,10 +98,6 @@ func (m *mockExecutor) RespawnPane(pane, command string) error {
 }
 
 func (m *mockExecutor) AcceptStartupDialogs(_ string) error          { return nil }
-func (m *mockExecutor) AcceptWorkspaceTrustDialog(_ string) error    { return nil }
-func (m *mockExecutor) AcceptBypassPermissionsWarning(_ string) error {
-	return nil
-}
 
 // mockLogger captures warnings for assertion.
 type mockLogger struct {
@@ -556,10 +552,6 @@ func (f *failingNonCriticalExecutor) RespawnPane(pane, command string) error {
 
 func (f *failingNonCriticalExecutor) AcceptStartupDialogs(_ string) error {
 	return fmt.Errorf("accept startup dialogs failed")
-}
-func (f *failingNonCriticalExecutor) AcceptWorkspaceTrustDialog(_ string) error    { return nil }
-func (f *failingNonCriticalExecutor) AcceptBypassPermissionsWarning(_ string) error {
-	return fmt.Errorf("accept bypass permissions failed")
 }
 
 func TestExecute_TildeExpansion(t *testing.T) {

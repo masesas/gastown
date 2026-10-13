@@ -574,7 +574,10 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 	}
 
 	// Accept startup dialogs (workspace trust + bypass permissions) if they appear.
-	_ = t.AcceptStartupDialogs(sessionName)
+	if err := t.AcceptStartupDialogs(sessionName); err != nil {
+		_ = t.KillSessionWithProcesses(sessionName)
+		return fmt.Errorf("deacon startup blocked: %w", err)
+	}
 
 	time.Sleep(constants.ShutdownNotifyDelay)
 
