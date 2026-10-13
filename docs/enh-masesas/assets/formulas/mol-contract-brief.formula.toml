@@ -1,0 +1,134 @@
+description = """
+Contract-first briefing for an epic that touches shared areas (S1c).
+
+Run by the Mayor before any consumer bead of the epic is dispatched. Produces
+a reviewed brief (contract, ownership map, consumers, decisions, questions),
+a passed mechanical consistency check, and a closed approval gate.
+
+## When this formula is required
+- The epic touches a hot path (shared/, core/, migrations, DTOs, shared UI
+  components, design tokens, build files), OR
+- The epic has a cross-rig contract (e.g. BE API used by mobile), OR
+- The epic has >= 3 parallel beads in the same rig.
+
+Otherwise dispatch normally without a brief.
+
+## Steps
+draft -> review (max 2 rounds) -> check -> decide
+
+## Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| epic | yes | Epic bead ID |
+| owner_rig | yes | Rig that owns the contract (e.g. be) |
+| consumer_rigs | yes | Comma-separated consumer rigs (e.g. be,pro) |
+"""
+formula = "mol-contract-brief"
+type = "workflow"
+version = 1
+
+[[steps]]
+id = "draft"
+title = "Draft the contract brief"
+target = "mayor"
+description = """
+Draft the brief for epic {{epic}}.
+
+1. Create the brief bead (not slingable, survives stale reaping):
+   `bd create --type=task --title "Brief: {{epic}}" --labels gt:brief,gt:keep --parent {{epic}}`
+   (Use the type your bd accepts for non-dispatched beads; the label gt:brief is what matters.)
+2. Fill its design field from the template docs/enh-masesas/assets/templates/brief.md:
+   Contract, Ownership map, Consumers, Decisions and rationale, Questions and assumptions.
+3. Create the approval gate bead with labels gt:keep and make every consumer
+   bead depend on it: `bd dep add <consumer> <gate>`.
+4. Create the owner beads in rig {{owner_rig}}, assigned to crew contract-owner:
+   - skeleton bead (label contract): blocks every consumer bead that uses it;
+   - shared implementation bead: does NOT block consumers unless the brief says so.
+   Add `bd dep add <consumer> <skeleton>` for each consumer.
+
+Do not write to any repository. The approved brief is committed by the
+contract owner as part of the skeleton PR.
+
+**Exit criteria:** brief bead filled; gate bead exists; every consumer bead
+depends on the gate and on its skeleton bead.
+"""
+
+[[steps]]
+id = "review"
+title = "Structured review per consumer area (max 2 rounds)"
+needs = ["draft"]
+target = "mayor"
+description = """
+Run the review convoy for the brief:
+
+```bash
+gt formula run mol-contract-brief-review --set brief=<brief-bead> --set epic={{epic}} --set round=1
+```
+
+Wait for the synthesis mail, then read the synthesis report.
+
+- All verdicts ok: continue to check.
+- Any gap or conflict: revise the brief, then run round 2 (`--set round=2`).
+- Never run a third round. Remaining conflicts become crucial questions in
+  the decide step.
+
+Consumer rigs to cover: {{consumer_rigs}}.
+
+**Exit criteria:** at least one completed review round; synthesis report path
+recorded in the brief bead notes.
+"""
+
+[[steps]]
+id = "check"
+title = "Mechanical consistency check"
+needs = ["review"]
+target = "mayor"
+description = """
+Fill docs/enh-masesas/assets/templates/brief-check.md into the brief bead notes.
+Every item needs the command and its output as evidence, not a judgement:
+
+- every hot path touched by the epic has exactly one owner bead;
+- every consumer bead depends on the skeleton bead it uses (`bd dep list`);
+- no dependency cycle (`bd blocked`, `gt convoy stage --dry-run`);
+- every contract item has acceptance criteria in the owner bead;
+- migration numbers are reserved and do not collide with other open epic/* branches.
+
+**Exit criteria:** all check items pass. If any fails, go back to draft.
+"""
+
+[[steps]]
+id = "decide"
+title = "Classify open issues and close the approval gate"
+needs = ["check"]
+target = "mayor"
+description = """
+1. Remaining conflicts and open business questions: apply the crucial-question
+   table in your directives. Crucial items become question beads
+   (template docs/enh-masesas/assets/templates/question.md):
+   - class block: add a dependency from the affected tasks to the question
+     bead and send `gt mail send --human -s "[BLOCK] Q-<epic>-<n>: <summary>" --stdin`;
+   - class proceed: record the assumed option, label affected tasks
+     `assumes:Q-<epic>-<n>`.
+   Non-crucial items: decide yourself and record them under Decisions.
+2. Close the approval gate only if the review ran and the check passed:
+   `bd gate close <gate> --reason "brief <brief-bead> approved: review r<n>, check ok"`
+
+Never approve a brief that skipped review or failed the check.
+
+**Exit criteria:** gate closed; every crucial question exists as a bead with
+all fields; affected tasks are labeled or blocked.
+"""
+
+[vars]
+[vars.epic]
+description = "Epic bead ID"
+required = true
+
+[vars.owner_rig]
+description = "Rig that owns the contract (e.g. be)"
+required = true
+
+[vars.consumer_rigs]
+description = "Comma-separated consumer rigs (e.g. be,pro)"
+required = true

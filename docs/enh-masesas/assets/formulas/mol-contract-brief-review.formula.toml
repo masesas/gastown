@@ -1,0 +1,103 @@
+review_only = true  # Legs only read the brief and the consumer beads.
+
+description = """
+Structured review of a contract brief, one leg per consumer area (S1c).
+
+Each leg answers one fixed question for every consumer bead in its area:
+"Can bead X be implemented using only this contract?" Output is structured
+so the Mayor can act on it mechanically. Legs do not edit the brief.
+
+## Legs
+- **be-consumer**: consumer beads in the backend rig
+- **mobile-consumer**: consumer beads in the mobile rig
+
+Add a leg here when a new consumer area joins the pilot.
+"""
+formula = "mol-contract-brief-review"
+type = "convoy"
+version = 1
+
+[inputs]
+[inputs.brief]
+description = "Brief bead ID"
+type = "string"
+required = true
+
+[inputs.epic]
+description = "Epic bead ID"
+type = "string"
+required = true
+
+[inputs.round]
+description = "Review round (1 or 2)"
+type = "string"
+required = true
+
+[prompts]
+base = """
+# Contract Brief Review
+
+- **Brief**: {{.brief}} (read its design field with `bd show {{.brief}}`)
+- **Epic**: {{.epic}}
+- **Round**: {{.round}}
+- **Your area**: {{.leg.focus}}
+
+## Your task
+{{.leg.description}}
+
+For every consumer bead in your area listed in the brief's Consumers section,
+answer: can this bead be implemented using only this contract?
+List missing fields or behavior, conflicts with existing code, and unwritten
+assumptions. Do not propose a new design; report what is missing.
+
+## Output
+Write to **{{.output_path}}** a JSON block followed by short notes:
+
+```json
+[
+  {"bead": "<id>", "verdict": "ok|gap|conflict", "items": ["..."]}
+]
+```
+
+Use "conflict" only when the contract contradicts existing code or another
+consumer; use "gap" when something is missing.
+"""
+
+[output]
+directory = ".brief-reviews/{{.epic}}-r{{.round}}"
+leg_pattern = "{{.leg.id}}.md"
+synthesis = "brief-review.md"
+
+[[legs]]
+id = "be-consumer"
+title = "Backend consumers"
+focus = "Consumer beads in the backend rig"
+description = """
+Check backend consumer beads against the contract: endpoints, DTOs, service
+interfaces, migrations. Read the current code in the rig to find conflicts
+(existing DTOs with the same meaning, services already doing this, migration
+numbers already taken).
+"""
+
+[[legs]]
+id = "mobile-consumer"
+title = "Mobile consumers"
+focus = "Consumer beads in the mobile rig"
+description = """
+Check mobile consumer beads against the contract: request/response shapes,
+error codes, pagination, nullability, enum values, auth headers. Read the
+current models and API clients in the rig to find conflicts.
+"""
+
+[synthesis]
+title = "Brief Review Synthesis"
+description = """
+Combine the leg reports from {{.output.directory}}/ into
+{{.output.directory}}/{{.output.synthesis}}:
+
+1. One table: bead | area | verdict | items.
+2. Overall: "ok" only if every bead is ok; otherwise list the gaps and
+   conflicts the Mayor must resolve.
+3. Do not decide conflicts. Mail the Mayor with subject
+   "Brief review r{{.round}} complete: {{.epic}}" and the report path.
+"""
