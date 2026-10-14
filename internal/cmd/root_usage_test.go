@@ -122,3 +122,27 @@ func TestRootTreeCoversUpAndSling(t *testing.T) {
 		}
 	}
 }
+
+// runConvoyStage used to reset SilenceUsage to convoyStageJSON inside RunE,
+// which re-enabled Usage for every non-JSON runtime error and undid the
+// wrapper. A command must not turn SilenceUsage back off once RunE starts.
+func TestConvoyStageRuntimeErrorKeepsUsageSilenced(t *testing.T) {
+	silenceUsageOnRuntimeErrors(rootCmd)
+	stage, _, err := rootCmd.Find([]string{"convoy", "stage"})
+	if err != nil || stage == nil || stage.Name() != "stage" {
+		t.Fatalf("find convoy stage: cmd=%v err=%v", stage, err)
+	}
+
+	prevJSON, prevSilence := convoyStageJSON, stage.SilenceUsage
+	t.Cleanup(func() { convoyStageJSON, stage.SilenceUsage = prevJSON, prevSilence })
+	convoyStageJSON = false
+	stage.SilenceUsage = false
+
+	// No bead IDs: validateStageArgs fails before any side effect.
+	if err := stage.RunE(stage, nil); err == nil {
+		t.Fatal("expected a runtime error for missing bead IDs")
+	}
+	if !stage.SilenceUsage {
+		t.Error("convoy stage turned SilenceUsage back off for a non-JSON runtime error")
+	}
+}

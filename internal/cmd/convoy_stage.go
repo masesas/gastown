@@ -256,7 +256,6 @@ func argsRequestConvoyStageJSON(args []string) bool {
 func runConvoyStage(cmd *cobra.Command, args []string) error {
 	if cmd != nil {
 		cmd.SilenceErrors = convoyStageJSON
-		cmd.SilenceUsage = convoyStageJSON
 	}
 
 	// Step 1: Validate args.
