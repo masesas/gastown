@@ -2,7 +2,7 @@
 
 Spec: [`../spec/S0-prasyarat-pilot.md`](../spec/S0-prasyarat-pilot.md). Sebagian besar langkah operasional; satu paket kode (upgrade Beads).
 
-**Status (14 Okt 2026):** fase 1 (k-posin, mirror lokal) selesai kecuali baseline manual (Langkah 7, Epic A). Langkah 1–2 dan 4–8 dijalankan untuk fase 1; Langkah 3 dan konfigurasi `be`/`pro` di Langkah 4–6 berlaku untuk fase 2 (`oto-rent-*`). Hasil fase 1 ditandai **Hasil fase 1** di tiap langkah.
+**Status (14 Okt 2026):** fase 1 (k-posin, mirror lokal) selesai. Baseline manual (Langkah 7, Epic A) dipindah ke epic pertama S1c (keputusan Anda). Langkah 1–2 dan 4–8 dijalankan untuk fase 1; Langkah 3 dan konfigurasi `be`/`pro` di Langkah 4–6 berlaku untuk fase 2 (`oto-rent-*`). Hasil fase 1 ditandai **Hasil fase 1** di tiap langkah.
 
 Konvensi: `$FORK` = checkout fork ini; `$TOWN` = direktori pilot town baru (usulan `~/gt-pilot`); `$BK` = direktori backup (usulan `~/gt-pilot-backup/<tanggal>`). Semua perintah yang mengubah data diberi tanda **[ubah]**.
 
@@ -142,7 +142,7 @@ Mode `pr` belum diuji (mirror tanpa API PR); tetap untuk fase 2.
 2. Epic A: workflow manual existing. Epic B: Gas Town tanpa enhancement.
 3. Isi `../baseline/metrics-baseline.md` dengan tabel metrik `../11` § 3 (median + rentang, tanpa persen bila sampel kecil).
 
-**Hasil fase 1.** Epic B (Gas Town tanpa S1c) tercatat di `../baseline/metrics-pilot-s0.md`. Epic A (manual) belum dijalankan.
+**Hasil fase 1.** Epic B (Gas Town tanpa S1c) tercatat di `../baseline/metrics-pilot-s0.md`. Epic A (manual) dipindah ke epic pertama S1c (P-S1c Langkah 6).
 
 ### Langkah 8 — Penutupan Tahap 0 (S0-AC5, S0-AC10)
 
@@ -164,7 +164,7 @@ Mode `pr` belum diuji (mirror tanpa API PR); tetap untuk fase 2.
 | S0-AC6 | kp-96c dan kp-7fb: MR → gate → `integration/{epic}` → land `main` (Langkah 6) |
 | S0-AC7 | `mayor/daemon.json` (Langkah 4) + default `quota_dog` mati di `internal/daemon/types.go` |
 | S0-AC8 | Crew `contract_owner` di rig `posin` |
-| S0-AC9 | Sebagian: `../baseline/metrics-pilot-s0.md`; Epic A manual belum |
+| S0-AC9 | `../baseline/metrics-pilot-s0.md`; baseline manual di epic pertama S1c |
 | S0-AC10 | `../baseline/compat.md` |
 
 ## 3. Batasan eksplisit
@@ -195,5 +195,5 @@ Perilaku operasional yang perlu diketahui:
 
 ## 5. Perlu tindakan Anda
 
-- Keputusan S0-AC9: jalankan Epic A manual sekarang, atau catat baseline manual pada epic pertama S1c (tahap berikutnya) dan tutup gate Tahap 0 dengan sisi Gas Town saja.
+- Menjalankan epic manual pembanding bersamaan dengan epic pertama S1c (P-S1c Langkah 6).
 - Fase 2 (`oto-rent-*`): konfirmasi lokasi `$BK` dan jadwal setelah gate Tahap 1.

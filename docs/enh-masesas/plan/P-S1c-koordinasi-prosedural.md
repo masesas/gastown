@@ -95,7 +95,7 @@ Jangan ubah path milik owner (lihat brief); kontrak kurang → buat bead `contra
 3. **Verifikasi perintah bd** di town salinan: `bd create --type=gate`, `--type=question`, `bd gate close`, `bd label add`, `bd dep add`. Sesuaikan teks directives dengan flag yang benar.
 4. **Uji penahanan**: konsumen yang bergantung pada gate terbuka tidak muncul di wave `gt convoy stage`; muncul setelah gate ditutup dan skeleton ditutup.
 5. **Pasang ke pilot town** (salin formula ke `<town>/.beads/formulas/`, directives ke lokasinya). Cek `gt prime --explain` pada Mayor, crew, dan polecat → directives termuat.
-6. **Epic pilot BE + mobile** (S1c-AC3..AC6): jalankan alur penuh. Catat bukti: id bead brief, file sintesis review, checklist, waktu tutup gate, waktu merge skeleton, waktu dispatch konsumen.
+6. **Epic pilot BE + mobile** (S1c-AC3..AC6): jalankan alur penuh. Catat bukti: id bead brief, file sintesis review, checklist, waktu tutup gate, waktu merge skeleton, waktu dispatch konsumen. Bersamaan, catat baseline workflow manual (pindahan S0-AC9, Epic A P-S0 Langkah 7): satu epic berkompleksitas sebanding dikerjakan manual oleh Anda, metrik `../11` § 3 diisi ke `../baseline/metrics-baseline.md` berdampingan dengan epic S1c.
 7. **Simulasi jawaban** (S1c-AC7): satu jawaban sama, satu berbeda.
 8. **Uji rollback** (S1c-AC8) di town salinan: hapus formula dan directives → `gt prime --explain` bersih, epic tanpa briefing berjalan normal.
 9. **Laporan Tahap 1 (bagian S1c)** ke `../pilot/epic-1-s1c.md`.

@@ -60,7 +60,7 @@ Status fase 1 (14 Okt 2026). Bukti per AC ada di plan `../plan/P-S0-prasyarat-pi
 - [x] **S0-AC6** (direvisi 14 Okt) Satu bead BE dan satu bead mobile melewati sling → polecat → refinery (gate rig) → merge ke integration branch epic → land ke `main`. Fase 2: refinery `pr` → PR ke `epic/...`.
 - [x] **S0-AC7** `wisp_reaper` dalam mode `dry_run` atau off, dan `quota_dog` off, dibuktikan dari `mayor/daemon.json` dan `disabled_patrols` (atau default kode bila tidak dikonfigurasi).
 - [x] **S0-AC8** (direvisi 14 Okt) Crew `contract_owner` ada di setiap rig pilot.
-- [ ] **S0-AC9** Baseline metrik tercatat di `../baseline/`. Sisi Gas Town selesai (`../baseline/metrics-pilot-s0.md`); baseline workflow manual belum dijalankan.
+- [x] **S0-AC9** (direvisi 14 Okt) Baseline metrik Gas Town tanpa enhancement S1c tercatat di `../baseline/` (`../baseline/metrics-pilot-s0.md`). Baseline workflow manual dicatat pada epic pertama S1c (P-S1c Langkah 6).
 - [x] **S0-AC10** Catatan kompatibilitas ditulis: commit fork, versi bd, Beads embed, Dolt, Claude Code (`../baseline/compat.md`).
 
 ## 4. Di luar scope
@@ -86,4 +86,5 @@ Migrasi backlog existing (E15 penuh); retention/restore drill otomatis (E19 penu
 - 13 Okt 2026: fase 1 pilot memakai k-posin lewat mirror lokal; `oto-rent-*` tidak disentuh dan dipindah ke fase 2 (keputusan Anda). Akibatnya backup DB per-repo (P-S0 Langkah 3) tidak dijalankan di fase 1.
 - 13 Okt 2026: Dolt town ≥ 2.0.7 dipasang terisolasi di tooling pilot (gt-pd1c.29).
 - 14 Okt 2026: rig fase 1 memakai `merge_strategy=direct` dan `integration/{epic}` karena remote mirror lokal tidak punya API PR; nama crew `contract_owner` karena `gt` menolak tanda hubung. S0-AC4, AC5, AC6, AC8 direvisi untuk fase 1; versi asli berlaku di fase 2.
-- 14 Okt 2026: status fase 1: semua AC lulus kecuali S0-AC9 (baseline manual). Temuan dan PR perbaikan dicatat di plan P-S0 § 4.
+- 14 Okt 2026: S0-AC9 direvisi (keputusan Anda, opsi B): gate Tahap 0 ditutup dengan baseline sisi Gas Town; baseline workflow manual dipindah ke epic pertama S1c, karena bead uji fase 1 seluruhnya test-only sehingga pembanding manual baru bermakna pada epic sungguhan.
+- 14 Okt 2026: status fase 1: semua AC lulus. Temuan dan PR perbaikan dicatat di plan P-S0 § 4.

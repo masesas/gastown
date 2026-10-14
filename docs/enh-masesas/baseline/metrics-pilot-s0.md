@@ -34,5 +34,5 @@ Tanggal: 13–14 Oktober 2026. Bukti S0-AC9 sisi Gas Town. Definisi metrik: `../
 
 ## Yang belum ada
 
-- **Baseline workflow manual (Epic A di P-S0 Langkah 7).** Belum dijalankan; perlu epic sebanding yang dikerjakan secara manual. Lihat status S0-AC9 di spec.
+- **Baseline workflow manual (Epic A di P-S0 Langkah 7).** Dipindah ke epic pertama S1c (keputusan 14 Okt; P-S1c Langkah 6).
 - Metrik koordinasi, pertanyaan & asumsi, dan dampak limit akun baru relevan mulai S1c/S2.

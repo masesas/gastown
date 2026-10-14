@@ -13,7 +13,7 @@ Tanggal: 12 Oktober 2026. Sumber: dokumen analisis `../07`–`../14` (baseline c
 
 | ID | Spec | Asal | Tahap | Status |
 | --- | --- | --- | --- | --- |
-| S0 | [Prasyarat pilot](S0-prasyarat-pilot.md) | `09` § 2 (P0.1–P0.4), D1-B, D2-A | 0 | Fase 1 (k-posin, mirror lokal) lulus kecuali S0-AC9 (baseline manual); fase 2 (`oto-rent-*`) setelah gate Tahap 1 |
+| S0 | [Prasyarat pilot](S0-prasyarat-pilot.md) | `09` § 2 (P0.1–P0.4), D1-B, D2-A | 0 | Fase 1 (k-posin, mirror lokal) lulus; baseline manual dipindah ke epic S1c; fase 2 (`oto-rent-*`) setelah gate Tahap 1 |
 | S1a | [Kontrak task utuh + readiness](S1a-kontrak-task-readiness.md) | Rank 1 (E04) | 1 | Kode selesai (PR #4) |
 | S1b | [State fail-closed di boundary lifecycle](S1b-state-fail-closed.md) | Rank 5 (E16 a–c) | 1 | Kode selesai (PR #2, lanjutan nuke PR #6) |
 | S1c | [Koordinasi contract-first prosedural](S1c-koordinasi-prosedural.md) | Rank 3P + protokol `14` | 1 | Aset selesai (`../assets/`); pilot town siap, pemasangan + epic pilot belum dimulai (gt-pd1c.24) |
@@ -67,4 +67,4 @@ Gate keluar per tahap mengikuti `../11` § 1, dan disalin ke spec masing-masing.
 | #14–#16 | Temuan pilot S0: exclude worktree, feeder tidak men-dispatch ulang MR di queue, nudge tidak memutus tool |
 | #17–#18 | `gt up` cold start; strategi `direct` lewat gate dan target yang benar |
 
-Gate Tahap 0: semua AC fase 1 lulus kecuali S0-AC9 (baseline manual; keputusan Anda). Gate Tahap 1 belum ditutup: AC S1c (pemasangan aset + epic pilot BE + mobile, gt-pd1c.24) belum dimulai. Temuan terbuka dari pilot: `../plan/P-S0-prasyarat-pilot.md` § 4.
+Gate Tahap 0: semua AC fase 1 lulus (S0-AC9 direvisi: baseline manual di epic pertama S1c). Gate Tahap 1 belum ditutup: AC S1c (pemasangan aset + epic pilot BE + mobile, gt-pd1c.24) belum dimulai. Temuan terbuka dari pilot: `../plan/P-S0-prasyarat-pilot.md` § 4.
