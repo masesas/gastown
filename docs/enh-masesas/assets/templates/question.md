@@ -1,6 +1,6 @@
 Bead title: `Q-<epic>-<n>: <one-line question>`
 Labels: `gt:question,gt:keep`
-Type: not slingable (`gate`, or `question` if supported)
+Type: `decision`, child of the epic (`--parent <epic>`). Never dispatched; closing it means the question is answered.
 
 Description:
 

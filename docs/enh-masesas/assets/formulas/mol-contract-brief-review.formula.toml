@@ -8,8 +8,9 @@ Each leg answers one fixed question for every consumer bead in its area:
 so the Mayor can act on it mechanically. Legs do not edit the brief.
 
 ## Legs
-- **be-consumer**: consumer beads in the backend rig
-- **mobile-consumer**: consumer beads in the mobile rig
+- **be-consumer**: consumer beads in the backend area (backend rig, or the
+  backend app path in a monorepo rig)
+- **mobile-consumer**: consumer beads in the mobile area
 
 Add a leg here when a new consumer area joins the pilot.
 """
@@ -71,10 +72,10 @@ synthesis = "brief-review.md"
 [[legs]]
 id = "be-consumer"
 title = "Backend consumers"
-focus = "Consumer beads in the backend rig"
+focus = "Consumer beads in the backend area"
 description = """
 Check backend consumer beads against the contract: endpoints, DTOs, service
-interfaces, migrations. Read the current code in the rig to find conflicts
+interfaces, migrations. Read the current backend code to find conflicts
 (existing DTOs with the same meaning, services already doing this, migration
 numbers already taken).
 """
@@ -82,11 +83,11 @@ numbers already taken).
 [[legs]]
 id = "mobile-consumer"
 title = "Mobile consumers"
-focus = "Consumer beads in the mobile rig"
+focus = "Consumer beads in the mobile area"
 description = """
 Check mobile consumer beads against the contract: request/response shapes,
 error codes, pagination, nullability, enum values, auth headers. Read the
-current models and API clients in the rig to find conflicts.
+current mobile models and API clients to find conflicts.
 """
 
 [synthesis]
