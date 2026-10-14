@@ -68,9 +68,12 @@ func ActiveSafetyStop(townRoot, rigName string) (*SafetyStop, error) {
 	rigPath := filepath.Join(townRoot, rigName)
 	b := beads.NewWithBeadsDir(rigPath, filepath.Join(townRoot, ".beads")).ForAgentBead()
 
+	// GetAgentBead returns (nil, nil, nil) only when bd reports that the bead
+	// does not exist. Any other failure is returned so callers fail closed:
+	// an unreadable safety stop must never read as "no safety stop".
 	issue, _, err := b.GetAgentBead(agentID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading refinery agent bead %s: %w", agentID, err)
 	}
 	if issue == nil {
 		return nil, nil

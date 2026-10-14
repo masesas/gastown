@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -896,6 +897,15 @@ func (b *Beads) Run(args ...string) ([]byte, error) {
 // ZFC: Avoid parsing stderr to make decisions. Transport errors to agents instead.
 // Exception: ErrNotInstalled (exec.ErrNotFound) and ErrNotFound (issue lookup) are
 // acceptable as they enable basic error handling without decision-making.
+//
+// ErrNotFound means only "the issue with that ID does not exist". bd 1.3.0 has
+// no exit code or JSON field for that (every failure exits 1, and show --json
+// prints the same stdout error whether the IDs are missing or the database
+// failed), so its missing-issue stderr lines are the only signal; see
+// isMissingIssueStderr. Any other failure, including the many unrelated bd
+// messages that also say "not found" (database, table, formula, merge slot,
+// command), is returned as an ordinary error carrying the stderr so callers
+// fail closed instead of reading it as "absent" (gt-pd1c.39).
 func (b *Beads) wrapError(err error, stderr string, args []string) error {
 	stderr = strings.TrimSpace(stderr)
 
@@ -904,10 +914,8 @@ func (b *Beads) wrapError(err error, stderr string, args []string) error {
 		return ErrNotInstalled
 	}
 
-	// ErrNotFound is widely used for issue lookups - acceptable exception
-	// Match various "not found" error patterns from bd
-	if strings.Contains(stderr, "not found") || strings.Contains(stderr, "Issue not found") ||
-		strings.Contains(stderr, "no issue found") {
+	// Return the bare sentinel: some callers compare it with ==.
+	if isMissingIssueStderr(stderr) {
 		return ErrNotFound
 	}
 
@@ -915,6 +923,52 @@ func (b *Beads) wrapError(err error, stderr string, args []string) error {
 		return fmt.Errorf("bd %s: %s", strings.Join(args, " "), stderr)
 	}
 	return fmt.Errorf("bd %s: %w", strings.Join(args, " "), err)
+}
+
+// bdIssueIDPattern matches one bead ID token as bd prints it (gt-abc, hq-x.1,
+// gt-testrig-refinery, __health_check_nonexistent__): a single word with no
+// spaces or quotes, so multi-word lookalikes such as "Issue not found in X"
+// never match.
+const bdIssueIDPattern = `\w[\w.-]*`
+
+// missingIssueLinePatterns are the bd 1.3.0 stderr lines that mean "no issue
+// with this ID exists". Each is matched against one trimmed stderr line.
+var missingIssueLinePatterns = []*regexp.Regexp{
+	// bd show / proxied update, close, reopen: "Issue gt-x not found"
+	regexp.MustCompile(`^Issue ` + bdIssueIDPattern + ` not found$`),
+	// bd delete, comments add: "Error: issue gt-x not found"; proxied mutations: "issue gt-x not found"
+	regexp.MustCompile(`(^|: )issue ` + bdIssueIDPattern + ` not found$`),
+	// ID resolution failure, as the tail of update/close/reopen/dep/label/comments errors:
+	// `Error: resolving ID gt-x: no issue found matching "gt-x"`
+	regexp.MustCompile(`(^|: )no issue found matching "[^"]*"$`),
+	// storage.ErrNotFound wrapped after a successful resolve: "...: not found: issue gt-x"
+	regexp.MustCompile(`(^|: )not found: issue ` + bdIssueIDPattern + `$`),
+	// bd update failure summary: "  gt-x: issue not found"
+	regexp.MustCompile(`^` + bdIssueIDPattern + `: issue not found$`),
+	// Legacy show text "Issue not found: gt-x"; relate/gate paths "Error: issue not found: gt-x"
+	regexp.MustCompile(`(^|: )[Ii]ssue not found: ` + bdIssueIDPattern + `$`),
+	// Quoted ID (restore, swarm): "Error: issue 'gt-x' not found"
+	regexp.MustCompile(`(^|: )issue '` + bdIssueIDPattern + `' not found$`),
+	// Batch delete: "Error: issues not found: gt-x, gt-y"
+	regexp.MustCompile(`(^|: )issues not found: ` + bdIssueIDPattern + `(, ` + bdIssueIDPattern + `)*$`),
+}
+
+// isMissingIssueStderr reports whether bd stderr says the requested issue does
+// not exist. It is the single place gastown classifies bd stderr as
+// ErrNotFound; see wrapError.
+func isMissingIssueStderr(stderr string) bool {
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		for _, re := range missingIssueLinePatterns {
+			if re.MatchString(line) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isSubprocessCrash returns true if the error indicates the subprocess crashed

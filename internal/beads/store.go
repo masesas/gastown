@@ -9,8 +9,8 @@ package beads
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	beadsdk "github.com/steveyegge/beads"
@@ -293,7 +293,9 @@ func (b *Beads) storeShow(id string) (*Issue, error) {
 
 	si, err := b.store.GetIssue(ctx, id)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		// The SDK wraps storage.ErrNotFound for a missing ID; anything else
+		// (connection, missing database or table) is a real failure (gt-pd1c.39).
+		if errors.Is(err, beadsdk.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("store show: %w", err)
