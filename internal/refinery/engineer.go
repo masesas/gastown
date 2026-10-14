@@ -55,22 +55,24 @@ func isClaimStale(updatedAt string, timeout time.Duration) (stale bool, parseErr
 	return time.Since(t) >= timeout, nil
 }
 
-// GateConfig defines a single quality gate command.
-// GatePhase controls when a gate runs in the merge pipeline.
+// GatePhase orders gates within a merge. Every phase runs on the same tree:
+// the MR (or batch stack) merged into the target, before push (gt-pd1c.45).
+// Gates that inspect HEAD therefore see the merge commit.
 type GatePhase string
 
 const (
-	// GatePhasePreMerge runs the gate before the squash merge (default).
-	// The gate validates the source branch on the target baseline.
+	// GatePhasePreMerge is the default, first gate group. It may run in
+	// parallel (gates_parallel). The name predates gt-pd1c.45 and is kept for
+	// config compatibility; the gate does not run on the bare target.
 	GatePhasePreMerge GatePhase = "pre-merge"
 
-	// GatePhasePostSquash runs the gate after the squash merge but before push.
-	// The gate validates the actual combined code, catching issues that only
-	// manifest in the merged result (broken imports, boot failures, missing
-	// templates). On failure, the merge is reset.
+	// GatePhasePostSquash is the second gate group. It runs sequentially and
+	// only after every pre-merge gate passed. The name is historical: the
+	// refinery uses a merge commit, not a squash.
 	GatePhasePostSquash GatePhase = "post-squash"
 )
 
+// GateConfig defines a single quality gate command.
 type GateConfig struct {
 	// Cmd is the shell command to execute.
 	Cmd string `json:"cmd"`
@@ -79,10 +81,9 @@ type GateConfig struct {
 	// Zero means no timeout (inherits context deadline).
 	Timeout time.Duration `json:"timeout"`
 
-	// Phase controls when this gate runs: "pre-merge" (default) or "post-squash".
-	// Pre-merge gates run before the squash merge on the source branch.
-	// Post-squash gates run after the squash merge on the combined result,
-	// before pushing. On post-squash failure, the merge is reset.
+	// Phase orders this gate: "pre-merge" (default, first group) or
+	// "post-squash" (second group). Both run on the merged result before push;
+	// on any gate failure the local merge is reset and nothing is pushed.
 	Phase GatePhase `json:"phase"`
 }
 
@@ -107,10 +108,11 @@ type MergeQueueConfig struct {
 	// OnConflict is the strategy for handling conflicts: "assign_back" or "auto_rebase".
 	OnConflict string `json:"on_conflict"`
 
-	// RunTests controls whether to run tests before merging.
+	// RunTests enables the legacy TestCommand when no Gates are configured.
+	// Like gates, it runs on the merged result before push.
 	RunTests bool `json:"run_tests"`
 
-	// TestCommand is the command to run for testing.
+	// TestCommand is the legacy test command (used only when Gates is empty).
 	TestCommand string `json:"test_command"`
 
 	// DeleteMergedBranches controls whether to delete branches after merge.
@@ -604,38 +606,18 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushed %d submodule(s)\n", len(subChanges))
 	}
 
-	// Step 4: Run quality gates (or legacy tests) if configured.
-	// Gates always run: a polecat's pre-verified claim is never a substitute
-	// for the refinery's own gates (gt-pd1c.40).
-	if len(e.config.Gates) > 0 {
-		// New gates system: run configured quality gates
-		gateResult := e.runGates(ctx)
-		if !gateResult.Success {
-			return gateResult
+	// Step 4: Merge locally, preserving the submitted head in target ancestry.
+	// Every gate runs on this merged tree (gt-pd1c.45), so the merge comes first.
+	// Remember the pre-merge tip so a rejected merge is undone exactly, without
+	// discarding earlier unpushed merges (auto_push=false) or rewinding to a
+	// stale origin ref when the pull above failed.
+	preMergeSHA, err := e.git.Rev("HEAD")
+	if err != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to read %s before merge: %v", target, err),
 		}
-	} else if e.config.RunTests && e.config.TestCommand != "" {
-		// Legacy test command path (backward compatible)
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Running tests: %s\n", e.config.TestCommand)
-		result := e.runTests(ctx)
-		if !result.Success {
-			return ProcessResult{
-				Success:     false,
-				TestsFailed: true,
-				Error:       result.Error,
-			}
-		}
-		_, _ = fmt.Fprintln(e.output, "[Engineer] Tests passed")
 	}
-
-	// PR merge path: when merge_strategy=pr, use the VCS provider's merge API
-	// instead of local merge + direct push. This respects branch
-	// protection/restriction rules and preserves the PR audit trail.
-	// The VCS provider (GitHub, Bitbucket) is selected via vcs_provider config.
-	if e.config.MergeStrategy == "pr" {
-		return e.doMergePR(ctx, mr)
-	}
-
-	// Step 5: Perform the actual merge, preserving the submitted head in target ancestry.
 	// Get the original commit message from the polecat branch to preserve the
 	// conventional commit format (feat:/fix:) in the merge commit message.
 	mergeMsg, err := e.git.GetBranchCommitMessage(branch)
@@ -668,15 +650,27 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 		}
 	}
 
-	// Step 5.5: Run post-squash gates on the merged result.
-	// These validate the actual combined code before it goes anywhere.
-	// On failure, reset the merge to undo the local merge commit.
-	postResult := e.runGatesForPhase(ctx, GatePhasePostSquash)
-	if !postResult.Success {
-		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after post-squash gate failure: %v\n", target, resetErr)
+	// Step 5: Run every configured gate (or the legacy test command) on the
+	// merged result. Gates always run: a polecat's pre-verified claim is never
+	// a substitute for the refinery's own gates (gt-pd1c.40).
+	if gateResult := e.runMergeGates(ctx); !gateResult.Success {
+		if resetErr := e.resetToPreMerge(preMergeSHA, target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: %v\n", resetErr)
+			gateResult.Error = fmt.Sprintf("%s; %v", gateResult.Error, resetErr)
 		}
-		return postResult
+		return gateResult
+	}
+
+	// PR merge path: when merge_strategy=pr, use the VCS provider's merge API
+	// instead of a direct push. This respects branch protection/restriction
+	// rules and preserves the PR audit trail. The local merge above only served
+	// as the gated tree; undo it so the provider's merge is the one that lands.
+	// The VCS provider (GitHub, Bitbucket) is selected via vcs_provider config.
+	if e.config.MergeStrategy == "pr" {
+		if resetErr := e.resetToPreMerge(preMergeSHA, target); resetErr != nil {
+			return ProcessResult{Success: false, Error: resetErr.Error()}
+		}
+		return e.doMergePR(ctx, mr)
 	}
 
 	// Step 6: Get the merge commit SHA
@@ -765,7 +759,8 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 // doMergePR handles merging via the VCS provider's PR merge API (merge_strategy=pr).
 // This respects branch protection/restriction rules including required reviews.
 // The VCS provider (GitHub, Bitbucket) is selected via vcs_provider config.
-// Called from doMerge after quality gates have passed.
+// Called from doMerge after every gate has passed on a local trial merge of the
+// MR into the target, and after that trial merge has been undone.
 //
 //nolint:unparam // ctx is reserved for future use when git methods accept context
 func (e *Engineer) doMergePR(ctx context.Context, mr *MRInfo) ProcessResult {
@@ -1198,9 +1193,47 @@ func (e *Engineer) runGate(ctx context.Context, name string, gate *GateConfig) G
 	}
 }
 
-// runGates executes all pre-merge gates (backward-compatible entry point).
-func (e *Engineer) runGates(ctx context.Context) ProcessResult {
-	return e.runGatesForPhase(ctx, GatePhasePreMerge)
+// runMergeGates is the single gate entry point for every merge path (single
+// MR, merge_strategy=pr, batch stack and bisection). The working tree must hold
+// the merged result (target plus the MR or batch), not yet pushed.
+//
+// With gates configured, the pre-merge group runs first (in parallel when
+// gates_parallel is set) and the post-squash group runs after it passes,
+// sequentially. Without gates, the legacy run_tests/test_command runs instead.
+// A canceled context is reported as a plain failure, never TestsFailed, so a
+// refinery shutdown does not make doMerge reject the MR under test. (The batch
+// retry/bisect loops still only check Success.)
+func (e *Engineer) runMergeGates(ctx context.Context) ProcessResult {
+	var result ProcessResult
+	switch {
+	case len(e.config.Gates) > 0:
+		result = e.runGatesForPhase(ctx, GatePhasePreMerge)
+		if result.Success {
+			result = e.runGatesForPhase(ctx, GatePhasePostSquash)
+		}
+	case e.config.RunTests && e.config.TestCommand != "":
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Running tests: %s\n", e.config.TestCommand)
+		result = e.runTests(ctx)
+		if result.Success {
+			_, _ = fmt.Fprintln(e.output, "[Engineer] Tests passed")
+		}
+		result.TestsFailed = !result.Success
+	default:
+		return ProcessResult{Success: true}
+	}
+	if !result.Success && ctx.Err() != nil {
+		return ProcessResult{Success: false, Error: fmt.Sprintf("gate run canceled: %v", ctx.Err())}
+	}
+	return result
+}
+
+// resetToPreMerge undoes a local merge by resetting the checked-out target to
+// the tip recorded before the merge.
+func (e *Engineer) resetToPreMerge(preMergeSHA, target string) error {
+	if err := e.git.ResetHard(preMergeSHA); err != nil {
+		return fmt.Errorf("failed to reset %s to pre-merge %s: %w", target, shortSHA(preMergeSHA), err)
+	}
+	return nil
 }
 
 // runGatesForPhase executes gates matching the given phase.
@@ -1238,10 +1271,11 @@ func (e *Engineer) runGatesForPhase(ctx context.Context, phase GatePhase) Proces
 		results = make([]GateResult, len(names))
 		var wg sync.WaitGroup
 		for i, name := range names {
+			// Log from this goroutine only: e.output is not safe for concurrent writes.
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", name, gates[name].Cmd)
 			wg.Add(1)
 			go func(idx int, gateName string) {
 				defer wg.Done()
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", gateName, gates[gateName].Cmd)
 				results[idx] = e.runGate(ctx, gateName, gates[gateName])
 			}(i, name)
 		}

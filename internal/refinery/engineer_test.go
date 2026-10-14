@@ -879,7 +879,7 @@ func TestRunGates_Sequential_AllPass(t *testing.T) {
 	}
 	e.config.GatesParallel = false
 
-	result := e.runGates(context.Background())
+	result := e.runMergeGates(context.Background())
 	if !result.Success {
 		t.Errorf("expected success, got error: %s", result.Error)
 	}
@@ -903,7 +903,7 @@ func TestRunGates_Sequential_StopsOnFirstFailure(t *testing.T) {
 	}
 	e.config.GatesParallel = false
 
-	result := e.runGates(context.Background())
+	result := e.runMergeGates(context.Background())
 	if result.Success {
 		t.Error("expected failure")
 	}
@@ -930,7 +930,7 @@ func TestRunGates_Parallel_AllPass(t *testing.T) {
 	}
 	e.config.GatesParallel = true
 
-	result := e.runGates(context.Background())
+	result := e.runMergeGates(context.Background())
 	if !result.Success {
 		t.Errorf("expected success, got error: %s", result.Error)
 	}
@@ -948,7 +948,7 @@ func TestRunGates_Parallel_AnyFailure(t *testing.T) {
 	}
 	e.config.GatesParallel = true
 
-	result := e.runGates(context.Background())
+	result := e.runMergeGates(context.Background())
 	if result.Success {
 		t.Error("expected failure when any gate fails")
 	}
@@ -967,7 +967,7 @@ func TestRunGates_Empty(t *testing.T) {
 	e.output = io.Discard
 	e.config.Gates = nil
 
-	result := e.runGates(context.Background())
+	result := e.runMergeGates(context.Background())
 	if !result.Success {
 		t.Error("expected success with no gates configured")
 	}

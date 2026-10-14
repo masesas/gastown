@@ -14,11 +14,11 @@ import (
 // the refinery's own quality gates, even when the target has not moved since
 // the claimed verification base.
 
-// alwaysFailGateCmd fails regardless of the checked-out tree. Pre-merge gates
-// and the legacy test command run in doMerge before the merge commit exists, so
-// a tree-dependent gate (FAIL_MARKER) cannot see the MR's files there; the
-// post-squash test below uses FAIL_MARKER on the merged result instead.
-const alwaysFailGateCmd = "exit 1"
+// Gates run on the merged tree (gt-pd1c.45), so the failing cases below put a
+// FAIL_MARKER file in the MR itself and use the tree-dependent gate
+// failMarkerGateCmd. Before gt-pd1c.45 these tests had to use `exit 1` because
+// pre-merge gates and the legacy test command ran on the bare target checkout
+// and could not see the MR's files; the marker proves the gate saw the MR.
 
 // preVerifiedFixture builds a repo with a feature branch and returns an MR that
 // claims pre-verification against the current origin/main HEAD.
@@ -77,8 +77,8 @@ func gateRunCount(t *testing.T, logPath string) int {
 }
 
 func TestProcessMRInfo_PreVerifiedUnchangedTarget_StillRunsPreMergeGates(t *testing.T) {
-	workDir, e, mr := preVerifiedFixture(t, "polecat/test/pv-gate-fail", "ok.txt", "fine\n", true)
-	e.config.Gates = map[string]*GateConfig{"check": {Cmd: alwaysFailGateCmd}}
+	workDir, e, mr := preVerifiedFixture(t, "polecat/test/pv-gate-fail", "FAIL_MARKER", "breaks the gate\n", true)
+	e.config.Gates = map[string]*GateConfig{"check": {Cmd: failMarkerGateCmd()}}
 	before := remoteMainHead(t, workDir)
 
 	result := e.ProcessMRInfo(context.Background(), mr)
@@ -95,10 +95,10 @@ func TestProcessMRInfo_PreVerifiedUnchangedTarget_StillRunsPreMergeGates(t *test
 }
 
 func TestProcessMRInfo_PreVerifiedUnchangedTarget_StillRunsLegacyTestCommand(t *testing.T) {
-	workDir, e, mr := preVerifiedFixture(t, "polecat/test/pv-legacy-fail", "ok.txt", "fine\n", true)
+	workDir, e, mr := preVerifiedFixture(t, "polecat/test/pv-legacy-fail", "FAIL_MARKER", "breaks the tests\n", true)
 	e.config.Gates = nil
 	e.config.RunTests = true
-	e.config.TestCommand = alwaysFailGateCmd
+	e.config.TestCommand = failMarkerGateCmd()
 	before := remoteMainHead(t, workDir)
 
 	result := e.ProcessMRInfo(context.Background(), mr)
@@ -157,8 +157,8 @@ func TestProcessMRInfo_PreVerifiedUnchangedTarget_PassingGateRunsThenMerges(t *t
 // pre-verified claim, so the MR is rejected/returned exactly like any other MR.
 func TestProcessMRInfo_GateFailureSameWithAndWithoutPreVerifiedClaim(t *testing.T) {
 	outcome := func(preVerified bool) ProcessResult {
-		_, e, mr := preVerifiedFixture(t, "polecat/test/pv-compare", "ok.txt", "fine\n", preVerified)
-		e.config.Gates = map[string]*GateConfig{"check": {Cmd: alwaysFailGateCmd}}
+		_, e, mr := preVerifiedFixture(t, "polecat/test/pv-compare", "FAIL_MARKER", "breaks the gate\n", preVerified)
+		e.config.Gates = map[string]*GateConfig{"check": {Cmd: failMarkerGateCmd()}}
 		return e.ProcessMRInfo(context.Background(), mr)
 	}
 
@@ -190,8 +190,8 @@ func TestProcessMRInfo_NotPreVerified_PassingGateUnchanged(t *testing.T) {
 }
 
 func TestProcessBatch_SinglePreVerifiedMR_StillRunsGates(t *testing.T) {
-	workDir, e, mr := preVerifiedFixture(t, "polecat/test/pv-batch-one", "ok.txt", "fine\n", true)
-	e.config.Gates = map[string]*GateConfig{"check": {Cmd: alwaysFailGateCmd}}
+	workDir, e, mr := preVerifiedFixture(t, "polecat/test/pv-batch-one", "FAIL_MARKER", "breaks the gate\n", true)
+	e.config.Gates = map[string]*GateConfig{"check": {Cmd: failMarkerGateCmd()}}
 	before := remoteMainHead(t, workDir)
 
 	result := e.ProcessBatch(context.Background(), []*MRInfo{mr}, "main", nil)
@@ -250,9 +250,9 @@ func TestProcessMRInfo_PreVerifiedOddBases_StillRunGatesWithoutPanic(t *testing.
 		{"short", "abc"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			workDir, e, mr := preVerifiedFixture(t, "polecat/test/pv-odd-"+tc.name, "ok.txt", "fine\n", true)
+			workDir, e, mr := preVerifiedFixture(t, "polecat/test/pv-odd-"+tc.name, "FAIL_MARKER", "breaks the gate\n", true)
 			mr.PreVerifiedBase = tc.base
-			e.config.Gates = map[string]*GateConfig{"check": {Cmd: alwaysFailGateCmd}}
+			e.config.Gates = map[string]*GateConfig{"check": {Cmd: failMarkerGateCmd()}}
 			before := remoteMainHead(t, workDir)
 
 			result := e.ProcessMRInfo(context.Background(), mr)

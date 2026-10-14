@@ -251,7 +251,7 @@ func (e *Engineer) ProcessBatch(ctx context.Context, batch []*MRInfo, target str
 
 	// Step 2: Run gates on the stack tip
 	_, _ = fmt.Fprintf(e.output, "[Batch] Running gates on stack tip (%d MRs)...\n", len(stacked))
-	gateResult := e.runBatchGates(ctx)
+	gateResult := e.runMergeGates(ctx)
 
 	// Step 3: Happy path — all green
 	if gateResult.Success {
@@ -268,7 +268,7 @@ func (e *Engineer) ProcessBatch(ctx context.Context, batch []*MRInfo, target str
 			return result
 		}
 
-		retryResult := e.runBatchGates(ctx)
+		retryResult := e.runMergeGates(ctx)
 		if retryResult.Success {
 			_, _ = fmt.Fprintln(e.output, "[Batch] Retry succeeded (was flaky)")
 			return e.fastForwardBatch(ctx, stacked, target, result)
@@ -290,7 +290,7 @@ func (e *Engineer) ProcessBatch(ctx context.Context, batch []*MRInfo, target str
 			return result
 		}
 		// Verify the good subset actually passes
-		verifyResult := e.runBatchGates(ctx)
+		verifyResult := e.runMergeGates(ctx)
 		if verifyResult.Success {
 			return e.fastForwardBatch(ctx, good, target, result)
 		}
@@ -356,31 +356,11 @@ func (e *Engineer) processSingleMR(ctx context.Context, mr *MRInfo, target strin
 	return result
 }
 
-// runBatchGates runs quality gates (or legacy tests) on the current working tree.
-func (e *Engineer) runBatchGates(ctx context.Context) ProcessResult {
-	if len(e.config.Gates) > 0 {
-		return e.runGates(ctx)
-	}
-	if e.config.RunTests && e.config.TestCommand != "" {
-		result := e.runTests(ctx)
-		if !result.Success {
-			return ProcessResult{
-				Success:     false,
-				TestsFailed: true,
-				Error:       result.Error,
-			}
-		}
-		return ProcessResult{Success: true}
-	}
-	// No gates configured — pass by default
-	return ProcessResult{Success: true}
-}
-
 // verifyAndPush runs gates and pushes the current state for a set of stacked MRs.
 func (e *Engineer) verifyAndPush(ctx context.Context, stacked []*MRInfo, target string) *BatchResult {
 	result := &BatchResult{}
 
-	gateResult := e.runBatchGates(ctx)
+	gateResult := e.runMergeGates(ctx)
 	if !gateResult.Success {
 		if gateResult.TestsFailed {
 			result.Culprits = stacked
@@ -503,7 +483,7 @@ func (e *Engineer) bisectBatch(ctx context.Context, batch []*MRInfo, target stri
 		return nil, batch
 	}
 
-	leftResult := e.runBatchGates(ctx)
+	leftResult := e.runMergeGates(ctx)
 
 	if leftResult.Success {
 		// Left half is green — culprit is in right half
@@ -527,7 +507,7 @@ func (e *Engineer) bisectBatch(ctx context.Context, batch []*MRInfo, target stri
 			_, _ = fmt.Fprintf(e.output, "[Bisect] Error testing right with good left: %v\n", resetErr)
 			return leftGood, append(leftCulprits, right...)
 		}
-		combinedResult := e.runBatchGates(ctx)
+		combinedResult := e.runMergeGates(ctx)
 		if combinedResult.Success {
 			return append(leftGood, right...), leftCulprits
 		}
@@ -540,7 +520,7 @@ func (e *Engineer) bisectBatch(ctx context.Context, batch []*MRInfo, target stri
 	if resetErr := e.resetAndRebuildStack(right, target); resetErr != nil {
 		return nil, batch
 	}
-	rightResult := e.runBatchGates(ctx)
+	rightResult := e.runMergeGates(ctx)
 	if rightResult.Success {
 		return right, leftCulprits
 	}
@@ -567,7 +547,7 @@ func (e *Engineer) bisectRight(ctx context.Context, knownGood []*MRInfo, right [
 		return nil, right
 	}
 
-	result := e.runBatchGates(ctx)
+	result := e.runMergeGates(ctx)
 	if result.Success {
 		// rLeft is fine in context of knownGood — culprit is in rRight
 		_, _ = fmt.Fprintf(e.output, "[Bisect-R] knownGood+rLeft passed → culprit in rRight=%v\n", mrIDs(rRight))
@@ -587,7 +567,7 @@ func (e *Engineer) bisectRight(ctx context.Context, knownGood []*MRInfo, right [
 	if resetErr := e.resetAndRebuildStack(testBatch2, target); resetErr != nil {
 		return rLeftGood, append(rLeftCulprits, rRight...)
 	}
-	result2 := e.runBatchGates(ctx)
+	result2 := e.runMergeGates(ctx)
 	if result2.Success {
 		_, _ = fmt.Fprintf(e.output, "[Bisect-R] rRight passed → good=%v, culprits=%v\n", mrIDs(append(rLeftGood, rRight...)), mrIDs(rLeftCulprits))
 		return append(rLeftGood, rRight...), rLeftCulprits
