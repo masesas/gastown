@@ -4,10 +4,10 @@ Spec: [`../spec/`](../spec/README.md). Setiap plan merujuk ID AC spec. Plan hany
 
 | Plan | Spec | Bentuk kerja | Status |
 | --- | --- | --- | --- |
-| [P-S0](P-S0-prasyarat-pilot.md) | S0 | Operasional + 1 PR kode (upgrade Beads) | Langkah 1–2 selesai (baseline, PR #1); Langkah 3–8 ditahan |
+| [P-S0](P-S0-prasyarat-pilot.md) | S0 | Operasional + 1 PR kode (upgrade Beads) | Fase 1 (k-posin) selesai; Epic A manual dipindah ke P-S1c Langkah 6; Langkah 3 untuk fase 2 |
 | [P-S1a](P-S1a-kontrak-task-readiness.md) | S1a | 4 PR Go | Selesai (PR #4) |
 | [P-S1b](P-S1b-state-fail-closed.md) | S1b | 4 PR Go (PR-0 event + 3 PR) | Selesai (PR #2, #6) |
-| [P-S1c](P-S1c-koordinasi-prosedural.md) | S1c | Formula, directives, pilot | Aset selesai; Langkah 2–9 menunggu pilot town |
+| [P-S1c](P-S1c-koordinasi-prosedural.md) | S1c | Formula, directives, pilot | Aset selesai; pilot town siap; Langkah 2–9 belum dimulai |
 | P-S2a, P-S2b | S2a, S2b | — | Ditulis setelah gate Tahap 1 dan spike SP1 |
 
 ## Urutan eksekusi

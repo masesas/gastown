@@ -13,10 +13,10 @@ Tanggal: 12 Oktober 2026. Sumber: dokumen analisis `../07`–`../14` (baseline c
 
 | ID | Spec | Asal | Tahap | Status |
 | --- | --- | --- | --- | --- |
-| S0 | [Prasyarat pilot](S0-prasyarat-pilot.md) | `09` § 2 (P0.1–P0.4), D1-B, D2-A | 0 | Sebagian: baseline + upgrade Beads selesai (PR #1); Langkah 3–8 ditahan; butuh Dolt ≥ 2.0.7 |
+| S0 | [Prasyarat pilot](S0-prasyarat-pilot.md) | `09` § 2 (P0.1–P0.4), D1-B, D2-A | 0 | Fase 1 (k-posin, mirror lokal) lulus; baseline manual dipindah ke epic S1c; fase 2 (`oto-rent-*`) setelah gate Tahap 1 |
 | S1a | [Kontrak task utuh + readiness](S1a-kontrak-task-readiness.md) | Rank 1 (E04) | 1 | Kode selesai (PR #4) |
 | S1b | [State fail-closed di boundary lifecycle](S1b-state-fail-closed.md) | Rank 5 (E16 a–c) | 1 | Kode selesai (PR #2, lanjutan nuke PR #6) |
-| S1c | [Koordinasi contract-first prosedural](S1c-koordinasi-prosedural.md) | Rank 3P + protokol `14` | 1 | Aset selesai (`../assets/`); pemasangan + epic pilot menunggu pilot town |
+| S1c | [Koordinasi contract-first prosedural](S1c-koordinasi-prosedural.md) | Rank 3P + protokol `14` | 1 | Aset selesai (`../assets/`); pilot town siap, pemasangan + epic pilot belum dimulai (gt-pd1c.24) |
 | S2a | [Gate merge berbasis evidence SHA](S2a-gate-evidence.md) | Rank 2 (E05) | 2 | Siap; impl plan ditulis setelah gate Tahap 1 |
 | S2b | [Akun Claude bersamaan, satu config](S2b-akun-claude-bersamaan.md) | Rank 4a, invariant I1–I7 | 2 | Bergantung spike SP1 |
 | S2c | [Spike E01](S2c-spike-e01.md) | `13` § 8, Rank 4b(a) | 2 (awal) | Siap |
@@ -48,7 +48,7 @@ Gate keluar per tahap mengikuti `../11` § 1, dan disalin ke spec masing-masing.
 | D10 | Akun Claude bersamaan lewat token per proses; satu `~/.claude` |
 | Batas data | Data per-repo existing tidak disentuh tanpa dry-run dan uji restore |
 
-## Status eksekusi (13 Okt 2026)
+## Status eksekusi (14 Okt 2026)
 
 | PR | Isi |
 | --- | --- |
@@ -63,4 +63,8 @@ Gate keluar per tahap mengikuti `../11` § 1, dan disalin ke spec masing-masing.
 | #9 | Test store gagal (bukan skip) bila container Dolt test hidup tapi store tak terjangkau |
 | #10 | Test tmux `internal/cmd` memakai socket terisolasi per test; kegagalan `internal/tmux` di bawah beban berat = kehabisan sumber daya, lulus pada beban normal |
 
-Gate Tahap 1 belum ditutup: AC S1c (epic pilot BE + mobile) membutuhkan pilot town (S0 Langkah 3–8, ditahan; Dolt CLI perlu ≥ 2.0.7).
+| #12–#13 | Dialog startup Claude Code 2.1.296: pilih opsi lewat kursor, fail-closed bila dialog memblokir |
+| #14–#16 | Temuan pilot S0: exclude worktree, feeder tidak men-dispatch ulang MR di queue, nudge tidak memutus tool |
+| #17–#18 | `gt up` cold start; strategi `direct` lewat gate dan target yang benar |
+
+Gate Tahap 0: semua AC fase 1 lulus (S0-AC9 direvisi: baseline manual di epic pertama S1c). Gate Tahap 1 belum ditutup: AC S1c (pemasangan aset + epic pilot BE + mobile, gt-pd1c.24) belum dimulai. Temuan terbuka dari pilot: `../plan/P-S0-prasyarat-pilot.md` § 4.

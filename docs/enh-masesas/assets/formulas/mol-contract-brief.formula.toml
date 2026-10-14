@@ -42,7 +42,7 @@ Draft the brief for epic {{epic}}.
    Contract, Ownership map, Consumers, Decisions and rationale, Questions and assumptions.
 3. Create the approval gate bead with labels gt:keep and make every consumer
    bead depend on it: `bd dep add <consumer> <gate>`.
-4. Create the owner beads in rig {{owner_rig}}, assigned to crew contract-owner:
+4. Create the owner beads in rig {{owner_rig}}, assigned to crew contract_owner:
    - skeleton bead (label contract): blocks every consumer bead that uses it;
    - shared implementation bead: does NOT block consumers unless the brief says so.
    Add `bd dep add <consumer> <skeleton>` for each consumer.

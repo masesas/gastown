@@ -1,6 +1,6 @@
 # Impl Plan P-S1c — Koordinasi Contract-First (Prosedural)
 
-Spec: [`../spec/S1c-koordinasi-prosedural.md`](../spec/S1c-koordinasi-prosedural.md). Tanpa kode Go. Artefak: dua formula baru, directives, dan prosedur pilot. Prasyarat: Tahap 0 (crew `contract-owner` ada di kedua rig).
+Spec: [`../spec/S1c-koordinasi-prosedural.md`](../spec/S1c-koordinasi-prosedural.md). Tanpa kode Go. Artefak: dua formula baru, directives, dan prosedur pilot. Prasyarat: Tahap 0 (crew `contract_owner` ada di kedua rig).
 
 ## 0. Fakta mekanisme (dikonfirmasi dari kode)
 
@@ -24,10 +24,10 @@ docs/enh-masesas/assets/
 ├── formulas/
 │   ├── mol-contract-brief.formula.toml         # workflow: draf → review → cek → approval
 │   ├── mol-contract-brief-review.formula.toml  # convoy: leg per area konsumen + sintesis
-│   └── mol-contract-work.formula.toml          # workflow crew contract-owner
+│   └── mol-contract-work.formula.toml          # workflow crew contract_owner
 ├── directives/
 │   ├── town/mayor.md        # → <town>/directives/mayor.md
-│   ├── rig/crew.md          # → <town>/<rig>/directives/crew.md (crew = contract-owner)
+│   ├── rig/crew.md          # → <town>/<rig>/directives/crew.md (crew = contract_owner)
 │   └── rig/polecat.md       # → <town>/<rig>/directives/polecat.md
 └── templates/
     ├── brief.md             # struktur brief
@@ -43,7 +43,7 @@ Spec menyebut dua formula; review dipisah menjadi formula convoy ketiga karena l
 
 | Step | `target` | `needs` | Isi instruksi (ringkas) | Output yang dicek |
 | --- | --- | --- | --- | --- |
-| `draft` | `mayor` | — | Susun brief dari `templates/brief.md` ke field `design` bead brief (`gt:brief`, `gt:keep`). Isi: Kontrak, Peta kepemilikan, Konsumen, Keputusan, Pertanyaan & asumsi. Buat bead skeleton (assignee crew `contract-owner`) dan bead implementasi shared; pasang `bd dep add <konsumen> <skeleton>` | Bead brief terisi, dependensi ada |
+| `draft` | `mayor` | — | Susun brief dari `templates/brief.md` ke field `design` bead brief (`gt:brief`, `gt:keep`). Isi: Kontrak, Peta kepemilikan, Konsumen, Keputusan, Pertanyaan & asumsi. Buat bead skeleton (assignee crew `contract_owner`) dan bead implementasi shared; pasang `bd dep add <konsumen> <skeleton>` | Bead brief terisi, dependensi ada |
 | `review` | `mayor` | `draft` | Jalankan `gt formula run mol-contract-brief-review --set brief=<id> --set round=<n>`; tunggu sintesis. Ronde 2 hanya bila ada `gap`/`conflict`; revisi brief di antaranya. Maksimal 2 ronde | File sintesis review + verdict per bead |
 | `check` | `mayor` | `review` | Isi `templates/brief-check.md` ke notes bead brief. Setiap butir disertai bukti perintah (`bd dep list`, `bd show`, `git ls-remote` untuk nomor migrasi di `epic/*`) | Checklist lengkap, semua lulus |
 | `decide` | `mayor` | `check` | Sisa `conflict` → bead pertanyaan (§ 3). Tutup bead gate approval: `bd gate close <gate> --reason "brief <id> approved: review r<n>, check ok"` | Gate tertutup; daftar pertanyaan |
@@ -57,7 +57,7 @@ Bead gate dibuat Mayor saat `draft` (`bd create --type=gate --labels=gt:keep …
 - Prompt dasar setiap leg berisi pertanyaan tetap spec § 2.2 dan memaksa output terstruktur `{bead, verdict: ok|gap|conflict, items[]}` (blok JSON di file leg).
 - Sintesis menggabungkan verdict per bead; tidak memutuskan.
 
-### 2.3 `mol-contract-work` (workflow, untuk crew `contract-owner`)
+### 2.3 `mol-contract-work` (workflow, untuk crew `contract_owner`)
 
 | Step | Isi |
 | --- | --- |
@@ -80,7 +80,7 @@ Bead gate dibuat Mayor saat `draft` (`bd create --type=gate --labels=gt:keep …
 8. Rework: sama → hapus label, tutup pertanyaan; beda → bead rework per bead bertanda (`discovered-from`, dependensi disalin, kontrak dulu).
 9. Larangan membuat PR epic → master selama ada label `assumes:*` dengan pertanyaan terbuka atau rework belum merged.
 
-### `rig/crew.md` (contract-owner)
+### `rig/crew.md` (contract_owner)
 
 Satu-satunya penulis path dalam peta kepemilikan; kerjakan `mol-contract-work`; skeleton dulu; jangan mengerjakan bead konsumen.
 
@@ -95,7 +95,7 @@ Jangan ubah path milik owner (lihat brief); kontrak kurang → buat bead `contra
 3. **Verifikasi perintah bd** di town salinan: `bd create --type=gate`, `--type=question`, `bd gate close`, `bd label add`, `bd dep add`. Sesuaikan teks directives dengan flag yang benar.
 4. **Uji penahanan**: konsumen yang bergantung pada gate terbuka tidak muncul di wave `gt convoy stage`; muncul setelah gate ditutup dan skeleton ditutup.
 5. **Pasang ke pilot town** (salin formula ke `<town>/.beads/formulas/`, directives ke lokasinya). Cek `gt prime --explain` pada Mayor, crew, dan polecat → directives termuat.
-6. **Epic pilot BE + mobile** (S1c-AC3..AC6): jalankan alur penuh. Catat bukti: id bead brief, file sintesis review, checklist, waktu tutup gate, waktu merge skeleton, waktu dispatch konsumen.
+6. **Epic pilot BE + mobile** (S1c-AC3..AC6): jalankan alur penuh. Catat bukti: id bead brief, file sintesis review, checklist, waktu tutup gate, waktu merge skeleton, waktu dispatch konsumen. Bersamaan, catat baseline workflow manual (pindahan S0-AC9, Epic A P-S0 Langkah 7): satu epic berkompleksitas sebanding dikerjakan manual oleh Anda, metrik `../11` § 3 diisi ke `../baseline/metrics-baseline.md` berdampingan dengan epic S1c.
 7. **Simulasi jawaban** (S1c-AC7): satu jawaban sama, satu berbeda.
 8. **Uji rollback** (S1c-AC8) di town salinan: hapus formula dan directives → `gt prime --explain` bersih, epic tanpa briefing berjalan normal.
 9. **Laporan Tahap 1 (bagian S1c)** ke `../pilot/epic-1-s1c.md`.
@@ -116,6 +116,6 @@ Jangan ubah path milik owner (lihat brief); kontrak kurang → buat bead `contra
 ## 6. Batasan eksplisit
 
 - **Out of scope:** semua otomasi Go (S3): guard sling, feed fail-closed, `contract_ref` otomatis, `contract-stale`, guard kepemilikan, pengingat, propagasi otomatis, blokir PR epic.
-- **Known edge case:** routing step ke crew lewat `workflow_target` belum teruji; fallback: Mayor men-sling bead skeleton dengan `gt sling <bead> <rig> --crew contract-owner`.
-- **Known edge case:** directives `crew.md` berlaku untuk semua crew di rig; aman selama hanya ada crew `contract-owner`.
+- **Known edge case:** routing step ke crew lewat `workflow_target` belum teruji; fallback: Mayor men-sling bead skeleton dengan `gt sling <bead> <rig> --crew contract_owner`.
+- **Known edge case:** directives `crew.md` berlaku untuk semua crew di rig; aman selama hanya ada crew `contract_owner`.
 - **Known limitation:** kepatuhan Mayor bergantung pada LLM; diukur lewat audit sampel dan diperkuat di S3.
