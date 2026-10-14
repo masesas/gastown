@@ -199,16 +199,13 @@ func TestContainsRewindIndicators(t *testing.T) {
 		{"empty", "", false},
 		{"normal prompt", "❯ hello world", false},
 		{"busy indicator", "⏵⏵ Running tool... esc to interrupt", false},
-		{"rewind with enter and esc", "Rewind\nPress Enter to select, Esc to go back", true},
-		{"rewind case insensitive", "rewind history\nenter to continue\nesc to exit", true},
-		{"enter to continue + esc to exit", "Some UI\nEnter to continue\nEsc to exit", true},
-		{"enter to accept + esc to cancel", "Enter to accept changes\nEsc to cancel", true},
-		{"enter to select + esc to cancel", "Choose a checkpoint:\nEnter to select\nEsc to cancel", true},
-		{"only rewind no actions", "Rewind history shown here", false},
-		{"only enter no esc", "Enter to continue", false},
-		{"only esc no enter", "Esc to exit", false},
+		{"rewind title with actions", "  Rewind\n\n  Enter to continue · Esc to cancel", true},
+		{"rewind title case insensitive", "REWIND\nenter to continue · esc to exit", true},
+		{"actions without rewind title", "Some UI\nEnter to continue\nEsc to exit", false},
+		{"askuserquestion footer", "Which color?\nEnter to select · ↑/↓ to navigate · Esc to cancel", false},
+		{"rewind word inside text", "⏺ please rewind the video\nEnter to select · Esc to cancel", false},
+		{"only rewind no actions", "Rewind\nhistory shown here", false},
 		{"conversation mentioning rewind", "User said: please rewind the video\n❯ ", false},
-		{"partial match no pair", "Enter to continue\nSome other text", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

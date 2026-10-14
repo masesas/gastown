@@ -1,0 +1,23 @@
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ MERGE_READY received - check inbox for pending work
+
+❯ New MR available - check merge queue for pending work
+
+⏺ ack
+
+✻ Crunched for 0s · done 6:36 AM
+
+❯ Run ./slow-gate.sh again with the Bash tool in the foreground (timeout
+  120000). If other messages arrive, only reply ack.
+
+⏺ Bash(./slow-gate.sh)
+  ⎿  Running… (7s · timeout 2m)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+✳ Finagling… (9s · ↓ 107 tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle) · ← 3 agents

@@ -1,0 +1,23 @@
+✻ Cooked for 2s · done 6:40 AM
+
+────────────────────────────────────────────────────────────────────────────────
+  Rewind
+
+  Restore the code and/or conversation to the point before…
+
+    ↑ 5 more
+    Run ./slow-gate.sh again with the Bash tool in the foreground (timeou…
+    No code changes
+
+    Use the AskUserQuestion tool to ask me which color I prefer, red or b…
+    No code changes
+
+    New MR available - check merge queue for pending work
+    No code changes
+
+  ❯ (current)
+
+
+
+
+  Enter to continue · Esc to cancel

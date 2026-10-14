@@ -1,0 +1,23 @@
+
+❯ MERGE_READY received - check inbox for pending work
+
+⏺ ack
+
+✻ Cooked for 1s · done 6:35 AM
+
+❯ Run ./slow-gate.sh again with the Bash tool in the foreground (timeout
+  120000). If other messages arrive, only reply ack.
+
+⏺ Bash(./slow-gate.sh)
+  ⎿  Running… (14s · timeout 2m)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+❯ MERGE_READY received - check inbox for pending work
+  ctrl+x ctrl+s to send now
+
+✳ Frolicking… (17s · ↓ 107 tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ← 3 agents

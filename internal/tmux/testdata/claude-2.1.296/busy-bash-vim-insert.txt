@@ -1,0 +1,23 @@
+▝▜██████▀  Model · Plan
+ ▝▝   ▝▝   /…/repro
+
+
+❯ Reply with the single word pong.
+
+⏺ pong
+
+✻ Worked for 1s · done 6:41 AM
+
+❯ Run ./slow-gate.sh with the Bash tool in the foreground (timeout 120000). If
+  other messages arrive, only reply ack.
+
+  Bash(./slow-gate.sh)
+  ⎿  Running… (8s · timeout 2m)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+✳ Pouncing… (11s · ↓ 106 tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  -- INSERT -- ⏸ manual mode on · ← 3 agents

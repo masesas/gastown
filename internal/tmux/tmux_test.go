@@ -2298,10 +2298,11 @@ func TestHasBusyIndicator(t *testing.T) {
 	}
 }
 
-// TestShouldSendEscapeForLines guards against the regression where a nudge
-// sends the vim-mode Escape keystroke while the agent is actively generating,
-// interrupting its current turn (e.g. the Mayor). When the pane shows the busy
-// indicator ("esc to interrupt"), the Escape must be suppressed.
+// TestShouldSendEscapeForLines pins the nudge Escape gate: Escape is sent only
+// when the composer visibly shows vim INSERT mode (GH#307). Everything else —
+// including a busy pane without any recognizable marker — gets no Escape,
+// because in Claude Code an Escape aborts a running tool (gt-dzck). Real
+// Claude 2.1.296 panes are covered in nudge_fixture_test.go.
 func TestShouldSendEscapeForLines(t *testing.T) {
 	t.Parallel()
 
@@ -2311,34 +2312,34 @@ func TestShouldSendEscapeForLines(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "claude generating - suppress escape",
+			name:  "claude generating with marker - no escape",
 			lines: []string{"✻ Cogitating… (12s · ↑ 2.1k tokens · esc to interrupt)"},
 			want:  false,
 		},
 		{
-			name:  "codex working - suppress escape",
-			lines: []string{"• Working (2m 18s • esc to interrupt)"},
+			name:  "busy without any marker - no escape",
+			lines: []string{"  ⎿  Running… (10s · timeout 2m)", "❯ ", "  ⏸ manual mode on"},
 			want:  false,
 		},
 		{
-			name:  "busy indicator among multiple lines - suppress escape",
-			lines: []string{"tool output", "more output", "⏵⏵ bypass permissions on · esc to interrupt"},
-			want:  false,
-		},
-		{
-			name:  "idle ready prompt - allow escape",
+			name:  "idle ready prompt without vim - no escape",
 			lines: []string{"❯ "},
+			want:  false,
+		},
+		{
+			name:  "vim insert mode - escape",
+			lines: []string{"❯ HEALTH_CHECK: respond", "  -- INSERT -- ⏸ manual mode on", ""},
 			want:  true,
 		},
 		{
-			name:  "idle with typed nudge text - allow escape",
-			lines: []string{"❯ HEALTH_CHECK: heartbeat stale, respond to confirm"},
-			want:  true,
+			name:  "insert indicator only in tool output - no escape",
+			lines: []string{"  ⎿  -- INSERT -- ⏸ manual mode on", "❯ ", "  ⏸ manual mode on"},
+			want:  false,
 		},
 		{
-			name:  "no lines captured - allow escape (not busy)",
+			name:  "no lines captured - no escape",
 			lines: nil,
-			want:  true,
+			want:  false,
 		},
 	}
 
@@ -2351,11 +2352,10 @@ func TestShouldSendEscapeForLines(t *testing.T) {
 	}
 }
 
-// TestShouldSendEscape_LivePane exercises the busy-state gate end-to-end against
-// a real tmux pane (capture-only, so it avoids the sendEnterVerified timing
-// flakiness of the full nudge integration tests). It confirms the wiring: when
-// the pane shows the "esc to interrupt" busy indicator, shouldSendEscape returns
-// false so a nudge will not interrupt the agent's in-flight work.
+// TestShouldSendEscape_LivePane exercises the gate against a real tmux pane
+// (capture-only, so it avoids the sendEnterVerified timing flakiness of the
+// full nudge integration tests): no Escape for a plain pane, Escape once the
+// vim INSERT indicator is on screen.
 func TestShouldSendEscape_LivePane(t *testing.T) {
 	tm := newTestTmux(t)
 	session := "gt-test-should-escape-" + t.Name()
@@ -2366,25 +2366,22 @@ func TestShouldSendEscape_LivePane(t *testing.T) {
 	}
 	defer func() { _ = tm.KillSession(session) }()
 
-	// Idle shell prompt: no busy indicator → Escape is safe to send.
-	if !tm.shouldSendEscape(session) {
+	if tm.shouldSendEscape(session) {
 		out, _ := tm.CapturePane(session, 20)
-		t.Fatalf("shouldSendEscape on idle pane = false, want true; pane:\n%s", out)
+		t.Fatalf("shouldSendEscape on plain pane = true, want false; pane:\n%s", out)
 	}
 
-	// Simulate an agent that is actively generating by rendering the busy
-	// indicator into the pane. The typed command line itself contains the
-	// marker, so detection does not depend on the command actually executing.
-	if err := tm.SendKeys(session, "echo esc to interrupt"); err != nil {
+	// Render the vim INSERT indicator at the start of the bottom line, where
+	// the status bar shows it: clear the screen and print it without a newline.
+	if err := tm.SendKeys(session, "clear; printf '%s' '-- INSERT --'"); err != nil {
 		t.Fatalf("SendKeys: %v", err)
 	}
 
-	// Poll until the gate flips to suppressed (the shell may be slow to render).
 	deadline := time.Now().Add(5 * time.Second)
-	for tm.shouldSendEscape(session) {
+	for !tm.shouldSendEscape(session) {
 		if time.Now().After(deadline) {
 			out, _ := tm.CapturePane(session, 20)
-			t.Fatalf("shouldSendEscape did not detect busy indicator within timeout; pane:\n%s", out)
+			t.Fatalf("shouldSendEscape did not detect INSERT indicator within timeout; pane:\n%s", out)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -2885,5 +2882,42 @@ func TestValidateCommandBinary(t *testing.T) {
 				t.Errorf("validateCommandBinary(%q) error = %v, wantErr = %v", tc.cmd, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestNudgeSession_RefusesOpenDialog checks the wiring of the modal guard:
+// with a dialog footer on screen the nudge types nothing and reports
+// ErrSubmitNotVerified so callers queue it instead (gt-dzck).
+func TestNudgeSession_RefusesOpenDialog(t *testing.T) {
+	tm := newTestTmux(t)
+	session := "gt-test-nudge-dialog-" + t.Name()
+
+	_ = tm.KillSession(session)
+	if err := tm.NewSession(session, ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer func() { _ = tm.KillSession(session) }()
+
+	if err := tm.SendKeys(session, "clear; printf '%s' 'Esc to cancel · Tab to amend'"); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		content, _ := tm.captureScreen(session)
+		if containsOpenDialog(content) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dialog footer not rendered; pane:\n%s", content)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	err := tm.NudgeSession(session, "nudge-must-not-be-typed")
+	if !errors.Is(err, ErrSubmitNotVerified) {
+		t.Fatalf("NudgeSession with open dialog = %v, want ErrSubmitNotVerified", err)
+	}
+	if content, _ := tm.captureScreen(session); strings.Contains(content, "nudge-must-not-be-typed") {
+		t.Fatalf("nudge text was typed into the dialog; pane:\n%s", content)
 	}
 }
