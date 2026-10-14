@@ -28,9 +28,9 @@ Langkah berurutan dengan hasil yang dapat diperiksa:
    - nomor migrasi direservasi dan tidak bentrok dengan `epic/*` lain yang terbuka.
 4. **Approval Mayor**: Mayor menutup bead `gate` approval brief (bead gate diberi label `gt:keep` agar tidak ditutup otomatis oleh patrol stale). Syarat: review sudah berjalan (minimal satu ronde) dan semua cek mekanis lulus. Keberatan `conflict` yang tersisa setelah 2 ronde menjadi pertanyaan krusial (§ 2.4).
 
-### 2.3 Formula `mol-contract-work` dan crew `contract-owner`
+### 2.3 Formula `mol-contract-work` dan crew `contract_owner`
 
-- Satu crew `contract-owner` per rig adalah satu-satunya penulis area dalam peta kepemilikan rig itu.
+- Satu crew `contract_owner` per rig adalah satu-satunya penulis area dalam peta kepemilikan rig itu.
 - Pekerjaan owner dipecah dua bead:
   - **skeleton kontrak** (endpoint/DTO/interface/migrasi kosong, API komponen): memblokir semua bead konsumen;
   - **implementasi shared**: tidak memblokir konsumen, kecuali brief menyatakan sebaliknya.
@@ -61,14 +61,14 @@ Bead konsumen hanya di-dispatch lewat `gt convoy stage` + `launch` atau schedule
 - [ ] **S1c-AC2** Directives Mayor memuat: kriteria briefing wajib, tabel krusial + kelas, format bead pertanyaan, aturan tanda + propagasi, aturan pengiriman/jawaban, aturan rework, larangan sling manual konsumen, dan larangan PR epic → master dengan asumsi terbuka.
 - [ ] **S1c-AC3** Epic pilot BE + mobile dijalankan lewat brief: ada minimal satu ronde review terstruktur, checklist cek mekanis terisi dan lulus, bead gate ditutup Mayor.
 - [ ] **S1c-AC4** Tidak ada bead konsumen yang di-dispatch sebelum skeleton kontraknya merged (diverifikasi dari timestamp bd).
-- [ ] **S1c-AC5** Area dalam peta kepemilikan hanya diubah oleh commit dari crew `contract-owner` rig itu (diverifikasi dari `git log` per path di branch epic).
+- [ ] **S1c-AC5** Area dalam peta kepemilikan hanya diubah oleh commit dari crew `contract_owner` rig itu (diverifikasi dari `git log` per path di branch epic).
 - [ ] **S1c-AC6** Setiap pertanyaan krusial di epic pilot tercatat sebagai bead `gt:question` dengan semua field; task terkait (termasuk dependen) berlabel `assumes:Q-*`; pertanyaan `block` terkirim dengan subjek `[BLOCK]`.
 - [ ] **S1c-AC7** Simulasi jawaban: satu jawaban sama (label hilang, tanpa rework) dan satu berbeda (bead rework hanya untuk task bertanda, urutan kontrak dulu).
 - [ ] **S1c-AC8** Formula baru dan directives dapat dilepas tanpa sisa (rollback diuji di town salinan).
 
 ## 4. Di luar scope
 
-Kode Go apa pun (guard sling, feed fail-closed, `contract_ref` otomatis, `contract-stale`, guard kepemilikan, pengingat otomatis, propagasi otomatis, blokir PR epic otomatis): semuanya S3. Diskusi bebas multi-agent; role `contract-owner` di core; generator OpenAPI.
+Kode Go apa pun (guard sling, feed fail-closed, `contract_ref` otomatis, `contract-stale`, guard kepemilikan, pengingat otomatis, propagasi otomatis, blokir PR epic otomatis): semuanya S3. Diskusi bebas multi-agent; role `contract_owner` di core; generator OpenAPI.
 
 ## 5. Risiko
 
@@ -88,3 +88,4 @@ Pertanyaan krusial per epic; % jawaban berbeda dari asumsi; bead rework akibat a
 - 12 Okt 2026: koreksi istilah overlay → formula baru di town; validasi via `--dry-run`; label `gt:keep` pada bead gate (hasil verifikasi kode).
 - 12 Okt 2026: lokasi brief: draf di bead `gt:brief`, versi final di repo lewat PR skeleton (Mayor tidak menulis repo).
 - 12 Okt 2026: review brief dipisah ke formula convoy `mol-contract-brief-review` (leg paralel hanya tersedia di tipe convoy).
+- 14 Okt 2026: nama crew `contract-owner` menjadi `contract_owner` (spec, plan, aset), karena `gt` menolak tanda hubung pada nama crew. Pilot fase 1 memakai satu rig monorepo `posin` (BE + mobile) sehingga epic pilot S1c-AC3 berjalan di satu rig; lihat S0.

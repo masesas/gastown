@@ -1,5 +1,5 @@
 description = """
-Work loop for the contract-owner crew of a rig (S1c).
+Work loop for the contract_owner crew of a rig (S1c).
 
 The contract owner is the only writer of the paths in the brief's ownership
 map for this rig. The skeleton comes first because it unblocks consumers;
