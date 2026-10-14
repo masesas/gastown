@@ -26,10 +26,10 @@ endpoints/DTOs/interfaces/empty migrations/shared component APIs, with tests
 for the contract shape. Also commit the approved brief as
 docs/briefs/{{epic}}.md so it is pinned with the code.
 
-Submit through the normal refinery path (PR to epic/<name>). Do not touch
-paths outside the ownership map.
+Submit through the normal refinery path (`gt done`; the merge request targets
+the epic's integration branch). Do not touch paths outside the ownership map.
 
-**Exit criteria:** skeleton PR merged to epic/<name>.
+**Exit criteria:** skeleton merged to the epic's integration branch.
 """
 
 [[steps]]
@@ -40,7 +40,8 @@ description = """
 After the skeleton is merged, record the pin on the skeleton bead and every
 consumer bead listed in the brief:
 
-`bd update <bead> --notes "contract_ref: <repo>:<path>@<merged-sha>"`
+`bd update <bead> --append-notes "contract_ref: <repo>:<path>@<merged-sha>"`
+(append, never replace: --notes overwrites the existing notes)
 
 Then mail the Mayor: subject "Contract pinned: {{epic}}" with the ref.
 

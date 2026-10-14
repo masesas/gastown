@@ -1,20 +1,20 @@
 # Brief: <epic-id> — <epic title>
 
-Status: draft | in review (round n) | approved (gate <gate-id>, <date>)
+Status: draft | in review (round n) | approved (<date>; this bead closed)
 
 ## 1. Contract
 
 | Item | Kind | Owner bead | Definition |
 | --- | --- | --- | --- |
 | `GET /api/v1/...` | endpoint | <skeleton-bead> | request, response, error codes, pagination |
-| `TarifDto` | DTO | <skeleton-bead> | fields with type and nullability |
-| `V0xx__...sql` | migration (reserved number) | <skeleton-bead> | tables/columns |
+| `<Name>Response` | DTO / response type | <skeleton-bead> | fields with type and nullability |
+| `<nnnn>_<name>.sql` | migration (reserved number) | <skeleton-bead> | tables/columns |
 
 ## 2. Ownership map
 
 | Path glob | Owner bead | Rig |
 | --- | --- | --- |
-| `be/src/main/java/.../shared/**` | <owner-bead> | be |
+| `<app>/internal/<shared-pkg>/**` | <owner-bead> | <rig> |
 
 Every hot path the epic touches appears here exactly once.
 
@@ -22,7 +22,7 @@ Every hot path the epic touches appears here exactly once.
 
 | Consumer bead | Rig | Uses contract items |
 | --- | --- | --- |
-| <bead> | pro | `GET /api/v1/...`, `TarifDto` |
+| <bead> | <rig or app path> | `GET /api/v1/...`, `<Name>Response` |
 
 ## 4. Decisions and rationale
 

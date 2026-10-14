@@ -1,6 +1,8 @@
 # Impl Plan P-S1c — Koordinasi Contract-First (Prosedural)
 
-Spec: [`../spec/S1c-koordinasi-prosedural.md`](../spec/S1c-koordinasi-prosedural.md). Tanpa kode Go. Artefak: dua formula baru, directives, dan prosedur pilot. Prasyarat: Tahap 0 (crew `contract_owner` ada di kedua rig).
+Spec: [`../spec/S1c-koordinasi-prosedural.md`](../spec/S1c-koordinasi-prosedural.md). Tanpa kode Go. Artefak: dua formula baru, directives, dan prosedur pilot. Prasyarat: Tahap 0 (crew `contract_owner` ada di setiap rig pilot).
+
+**Status (14 Okt 2026):** Langkah 1–5 selesai di pilot fase 1 (rig monorepo `posin`); Langkah 6–9 menunggu epic pilot.
 
 ## 0. Fakta mekanisme (dikonfirmasi dari kode)
 
@@ -12,7 +14,7 @@ Spec: [`../spec/S1c-koordinasi-prosedural.md`](../spec/S1c-koordinasi-prosedural
 | Workflow | `[[steps]]` dengan `needs` (harus merujuk step sebelumnya), `target` (`""`/`rig`/`mayor`/…, ditulis sebagai `workflow_target`), `interactive` (bila ada satu step interaktif, semua step siap di-hook ke sesi saat ini) | Hindari `interactive`; step Mayor pakai `target = "mayor"` |
 | Convoy | `[[legs]]` paralel + `[synthesis]`; leg di-sling dengan `--no-convoy [--review-only]` | Review brief = convoy formula terpisah |
 | Directives | Town `<town>/directives/<role>.md`, rig `<town>/<rig>/directives/<role>.md`, digabung town lalu rig; Mayor hanya membaca level town (`config/directives.go:19`, `prime_output.go:120-174`) | Directives per role, bukan per nama crew |
-| Penahanan dependen | Blocker terbuka dengan tipe yang tidak slingable (mis. `gate`) menahan dependen di `convoy stage` (`convoy_stage.go:999-1092`) dan feed daemon (`operations.go:201-350`) | Bead gate brief dan bead pertanyaan `block` menahan konsumen tanpa kode baru |
+| Penahanan dependen | Blocker terbuka yang tidak slingable menahan dependen di `convoy stage` (`computeWaves`, `convoy_stage.go:1003`) **hanya bila blocker ikut terambil** ke DAG. Bead bertipe `gate` disembunyikan `bd list`, sehingga tidak terambil dan tidak menahan (diuji Langkah 4; gt-pd1c.43). Tipe `decision` terambil dan menahan | Bead brief (`decision`) sekaligus gate persetujuan; bead pertanyaan `block` juga `decision`; semuanya anak epic |
 | Auto-close stale | `wisp_reaper` menutup bead diam ≥ 7 hari kecuali label `gt:keep` (`reaper.go:721-753`) | Semua bead gate, brief, dan pertanyaan diberi `gt:keep` |
 
 ## 1. Artefak dan lokasi sumber
@@ -48,7 +50,7 @@ Spec menyebut dua formula; review dipisah menjadi formula convoy ketiga karena l
 | `check` | `mayor` | `review` | Isi `templates/brief-check.md` ke notes bead brief. Setiap butir disertai bukti perintah (`bd dep list`, `bd show`, `git ls-remote` untuk nomor migrasi di `epic/*`) | Checklist lengkap, semua lulus |
 | `decide` | `mayor` | `check` | Sisa `conflict` → bead pertanyaan (§ 3). Tutup bead gate approval: `bd gate close <gate> --reason "brief <id> approved: review r<n>, check ok"` | Gate tertutup; daftar pertanyaan |
 
-Bead gate dibuat Mayor saat `draft` (`bd create --type=gate --labels=gt:keep …`, flag persis diverifikasi saat Langkah 4) dan konsumen bergantung padanya, sehingga konsumen tertahan sampai gate ditutup **dan** skeleton merged.
+Bead brief (`--type=decision --labels gt:brief,gt:keep --parent <epic>`) dibuat Mayor saat `draft` dan menjadi gate persetujuan: konsumen bergantung padanya, sehingga tertahan sampai brief ditutup (disetujui) **dan** skeleton merged. Tidak ada bead gate terpisah (lihat hasil Langkah 3–4).
 
 ### 2.2 `mol-contract-brief-review` (convoy)
 
@@ -100,13 +102,25 @@ Jangan ubah path milik owner (lihat brief); kontrak kurang → buat bead `contra
 8. **Uji rollback** (S1c-AC8) di town salinan: hapus formula dan directives → `gt prime --explain` bersih, epic tanpa briefing berjalan normal.
 9. **Laporan Tahap 1 (bagian S1c)** ke `../pilot/epic-1-s1c.md`.
 
+**Hasil Langkah 1–5 (14 Okt 2026, pilot fase 1).** "Town salinan uji" diganti: verifikasi perintah bd di DB `bd` sementara (scratch), dry-run dan uji penahanan di pilot town sendiri dengan hanya Dolt yang hidup (tanpa daemon/agent), memakai epic sekali pakai yang lalu ditutup.
+
+| Langkah | Hasil |
+| --- | --- |
+| 1 | Aset disesuaikan untuk pilot dan bd 1.3.0: template dipasang ke `$GT_ROOT/templates/contract/` (agent town tidak bisa membaca repo fork); `pin` memakai `--append-notes` (`--notes` menimpa); cabang target = integration branch epic (bukan `epic/*`); leg review per area, bukan per rig; contoh template netral; `consumer_rigs` dipisah titik koma (`--set` memecah koma) |
+| 2 | `gt formula run <nama> --dry-run --rig posin` rc=0 untuk ketiga formula (S1c-AC1) |
+| 3 | bd 1.3.0: tidak ada tipe `question` (ditolak), tidak ada `bd gate close` (gate ditutup dengan `bd close`/`bd gate resolve`); `bd dep add`, `bd label add`, `--append-notes` berfungsi; `bd ready` menahan dependen gate |
+| 4 | `gt convoy stage` **tidak** menahan konsumen yang bergantung pada bead `gate` (gate tidak terambil karena disembunyikan `bd list`; gt-pd1c.43). Dengan brief `decision` sebagai blocker: konsumen dikeluarkan dari wave + warning "gated by non-slingable blocker"; setelah brief ditutup, konsumen masuk wave sesudah skeleton. Desain diubah: brief = gate persetujuan, pertanyaan = `decision`, semua anak epic |
+| 5 | Terpasang di pilot (`.beads/formulas/`, `templates/contract/`, `directives/mayor.md`, `posin/directives/{crew,polecat}.md`). `gt prime --dry-run --explain`: directives termuat untuk Mayor (town), crew `contract_owner` dan polecat (rig) |
+
+Catatan staging: `gt convoy stage <epic>` tanpa `--no-validate` membuat bead validasi `hq-*` (tipe task) yang tidak terpetakan ke rig dan membuat restage gagal (`[no-rig]`). Untuk cek mekanis, pakai `--no-validate`.
+
 ## 5. Pemetaan AC → bukti
 
 | AC | Bukti |
 | --- | --- |
-| S1c-AC1 | Output dry-run tiga formula |
-| S1c-AC2 | Diff directives terhadap daftar § 3 |
-| S1c-AC3 | Bead brief, sintesis review, checklist, gate tertutup |
+| S1c-AC1 | Output dry-run tiga formula (Langkah 2: rc=0) |
+| S1c-AC2 | Diff directives terhadap daftar § 3; termuat di prime (Langkah 5) |
+| S1c-AC3 | Bead brief (ditutup = disetujui), sintesis review, checklist |
 | S1c-AC4 | Query timestamp: `closed_at` skeleton < dispatch setiap konsumen |
 | S1c-AC5 | `git log --format='%an %s' epic/<nama> -- <path owner>` |
 | S1c-AC6 | `bd list --label gt:question`; `bd list --label assumes:Q-…`; mail `[BLOCK]` |

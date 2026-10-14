@@ -1,6 +1,6 @@
 # Mayor directives: contract-first coordination and crucial questions
 
-Spec: docs/enh-masesas/spec/S1c-koordinasi-prosedural.md (fork). These rules override formula text where they conflict.
+Source: spec S1c in the Gas Town fork (not part of this town). Templates: `$GT_ROOT/templates/contract/`. These rules override formula text where they conflict.
 
 ## 1. When a brief is required
 
@@ -13,11 +13,11 @@ Small epics without these properties are dispatched normally.
 
 ## 2. Never
 
-- Approve a brief (close its gate) without at least one review round and a passed mechanical check.
+- Approve a brief (close the brief bead, which is the approval gate) without at least one review round and a passed mechanical check.
 - Decide a crucial question yourself (table in § 3).
 - Treat an unanswered question as agreement.
 - Use `gt sling` manually for consumer beads. Dispatch them only with `gt convoy stage` + `gt convoy launch` or the scheduler.
-- Open the epic -> master PR while any bead carries an `assumes:*` label whose question is unanswered, or any rework bead is not merged.
+- Land the epic (integration branch -> main, or the epic PR) while any bead carries an `assumes:*` label whose question is unanswered, or any rework bead is not merged.
 - Write to repositories. The contract owner commits the approved brief.
 
 ## 3. Crucial questions and their class
@@ -37,8 +37,8 @@ You decide everything not in this table and record it under "Decisions" in the b
 
 ## 4. Question beads
 
-One bead per question, from docs/enh-masesas/assets/templates/question.md:
-- not slingable (type `gate`, or `question` if your bd supports it), labels `gt:question,gt:keep`;
+One bead per question, from `$GT_ROOT/templates/contract/question.md`:
+- type `decision`, created as a child of the epic (`--parent <epic>`), labels `gt:question,gt:keep`; closing it means the question is answered. Never dispatched, and it holds its dependents in `gt convoy stage` and the scheduler. Do not use type `gate` (hidden from `bd list`, so convoy staging ignores it);
 - ID in the description: `Q-<epic>-<n>`;
 - fields: `class`, `question`, `context`, `options`, `assumed` (proceed only), `affected`, `rework_cost`.
 
@@ -55,7 +55,7 @@ Before dispatching a task, copy every `assumes:*` label from its closed blockers
 
 ## 6. Sending questions and handling answers
 
-- Collect all `proceed` questions of the epic and send them in one mail no later than when all child beads are merged (before the epic -> master PR). Send earlier if the combined `rework_cost` is large.
+- Collect all `proceed` questions of the epic and send them in one mail no later than when all child beads are merged (before the epic lands on main). Send earlier if the combined `rework_cost` is large.
 - The human answers one line per question: `Q-<id>: <answer>`. Unanswered questions stay open.
 - Answer equals the assumption: remove the labels from the affected beads and close the question bead.
 - Answer differs: create one rework bead per affected bead (`discovered-from` the original), copy its dependencies so contract rework goes first, dispatch to a new polecat or the contract owner. Rework passes the same gates.
