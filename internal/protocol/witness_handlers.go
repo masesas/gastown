@@ -107,8 +107,9 @@ func (h *DefaultWitnessHandler) HandleMergeFailed(payload *MergeFailedPayload) e
 // For standard convoys: the merge pipeline proceeds normally (MR bead exists,
 // refinery will process it).
 //
-// For owned+direct convoys: the polecat already pushed to main and closed its
-// issue. The witness skips merge flow registration — only cleanup remains.
+// For owned+direct convoys: the polecat already pushed to its target branch
+// (rigs without a merge queue only) and closed its issue. The witness skips
+// merge flow registration — only cleanup remains.
 func (h *DefaultWitnessHandler) HandlePolecatDone(payload *PolecatDonePayload) error {
 	_, _ = fmt.Fprintf(h.Output, "[Witness] POLECAT_DONE received for polecat %s\n", payload.Polecat)
 	_, _ = fmt.Fprintf(h.Output, "  Exit: %s\n", payload.ExitType)
@@ -119,7 +120,7 @@ func (h *DefaultWitnessHandler) HandlePolecatDone(payload *PolecatDonePayload) e
 
 	if payload.SkipMergeFlow() {
 		_, _ = fmt.Fprintf(h.Output, "[Witness] ✓ Owned+direct convoy %s — merge flow skipped\n", payload.ConvoyID)
-		_, _ = fmt.Fprintf(h.Output, "  Polecat already pushed to main. Proceeding with cleanup only.\n")
+		_, _ = fmt.Fprintf(h.Output, "  Polecat already pushed to its target branch. Proceeding with cleanup only.\n")
 
 		// Initiate polecat cleanup (same as HandleMerged)
 		nukeResult := witness.AutoNukeIfClean(h.WorkDir, h.Rig, payload.Polecat)

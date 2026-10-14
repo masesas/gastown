@@ -980,6 +980,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	var mrFailed bool
 	var doneErrors []string
 	var convoyInfo *ConvoyInfo // Populated if issue is tracked by a convoy
+	var landingStrategy string // Effective convoy strategy for COMPLETED work (gt-pd1c.37)
 	var sourceIssueForNoMerge *beads.Issue
 	var sourceBD *beads.Beads
 	if exitType == ExitCompleted {
@@ -1157,9 +1158,15 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// gh#3400: Refresh remote tracking refs first so contamination check (and
 		// the auto-rebase below) sees the current clean base. In fork-backed rigs,
 		// that base is upstream/main, not the fork's origin/main.
+		// Resolve the landing target once (gt-pd1c.37). The rebase/contamination
+		// base, the direct push and the MR all use this same branch.
+		landingTarget, landingTargetOrigin := resolveDoneTarget(defaultBranch, doneTarget, sourceIssueForNoMerge,
+			rigIntegrationDetector(townRoot, rigName, sourceBD, g, issueID, noteIntegrationDetectError))
+		printDoneTarget(landingTarget, landingTargetOrigin, "--target flag")
+
 		contaminationBase := baseRef
-		if doneTarget != "" && doneTarget != defaultBranch {
-			contaminationBase = doneContaminationBaseRef(defaultBranch, doneTarget)
+		if landingTarget != defaultBranch {
+			contaminationBase = doneContaminationBaseRef(defaultBranch, landingTarget)
 		}
 		fetchRemote := git.RemoteForRef(contaminationBase)
 		if fetchRemote == "" {
@@ -1205,24 +1212,31 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			aheadCount, _ = g.CommitsAhead(baseRef, "HEAD")
 		}
 
-		// Determine merge strategy from convoy (gt-myofa.3)
-		// Convoys can override the default MR-based workflow:
-		//   direct: push commits straight to target branch, bypass refinery
-		//   mr:     default — create merge-request bead, refinery merges
-		//   local:  keep on feature branch, no push, no MR (for human review/upstream PRs)
+		// Decide how this work lands (gt-myofa.3, gt-pd1c.37). The convoy strategy
+		// stored at dispatch time selects:
+		//   mr:     default — push the branch, create an MR bead; the refinery runs
+		//           the gates and lands it
+		//   direct: push straight to the resolved target, bypassing the refinery.
+		//           Only on rigs without an active merge queue; on a merge-queue rig
+		//           it is redirected to mr so the gate still runs.
+		//   local:  keep on the feature branch, no push, no MR
 		//
-		// Primary: read convoy info from the issue's attachment fields (gt-7b6wf fix).
-		// gt sling stores convoy_id and merge_strategy on the issue when dispatching,
-		// which avoids unreliable cross-rig dep resolution at gt done time.
-		// Fallback: dep-based lookup via getConvoyInfoForIssue (for issues dispatched
-		// before this fix, or where attachment fields weren't set).
+		// Primary: convoy info from the issue's attachment fields (gt-7b6wf fix);
+		// fallback: dep-based lookup for issues dispatched before that fix.
 		convoyInfo = getConvoyInfoFromSourceIssue(sourceIssueForNoMerge)
 		if convoyInfo == nil {
 			convoyInfo = getConvoyInfoForIssue(issueID)
 		}
+		var redirected bool
+		landingStrategy, redirected = effectiveDoneMergeStrategy(convoyInfo, sourceIssueForNoMerge, rigMergeQueueActive(townRoot, rigName))
+		if redirected {
+			style.PrintWarning("convoy %s asks for merge strategy %q, but rig %s uses a merge queue; "+
+				"submitting to the merge queue instead so the refinery lands it", convoyInfo.ID, convoyMergeDirect, rigName)
+			convoyInfo = &ConvoyInfo{ID: convoyInfo.ID, Owned: convoyInfo.Owned, MergeStrategy: convoyMergeMR}
+		}
 
-		// Handle "local" strategy: skip push and MR entirely
-		if convoyInfo != nil && convoyInfo.MergeStrategy == "local" {
+		switch landingStrategy {
+		case convoyMergeLocal:
 			fmt.Printf("%s Local merge strategy: skipping push and merge queue\n", style.Bold.Render("→"))
 			fmt.Printf("  Branch: %s\n", branch)
 			if issueID != "" {
@@ -1231,73 +1245,34 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			fmt.Println()
 			fmt.Printf("%s\n", style.Dim.Render("Work stays on local feature branch."))
 			goto notifyWitness
-		}
-
-		// Handle "direct" strategy: push to target branch, skip MR
-		if convoyInfo != nil && convoyInfo.MergeStrategy == "direct" {
-			fmt.Printf("%s Direct merge strategy: pushing to %s\n", style.Bold.Render("→"), defaultBranch)
+		case convoyMergeDirect:
 			directBd := sourceBD
 			if directBd == nil {
 				directBd = beads.New(cwd)
 			}
-			if skipReason := doneDirectMergeSkipReason(directBd, issueID, sourceIssueForNoMerge, defaultBranch); skipReason != "" {
-				style.PrintWarning("%s", skipReason)
-				notifyDoneCloseSkipped(townRoot, rigName, sender, issueID, skipReason)
-				return fmt.Errorf("cannot complete direct-merge work: %s", skipReason)
+			directResult, directErr := landDoneDirect(doneDirectLanding{
+				g:          g,
+				bd:         directBd,
+				cwd:        cwd,
+				townRoot:   townRoot,
+				rigName:    rigName,
+				sender:     sender,
+				issueID:    issueID,
+				source:     sourceIssueForNoMerge,
+				branch:     branch,
+				baseRef:    baseRef,
+				target:     landingTarget,
+				skipVerify: doneSkipVerify,
+			})
+			if directErr != nil {
+				return directErr
 			}
-			// Push submodule changes before direct push (gt-dzs)
-			pushSubmoduleChanges(g, baseRef)
-			directRefspec := branch + ":" + defaultBranch
-			directPushErr := g.Push("origin", directRefspec, false)
-			if directPushErr != nil {
+			if directResult.pushFailed {
 				pushFailed = true
-				errMsg := fmt.Sprintf("direct push to %s failed: %v", defaultBranch, directPushErr)
-				doneErrors = append(doneErrors, errMsg)
-				style.PrintWarning("%s", errMsg)
+				doneErrors = append(doneErrors, directResult.errMsg)
 				goto notifyWitness
 			}
-			directCommitSHA, _ := g.Rev("HEAD")
-			if doneSkipVerify {
-				noteVerifiedPushSkipped(directBd, cwd, issueID, defaultBranch, directCommitSHA, "--skip-verify on direct merge")
-			} else if verifyErr := g.VerifyPushedCommitReachableFromPushTarget("origin", defaultBranch, directCommitSHA); verifyErr != nil {
-				pushFailed = true
-				errMsg := verifyErr.Error()
-				doneErrors = append(doneErrors, errMsg)
-				noteVerifiedPushFailure(directBd, cwd, issueID, defaultBranch, directCommitSHA, verifyErr)
-				style.PrintWarning("%s\nDirect merge pushed but remote verification failed. Source bead will remain in progress.", errMsg)
-				goto notifyWitness
-			}
-			fmt.Printf("%s Branch pushed directly to %s\n", style.Bold.Render("✓"), defaultBranch)
 			doneCleanupStatus = cleanupStatusAfterSuccessfulPush(doneCleanupStatus)
-
-			// Close the base issue — no MR/refinery will close it
-			if issueID != "" {
-				if skipReason, fatal := doneSourceCloseSkipReason(directBd, issueID, sourceIssueForNoMerge); skipReason != "" {
-					style.PrintWarning("%s", skipReason)
-					notifyDoneCloseSkipped(townRoot, rigName, sender, issueID, skipReason)
-					if fatal {
-						return fmt.Errorf("cannot complete direct-merge work: %s", skipReason)
-					}
-				} else {
-					closeReason := fmt.Sprintf("Direct merge to %s (convoy strategy)", defaultBranch)
-					var closeErr error
-					for attempt := 1; attempt <= 3; attempt++ {
-						closeErr = directBd.ForceCloseWithReason(closeReason, issueID)
-						if closeErr == nil {
-							fmt.Printf("%s Issue %s closed (direct merge)\n", style.Bold.Render("✓"), issueID)
-							break
-						}
-						if attempt < 3 {
-							style.PrintWarning("close attempt %d/3 failed: %v (retrying in %ds)", attempt, closeErr, attempt*2)
-							time.Sleep(time.Duration(attempt*2) * time.Second)
-						}
-					}
-					if closeErr != nil {
-						style.PrintWarning("could not close issue %s after 3 attempts: %v", issueID, closeErr)
-					}
-				}
-			}
-
 			goto notifyWitness
 		}
 
@@ -1315,88 +1290,6 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			fmt.Fprintf(os.Stderr, "  MR beads written here will be invisible to the Refinery — run 'gt polecat repair' to fix\n")
 		}
 		bd := beads.NewWithBeadsDir(cwd, resolvedBeads)
-		if attachmentFields := beads.ParseAttachmentFields(sourceIssueForNoMerge); attachmentFields != nil && strings.EqualFold(strings.TrimSpace(attachmentFields.MergeStrategy), "local") {
-			fmt.Printf("%s Local merge strategy: skipping push and merge queue\n", style.Bold.Render("→"))
-			fmt.Printf("  Branch: %s\n", branch)
-			fmt.Printf("  Issue: %s\n", issueID)
-			fmt.Println()
-			fmt.Printf("%s\n", style.Dim.Render("Work stays on local feature branch."))
-			goto notifyWitness
-		}
-
-		// Fallback: check if issue belongs to a direct-merge convoy that the
-		// primary check missed — e.g., issues dispatched before the attachment-field
-		// fix, or where dep-based lookup failed at that point. This must happen
-		// before the generic branch/submodule push because direct mode has no MR or
-		// refinery recheck.
-		convoyInfo = getConvoyInfoFromSourceIssue(sourceIssueForNoMerge)
-		if convoyInfo == nil {
-			convoyInfo = getConvoyInfoForIssue(issueID)
-		}
-		if convoyInfo != nil && convoyInfo.MergeStrategy == "direct" {
-			fmt.Printf("%s Late-detected direct merge strategy: pushing to %s\n", style.Bold.Render("→"), defaultBranch)
-			fmt.Printf("  Convoy: %s\n", convoyInfo.ID)
-			directBd := sourceBD
-			if directBd == nil {
-				directBd = bd
-			}
-			if skipReason := doneDirectMergeSkipReason(directBd, issueID, sourceIssueForNoMerge, defaultBranch); skipReason != "" {
-				style.PrintWarning("%s", skipReason)
-				notifyDoneCloseSkipped(townRoot, rigName, sender, issueID, skipReason)
-				return fmt.Errorf("cannot complete direct-merge work: %s", skipReason)
-			}
-
-			pushSubmoduleChanges(g, baseRef)
-			directRefspec := branch + ":" + defaultBranch
-			directPushErr := g.Push("origin", directRefspec, false)
-			if directPushErr != nil {
-				pushFailed = true
-				errMsg := fmt.Sprintf("direct push to %s failed: %v", defaultBranch, directPushErr)
-				doneErrors = append(doneErrors, errMsg)
-				style.PrintWarning("%s", errMsg)
-				goto notifyWitness
-			}
-			directCommitSHA, _ := g.Rev("HEAD")
-			if doneSkipVerify {
-				noteVerifiedPushSkipped(directBd, cwd, issueID, defaultBranch, directCommitSHA, "--skip-verify on late direct merge")
-			} else if verifyErr := g.VerifyPushedCommitReachableFromPushTarget("origin", defaultBranch, directCommitSHA); verifyErr != nil {
-				pushFailed = true
-				errMsg := verifyErr.Error()
-				doneErrors = append(doneErrors, errMsg)
-				noteVerifiedPushFailure(directBd, cwd, issueID, defaultBranch, directCommitSHA, verifyErr)
-				style.PrintWarning("%s\nLate direct merge pushed but remote verification failed. Source bead will remain in progress.", errMsg)
-				goto notifyWitness
-			}
-			fmt.Printf("%s Branch pushed directly to %s\n", style.Bold.Render("✓"), defaultBranch)
-			doneCleanupStatus = cleanupStatusAfterSuccessfulPush(doneCleanupStatus)
-
-			if skipReason, fatal := doneSourceCloseSkipReason(directBd, issueID, sourceIssueForNoMerge); skipReason != "" {
-				style.PrintWarning("%s", skipReason)
-				notifyDoneCloseSkipped(townRoot, rigName, sender, issueID, skipReason)
-				if fatal {
-					return fmt.Errorf("cannot complete direct-merge work: %s", skipReason)
-				}
-			} else {
-				var closeErr error
-				for attempt := 1; attempt <= 3; attempt++ {
-					closeErr = directBd.ForceCloseWithReason(
-						fmt.Sprintf("Direct merge to %s (convoy strategy, late detection)", defaultBranch), issueID)
-					if closeErr == nil {
-						fmt.Printf("%s Issue %s closed (direct merge)\n", style.Bold.Render("✓"), issueID)
-						break
-					}
-					if attempt < 3 {
-						style.PrintWarning("close attempt %d/3 failed: %v (retrying in %ds)", attempt, closeErr, attempt*2)
-						time.Sleep(time.Duration(attempt*2) * time.Second)
-					}
-				}
-				if closeErr != nil {
-					style.PrintWarning("could not close issue %s after 3 attempts: %v", issueID, closeErr)
-				}
-			}
-
-			goto notifyWitness
-		}
 
 		// Pre-declare push variables for checkpoint goto (gt-aufru)
 		var refspec string
@@ -1634,47 +1527,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 		}
 
-		// Determine target branch for the MR.
-		// Priority: explicit --target flag > formula_vars base_branch > integration branch auto-detect > rig default.
-		target := defaultBranch
-		explicitTarget := false
-
-		// 1. Explicit --target flag (highest priority — polecat knows its base branch).
-		// This is the most reliable path: the formula passes {{base_branch}} directly,
-		// avoiding any dependency on bd.Show() or Dolt availability.
-		if doneTarget != "" {
-			target = doneTarget
-			explicitTarget = true
-			fmt.Printf("  Target branch: %s (from --target flag)\n", target)
-		}
-
-		// 2. Check for --base-branch override in formula vars (stored on bead at sling time).
-		// Fallback for polecats dispatched before --target flag existed, or when
-		// the formula doesn't pass --target explicitly.
-		if !explicitTarget && target == defaultBranch && sourceIssueForNoMerge != nil {
-			if af := beads.ParseAttachmentFields(sourceIssueForNoMerge); af != nil {
-				if bb := extractFormulaVar(af.FormulaVars, "base_branch"); bb != "" && bb != defaultBranch {
-					target = bb
-					fmt.Printf("  Target branch override: %s (from formula_vars)\n", target)
-				}
-			}
-		}
-
-		// 3. Auto-detect integration branch from epic hierarchy (if enabled).
-		// Only overrides if no explicit target was set above.
-		if !explicitTarget && target == defaultBranch {
-			refineryEnabled := true
-			settingsPath := filepath.Join(townRoot, rigName, "settings", "config.json")
-			if settings, err := config.LoadRigSettings(settingsPath); err == nil && settings.MergeQueue != nil {
-				refineryEnabled = settings.MergeQueue.IsRefineryIntegrationEnabled()
-			}
-			if refineryEnabled {
-				autoTarget, err := beads.DetectIntegrationBranch(sourceBD, g, issueID)
-				if err == nil && autoTarget != "" {
-					target = autoTarget
-				}
-			}
-		}
+		// MR target: the landing target resolved above (same as the direct path).
+		target := landingTarget
 
 		// Get source issue for priority inheritance
 		var priority int
@@ -1977,8 +1831,8 @@ notifyWitness:
 				convoyInfo = getConvoyInfoForIssue(issueID)
 			}
 		}
-		mergeStrategy := ""
-		if convoyInfo != nil {
+		mergeStrategy := landingStrategy
+		if mergeStrategy == "" && convoyInfo != nil {
 			mergeStrategy = convoyInfo.MergeStrategy
 		}
 		retirePolecat = shouldRetirePolecatSessionAfterDone(exitType, mergeStrategy, pushFailed, mrFailed)

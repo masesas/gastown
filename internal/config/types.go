@@ -1316,8 +1316,14 @@ func BuiltinRoleThemes() map[string]string {
 
 // MergeQueueConfig represents merge queue settings for a rig.
 type MergeQueueConfig struct {
-	// Enabled controls whether the merge queue is active.
-	Enabled bool `json:"enabled"`
+	// Enabled controls whether the merge queue is active. Nil defaults to true
+	// (the refinery itself never reads it and always processes MRs). Its
+	// consumer is the convoy merge gate: only an explicit false lets
+	// `gt sling --merge=direct` bypass the refinery on this rig. It is a pointer so a
+	// settings round-trip (load + save) keeps an absent key absent instead of
+	// turning it into an explicit false, which would let `gt sling --merge=direct`
+	// skip the refinery (gt-pd1c.37).
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// IntegrationBranchPolecatEnabled controls whether polecats auto-source
 	// their worktrees from integration branches when the parent epic has one.
@@ -1342,9 +1348,12 @@ type MergeQueueConfig struct {
 	// Nil defaults to false (manual landing required).
 	IntegrationBranchAutoLand *bool `json:"integration_branch_auto_land,omitempty"`
 
-	// MergeStrategy controls how the refinery lands approved work: "direct" (default)
-	// merges directly to the base branch, "pr" uses the VCS provider's merge API
-	// which respects branch protection/restriction rules.
+	// MergeStrategy controls how the REFINERY lands work that already passed its
+	// gates: "direct" (default) merges directly to the target branch, "pr" uses
+	// the VCS provider's merge API which respects branch protection/restriction
+	// rules. It is unrelated to the convoy strategy set with `gt sling --merge`
+	// (who lands the work); a convoy "direct" skips the refinery entirely and is
+	// rejected on rigs with an active merge queue (gt-pd1c.37).
 	MergeStrategy string `json:"merge_strategy,omitempty"`
 
 	// VCSProvider selects the VCS platform for PR operations when
@@ -1412,6 +1421,14 @@ const (
 	OnConflictAssignBack = "assign_back"
 	OnConflictAutoRebase = "auto_rebase"
 )
+
+// IsEnabled returns whether the merge queue is active. Nil-safe, defaults to true.
+func (c *MergeQueueConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
 
 // IsPolecatIntegrationEnabled returns whether polecat integration branch
 // sourcing is enabled. Nil-safe, defaults to true.
@@ -1494,7 +1511,7 @@ func boolPtr(b bool) *bool {
 // DefaultMergeQueueConfig returns a MergeQueueConfig with sensible defaults.
 func DefaultMergeQueueConfig() *MergeQueueConfig {
 	return &MergeQueueConfig{
-		Enabled:                          true,
+		Enabled:                          boolPtr(true),
 		IntegrationBranchPolecatEnabled:  boolPtr(true),
 		IntegrationBranchRefineryEnabled: boolPtr(true),
 		OnConflict:                       OnConflictAssignBack,

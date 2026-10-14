@@ -69,6 +69,12 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 		}
 	}
 
+	// Convoy merge strategy vs rig merge queue (gt-pd1c.37): reject the whole
+	// batch before the formula is cooked or any polecat is spawned.
+	if err := validateConvoyMergeForRig(townRoot, rigName, slingMerge); err != nil {
+		return err
+	}
+
 	// Issue #288: Auto-apply formula for batch sling (resolved via flags)
 	formulaName := resolveFormula(slingFormula, slingHookRawBead, filepath.Dir(townBeadsDir), rigName)
 

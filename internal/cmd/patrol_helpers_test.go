@@ -362,7 +362,7 @@ func TestBuildRefineryPatrolVars_EmptyTestCommand(t *testing.T) {
 	falseVal := false
 	trueVal2 := true
 	mq := &config.MergeQueueConfig{
-		Enabled:              true,
+		Enabled:              &trueVal2,
 		RunTests:             &falseVal,
 		TestCommand:          "", // empty - should be omitted
 		DeleteMergedBranches: &trueVal2,
@@ -427,7 +427,7 @@ func TestBuildRefineryPatrolVars_BoolFormat(t *testing.T) {
 	trueVal := true
 	falseVal2 := false
 	mq := &config.MergeQueueConfig{
-		Enabled:                          true,
+		Enabled:                          &trueVal,
 		IntegrationBranchAutoLand:        &trueVal,
 		IntegrationBranchRefineryEnabled: &trueVal,
 		RunTests:                         &trueVal,

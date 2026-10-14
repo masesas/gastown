@@ -211,7 +211,7 @@ func TestRigSettingsRoundTrip(t *testing.T) {
 	if loaded.MergeQueue == nil {
 		t.Fatal("MergeQueue is nil")
 	}
-	if !loaded.MergeQueue.Enabled {
+	if !loaded.MergeQueue.IsEnabled() {
 		t.Error("MergeQueue.Enabled = false, want true")
 	}
 }
@@ -225,7 +225,7 @@ func TestRigSettingsWithCustomMergeQueue(t *testing.T) {
 		Type:    "rig-settings",
 		Version: 1,
 		MergeQueue: &MergeQueueConfig{
-			Enabled:                          true,
+			Enabled:                          boolPtr(true),
 			IntegrationBranchPolecatEnabled:  boolPtr(false),
 			IntegrationBranchRefineryEnabled: boolPtr(false),
 			OnConflict:                       OnConflictAutoRebase,
@@ -407,7 +407,7 @@ func TestDefaultMergeQueueConfig(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultMergeQueueConfig()
 
-	if !cfg.Enabled {
+	if !cfg.IsEnabled() {
 		t.Error("Enabled should be true by default")
 	}
 	if !cfg.IsPolecatIntegrationEnabled() {

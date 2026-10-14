@@ -390,7 +390,7 @@ func init() {
 	convoyCreateCmd.Flags().StringVar(&convoyNotify, "notify", "", "Additional address to notify on completion (default: mayor/ if flag used without value)")
 	convoyCreateCmd.Flags().Lookup("notify").NoOptDefVal = "mayor/"
 	convoyCreateCmd.Flags().BoolVar(&convoyOwned, "owned", false, "Mark convoy as caller-managed lifecycle (no automatic witness/refinery registration)")
-	convoyCreateCmd.Flags().StringVar(&convoyMerge, "merge", "", "Merge strategy: direct (push to main), mr (merge queue, default), local (keep on branch)")
+	convoyCreateCmd.Flags().StringVar(&convoyMerge, "merge", "", "Convoy merge strategy: mr (default: polecat submits to the merge queue; the refinery runs the test gate), direct (polecat pushes to the target branch itself, skipping the refinery and its test gate; rejected when a tracked bead's rig has a merge queue), local (keep on branch). Not the rig's merge_queue.merge_strategy")
 	convoyCreateCmd.Flags().StringVar(&convoyBaseBranch, "base-branch", "", "Target branch for polecats (e.g., 'feat/extraction-review')")
 	convoyCreateCmd.Flags().StringVar(&convoyFromEpic, "from-epic", "", "Auto-discover tracked issues from an epic's slingable children")
 
@@ -762,6 +762,18 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 
 		if len(trackedIssues) == 0 {
 			return fmt.Errorf("at least one issue ID is required\nUsage: gt convoy create <name> <issue-id> [issue-id...]")
+		}
+	}
+
+	// Convoy merge strategy vs rig merge queue (gt-pd1c.37): a direct convoy
+	// would let polecats push past the refinery of every tracked bead's rig.
+	if convoyMerge == convoyMergeDirect {
+		townRoot, err := workspace.FindFromCwdOrError()
+		if err != nil {
+			return err
+		}
+		if err := validateConvoyMergeForBeads(townRoot, convoyMerge, trackedIssues); err != nil {
+			return err
 		}
 	}
 

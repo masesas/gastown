@@ -181,6 +181,17 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		result.ErrMsg = "formula_invalid"
 		return result, err
 	}
+	// Convoy merge strategy vs rig merge queue (gt-pd1c.37). In executeSling,
+	// Merge only takes effect through the auto-convoy (it is never stored on
+	// the bead here), so scheduler dispatch (NoConvoy) of a
+	// context queued before this guard existed is not stranded here; gt done
+	// redirects such work to the merge queue.
+	if !params.NoConvoy {
+		if err := validateConvoyMergeForRig(townRoot, params.RigName, params.Merge); err != nil {
+			result.ErrMsg = "merge_strategy_rejected"
+			return result, err
+		}
+	}
 
 	if params.RigName != "" {
 		if err := verifyBeadExistsInTargetRigDatabase(params.BeadID, params.RigName, townRoot); err != nil {
