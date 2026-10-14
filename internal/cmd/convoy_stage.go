@@ -256,6 +256,11 @@ func argsRequestConvoyStageJSON(args []string) bool {
 func runConvoyStage(cmd *cobra.Command, args []string) error {
 	if cmd != nil {
 		cmd.SilenceErrors = convoyStageJSON
+		// JSON mode owns stderr. Only ever turn Usage off here: the root
+		// wrapper has already silenced it for runtime errors.
+		if convoyStageJSON {
+			cmd.SilenceUsage = true
+		}
 	}
 
 	// Step 1: Validate args.
