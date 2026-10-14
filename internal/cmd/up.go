@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -322,12 +324,14 @@ func runUp(cmd *cobra.Command, args []string) error {
 	// Only wait if Dolt was actually started (or detected running). If it failed or
 	// was skipped, polling the port would just burn the full timeout. (review finding #1)
 	if !doltSkipped && doltOK {
-		waitForDoltReady(townRoot)
 		// Propagate Dolt connection info to process env so all subsequently spawned
 		// agents (witnesses, refineries, crew) inherit it. Without this,
 		// bd auto-starts rogue Dolt instances in agent tmux sessions. (GH#2412)
 		// Host propagation prevents bd from falling back to 127.0.0.1 when the
 		// Dolt server runs on a remote machine (e.g., mini2 over Tailscale).
+		// Set before waitForDoltReady: its bd probe must reach the same
+		// host:port as every later bd call, because bd keys its circuit
+		// breaker by host:port:database. (gt-pd1c.38)
 		doltCfg := doltserver.DefaultConfig(townRoot)
 		portStr := fmt.Sprintf("%d", doltCfg.Port)
 		os.Setenv("GT_DOLT_PORT", portStr)
@@ -337,6 +341,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 			os.Setenv("GT_DOLT_HOST", doltCfg.Host)
 			os.Setenv("BEADS_DOLT_SERVER_HOST", doltCfg.Host)
 		}
+		waitForDoltReady(townRoot)
 	}
 
 	// Orphaned bead recovery: detect beads stuck in hooked/in_progress status
@@ -1012,14 +1017,133 @@ func startPolecatsWithWork(townRoot, rigName string) ([]string, map[string]error
 // where the daemon (not gt up) started Dolt and it's still initializing.
 const doltReadyTimeout = 10 * time.Second
 
-// waitForDoltReady waits for the Dolt SQL server to be reachable before
-// starting agents that depend on beads database access. If the server is not
-// configured (no server-mode metadata), this is a no-op. If the timeout
-// expires, logs a warning and continues (graceful degradation). (gt-zou1n)
+// bdCircuitOpenMarker is the stable part of bd's ErrCircuitOpen message
+// ("dolt circuit breaker is open: server appears down, failing fast", beads
+// v1.3.0 internal/storage/dolt/circuit.go:91). bd reports it only as text, so
+// matching it is a deliberate exception to the no-stderr-parsing rule, like
+// polecat.isDoltConfigError.
+const bdCircuitOpenMarker = "circuit breaker is open"
+
+// bd's circuit breaker is a file per host:port:database shared by every bd
+// process on the host. Connection failures recorded while Dolt was down (by
+// mayor/deacon `gt prime --hook`, the daemon, any agent) trip it, and it then
+// rejects every bd process until 5s after it tripped, even though Dolt now
+// accepts TCP. Only after that cooldown does bd probe the server and close it.
+// bdReadyTimeout covers that cooldown plus bd start-up on a loaded machine.
+const (
+	bdReadyTimeout      = 15 * time.Second
+	bdReadyPollInterval = 500 * time.Millisecond
+)
+
+// bdOpenProbe runs one cheap, read-only bd command that opens the given beads
+// database, killed after timeout. It is a variable so tests can replace it.
+var bdOpenProbe = probeBdOpen
+
+// probeBdOpen runs `bd list --limit 1 --json` pinned to beadsDir with the same
+// target env as beads.Beads uses. It runs bd directly instead of through
+// beads.Run so the shared wait deadline also bounds a hung bd (beads.Run
+// allows a bd call 60s).
+func probeBdOpen(beadsDir string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	args := beads.InjectFlatForListJSON([]string{"list", "--limit", "1", "--json"})
+	cmd := exec.CommandContext(ctx, "bd", args...) //nolint:gosec // G204: bd is a trusted internal tool
+	cmd.Dir = filepath.Dir(beadsDir)
+	cmd.Env = beads.BuildPinnedBDEnv(os.Environ(), beadsDir)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("bd %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
+// isBdCircuitOpen reports whether err is bd failing fast on its open breaker.
+func isBdCircuitOpen(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), bdCircuitOpenMarker)
+}
+
+// waitForDoltReady is the single point where gt up waits for Dolt before
+// starting work that needs the beads databases (orphan recovery, witnesses,
+// refinery safety checks). It waits in two phases under separate bounds:
+//  1. the server accepts TCP (doltserver.WaitForReady), then
+//  2. bd itself can open every server-mode database (waitForBdReady).
+//
+// Phase 2 exists because TCP readiness does not mean bd can connect: bd's
+// shared circuit breaker can keep failing fast for up to its cooldown after
+// Dolt starts (gt-pd1c.38). If no server-mode metadata is configured, both
+// phases are no-ops. On timeout it logs a warning and continues; whatever bd
+// call comes next reports the real error, and the refinery safety check
+// still fails closed. (gt-zou1n)
 func waitForDoltReady(townRoot string) {
 	if err := doltserver.WaitForReady(townRoot, doltReadyTimeout); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v (agents may see connection errors)\n", err)
+		return
 	}
+	if err := waitForBdReady(serverModeBeadsDirs(townRoot), bdOpenProbe, bdReadyTimeout, bdReadyPollInterval); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v (bd circuit breaker still open; refinery safety checks will fail closed)\n", err)
+	}
+}
+
+// serverModeBeadsDirs returns the beads directories of every database that
+// lives on the Dolt server (town hq plus server-mode rigs), deduplicated and
+// sorted so the wait order is deterministic.
+func serverModeBeadsDirs(townRoot string) []string {
+	seen := make(map[string]bool)
+	var dirs []string
+	for _, name := range doltserver.HasServerModeMetadata(townRoot) {
+		dir := doltserver.FindRigBeadsDir(townRoot, name)
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// waitForBdReady probes each beads database with bd until bd stops failing
+// fast on its circuit breaker, sharing one deadline across all databases.
+//
+// Only the breaker error is waited out: once Dolt accepts TCP it is the one
+// bd failure that heals with time. Success or any other error ends the wait
+// for that database at once, so the probe records at most one connection
+// failure per database and can never trip the breaker itself; a real error
+// surfaces in the bd call that follows. Each probe gets only the time left
+// before the deadline, so the whole wait is bounded by timeout. Returns an
+// error naming every database whose breaker was still open, or that was not
+// reached, when the deadline passed.
+func waitForBdReady(dirs []string, probe func(beadsDir string, timeout time.Duration) error, timeout, interval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var errs []error
+	for _, dir := range dirs {
+		var breakerErr error // last breaker rejection for dir, if any
+		for {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				if breakerErr != nil {
+					errs = append(errs, fmt.Errorf("bd still cannot open %s after %v: %w", dir, timeout, breakerErr))
+				} else {
+					errs = append(errs, fmt.Errorf("bd readiness of %s not confirmed within %v", dir, timeout))
+				}
+				break
+			}
+			err := probe(dir, remaining)
+			if !isBdCircuitOpen(err) {
+				break
+			}
+			breakerErr = err
+			sleep := time.Until(deadline)
+			if interval < sleep {
+				sleep = interval
+			}
+			if sleep > 0 {
+				time.Sleep(sleep)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // recoverOrphanedBeads scans each rig for beads stuck in hooked/in_progress

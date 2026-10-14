@@ -336,6 +336,7 @@ func Execute() int {
 		}
 	}
 
+	silenceUsageOnRuntimeErrors(rootCmd)
 	if err := rootCmd.Execute(); err != nil {
 		// Check for silent exit (scripting commands that signal status via exit code)
 		if code, ok := IsSilentExit(err); ok {
@@ -345,6 +346,43 @@ func Execute() int {
 		return 1
 	}
 	return 0
+}
+
+// silenceUsageAnnotation marks a command whose RunE was already wrapped by
+// silenceUsageOnRuntimeErrors, so repeated installs never double-wrap.
+const silenceUsageAnnotation = "gt.silence-usage-on-runtime-error"
+
+// silenceUsageOnRuntimeErrors stops cobra from printing the Usage block for
+// errors returned by a command's RunE (gt-pd1c.38). Those are runtime
+// failures ("not all services started", a bd error), and a Usage dump after
+// them buries the real message.
+//
+// The wrapper sets SilenceUsage at the moment RunE starts. In cobra v1.10
+// that is after every usage check has passed: flag parsing, Args
+// validation, required flags and flag groups. ValidateRequiredFlags and
+// ValidateFlagGroups run after the persistent pre-run hooks, so setting the
+// flag in persistentPreRun would hide Usage for a missing required flag.
+// Usage errors therefore still print Usage. Wrapping every RunE in the tree
+// also covers a command whose own PersistentPreRun would shadow the root hook.
+func silenceUsageOnRuntimeErrors(root *cobra.Command) {
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		if c.RunE != nil && c.Annotations[silenceUsageAnnotation] != "true" {
+			runE := c.RunE
+			c.RunE = func(cmd *cobra.Command, args []string) error {
+				cmd.SilenceUsage = true
+				return runE(cmd, args)
+			}
+			if c.Annotations == nil {
+				c.Annotations = map[string]string{}
+			}
+			c.Annotations[silenceUsageAnnotation] = "true"
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(root)
 }
 
 func isDoneInvocation(args []string) bool {

@@ -399,10 +399,24 @@ func TestWaitForDoltReady_ServerListening(t *testing.T) {
 	}
 	t.Setenv("GT_DOLT_PORT", fmt.Sprintf("%d", port))
 
+	// The listener is a raw TCP socket, not Dolt, so the bd phase of the wait
+	// (gt-pd1c.38) must not run a real bd against it. Stub the probe as "bd
+	// opened the database" and record that the phase ran for this town.
+	var probed []string
+	origProbe := bdOpenProbe
+	bdOpenProbe = func(dir string, _ time.Duration) error {
+		probed = append(probed, dir)
+		return nil
+	}
+	t.Cleanup(func() { bdOpenProbe = origProbe })
+
 	start := time.Now()
 	waitForDoltReady(townRoot)
 	elapsed := time.Since(start)
 
+	if len(probed) != 1 || probed[0] != beadsDir {
+		t.Errorf("bd probe ran for %v, want exactly the town beads dir %s", probed, beadsDir)
+	}
 	if elapsed > 2*time.Second {
 		t.Errorf("waitForDoltReady took %v, should complete quickly when server is ready", elapsed)
 	}
