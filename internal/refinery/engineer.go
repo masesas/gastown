@@ -221,8 +221,9 @@ type MRInfo struct {
 	CreatedAt       time.Time  // MR creation time
 	BlockedBy       string     // Task ID blocking this MR
 
-	// Pre-verification fields (Phase 3: polecat-owned rebasing)
-	// When set, the refinery can skip gates if VerifiedBase matches target HEAD.
+	// Pre-verification fields (Phase 3: polecat-owned rebasing).
+	// Informational only: they record the polecat's unverifiable claim and are
+	// never used to skip the refinery's gates (gt-pd1c.40).
 	PreVerified     bool      // Polecat ran full gates after rebasing onto target
 	PreVerifiedAt   time.Time // When verification completed
 	PreVerifiedBase string    // Target branch SHA at verification time
@@ -501,7 +502,7 @@ type ProcessResult struct {
 }
 
 // doMerge performs the actual git merge operation.
-func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) ProcessResult {
+func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 	if mr == nil {
 		return ProcessResult{Success: false, Error: "merge request is missing"}
 	}
@@ -604,12 +605,9 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 	}
 
 	// Step 4: Run quality gates (or legacy tests) if configured.
-	// Phase 3 fast-path: if skipGates is true (pre-verified MR with matching base),
-	// skip all gate execution — the polecat already ran gates after rebasing.
-	shouldSkipGates := len(skipGates) > 0 && skipGates[0]
-	if shouldSkipGates {
-		_, _ = fmt.Fprintln(e.output, "[Engineer] Skipping gates (pre-verified by polecat)")
-	} else if len(e.config.Gates) > 0 {
+	// Gates always run: a polecat's pre-verified claim is never a substitute
+	// for the refinery's own gates (gt-pd1c.40).
+	if len(e.config.Gates) > 0 {
 		// New gates system: run configured quality gates
 		gateResult := e.runGates(ctx)
 		if !gateResult.Success {
@@ -673,14 +671,12 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 	// Step 5.5: Run post-squash gates on the merged result.
 	// These validate the actual combined code before it goes anywhere.
 	// On failure, reset the merge to undo the local merge commit.
-	if !shouldSkipGates {
-		postResult := e.runGatesForPhase(ctx, GatePhasePostSquash)
-		if !postResult.Success {
-			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after post-squash gate failure: %v\n", target, resetErr)
-			}
-			return postResult
+	postResult := e.runGatesForPhase(ctx, GatePhasePostSquash)
+	if !postResult.Success {
+		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after post-squash gate failure: %v\n", target, resetErr)
 		}
+		return postResult
 	}
 
 	// Step 6: Get the merge commit SHA
@@ -1326,27 +1322,15 @@ func (e *Engineer) ProcessMRInfo(ctx context.Context, mr *MRInfo) ProcessResult 
 	_, _ = fmt.Fprintf(e.output, "  Worker: %s\n", mr.Worker)
 	_, _ = fmt.Fprintf(e.output, "  Source: %s\n", mr.SourceIssue)
 
-	// Phase 3: Check pre-verification fast-path.
-	// If the polecat already rebased onto the target and ran gates, and the target
-	// hasn't moved since, we can skip running gates entirely (~5s merge).
-	skipGates := false
-	if mr.PreVerified && mr.PreVerifiedBase != "" {
-		_, _ = fmt.Fprintf(e.output, "  Pre-verified: yes (base=%s)\n", mr.PreVerifiedBase[:min(8, len(mr.PreVerifiedBase))])
-		// Check if target HEAD still matches the verified base
-		targetHead, err := e.git.Rev("origin/" + mr.Target)
-		if err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not resolve origin/%s HEAD: %v (falling through to normal gates)\n", mr.Target, err)
-		} else if targetHead == mr.PreVerifiedBase {
-			_, _ = fmt.Fprintln(e.output, "[Engineer] Pre-verification valid — target unchanged, skipping gates (fast-path)")
-			skipGates = true
-		} else {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Pre-verification stale — target moved (%s → %s), running gates normally\n",
-				mr.PreVerifiedBase[:min(8, len(mr.PreVerifiedBase))], targetHead[:min(8, len(targetHead))])
-		}
+	// A pre-verified MR only carries the polecat's claim that it ran gates
+	// after rebasing. The refinery cannot verify that claim, so it is logged
+	// for visibility and the refinery's gates still run (gt-pd1c.40).
+	if mr.PreVerified {
+		_, _ = fmt.Fprintf(e.output, "  Pre-verified: claimed (base=%s) — informational only, gates still run\n",
+			mr.PreVerifiedBase[:min(8, len(mr.PreVerifiedBase))])
 	}
 
-	// Use the shared merge logic
-	return e.doMerge(ctx, mr, skipGates)
+	return e.doMerge(ctx, mr)
 }
 
 // HandleMRInfoSuccess handles a successful merge from MRInfo.

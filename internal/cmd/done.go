@@ -48,7 +48,7 @@ Exit statuses:
 
 Examples:
   gt done                              # Submit branch, notify COMPLETED, exit session
-  gt done --pre-verified               # Submit with pre-verification fast-path
+  gt done --pre-verified               # Record that you ran gates after rebase (informational)
   gt done --target feat/my-branch      # Explicit MR target branch
   gt done --pre-verified --target feat/contract-review  # Pre-verified with explicit target
   gt done --issue gt-abc               # Explicit issue ID
@@ -658,7 +658,7 @@ func init() {
 	doneCmd.Flags().StringVar(&doneStatus, "status", ExitCompleted, "Exit status: COMPLETED, ESCALATED, or DEFERRED")
 	doneCmd.Flags().StringVar(&doneCleanupStatus, "cleanup-status", "", "Git cleanup status: clean, uncommitted, unpushed, stash, unknown (ZFC: agent-observed)")
 	doneCmd.Flags().BoolVar(&doneResume, "resume", false, "Resume from last checkpoint (auto-detected, for Witness recovery)")
-	doneCmd.Flags().BoolVar(&donePreVerified, "pre-verified", false, "Mark MR as pre-verified (polecat ran gates after rebasing onto target)")
+	doneCmd.Flags().BoolVar(&donePreVerified, "pre-verified", false, "Record on the MR that the polecat ran gates after rebasing onto target (informational; the refinery still runs its gates)")
 	doneCmd.Flags().StringVar(&doneTarget, "target", "", "Explicit MR target branch (overrides formula_vars and auto-detection)")
 	doneCmd.Flags().BoolVar(&doneSkipVerify, "skip-verify", false, "Skip verified-push checks for audit/test-only completion (recorded on bead)")
 
@@ -1622,7 +1622,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			description += "\nconflict_task_id: null"
 
 			// Phase 3: Add pre-verification metadata if polecat ran gates after rebasing.
-			// The refinery uses these fields to fast-path merge without re-running gates.
+			// Informational only: the refinery cannot verify the claim and always
+			// runs its own gates (gt-pd1c.40).
 			if donePreVerified {
 				description += "\npre_verified: true"
 				description += fmt.Sprintf("\npre_verified_at: %s", time.Now().UTC().Format(time.RFC3339))
