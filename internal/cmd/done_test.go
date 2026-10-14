@@ -1417,63 +1417,32 @@ func TestBranchDetectionCleanupOnError(t *testing.T) {
 	}
 }
 
-// TestConvoyMergeStrategyBranching verifies that the merge strategy branching
-// logic in runDone correctly routes to the right code path for each strategy.
+// TestConvoyMergeStrategyBranching verifies how runDone routes each convoy
+// strategy. It used to re-implement the switch inside the test (and encoded
+// "direct = push to main"); it now drives effectiveDoneMergeStrategy, the
+// function runDone uses, for both merge-queue states (gt-pd1c.37).
 func TestConvoyMergeStrategyBranching(t *testing.T) {
 	tests := []struct {
 		name          string
 		mergeStrategy string
-		wantPush      bool // should push happen?
-		wantMR        bool // should MR bead be created?
-		wantDirect    bool // should push to default branch?
+		mqActive      bool
+		wantPush      bool // is anything pushed?
+		wantMR        bool // is an MR bead created (refinery + gate)?
+		wantDirect    bool // does the polecat push to the resolved target itself?
 	}{
-		{
-			name:          "mr strategy - normal push and MR",
-			mergeStrategy: "mr",
-			wantPush:      true,
-			wantMR:        true,
-			wantDirect:    false,
-		},
-		{
-			name:          "empty strategy - defaults to mr behavior",
-			mergeStrategy: "",
-			wantPush:      true,
-			wantMR:        true,
-			wantDirect:    false,
-		},
-		{
-			name:          "direct strategy - push to main, no MR",
-			mergeStrategy: "direct",
-			wantPush:      true,
-			wantMR:        false,
-			wantDirect:    true,
-		},
-		{
-			name:          "local strategy - no push, no MR",
-			mergeStrategy: "local",
-			wantPush:      false,
-			wantMR:        false,
-			wantDirect:    false,
-		},
+		{"mr strategy - normal push and MR", "mr", true, true, true, false},
+		{"empty strategy - defaults to mr behavior", "", true, true, true, false},
+		{"direct strategy without merge queue - push to resolved target, no MR", "direct", false, true, false, true},
+		{"direct strategy with merge queue - redirected through the MR gate", "direct", true, true, true, false},
+		{"local strategy - no push, no MR", "local", true, false, false, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Simulate the branching logic from runDone
-			shouldPush := true
-			shouldCreateMR := true
-			shouldPushDirect := false
-
-			switch tt.mergeStrategy {
-			case "local":
-				shouldPush = false
-				shouldCreateMR = false
-			case "direct":
-				shouldPushDirect = true
-				shouldCreateMR = false
-			default:
-				// "mr" or empty = default behavior
-			}
+			strategy, _ := effectiveDoneMergeStrategy(&ConvoyInfo{ID: "hq-cv-x", MergeStrategy: tt.mergeStrategy}, nil, tt.mqActive)
+			shouldPush := strategy != convoyMergeLocal
+			shouldCreateMR := strategy == convoyMergeMR
+			shouldPushDirect := strategy == convoyMergeDirect
 
 			if shouldPush != tt.wantPush {
 				t.Errorf("shouldPush = %v, want %v", shouldPush, tt.wantPush)

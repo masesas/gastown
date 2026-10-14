@@ -269,13 +269,17 @@ func applyFormulaVars(text string, varMap map[string]string) string {
 // extractFormulaVar extracts a specific key's value from a newline-separated
 // key=value string (as stored in AttachmentFields.FormulaVars).
 // Returns "" if the key is not found.
+// The LAST assignment wins: gt sling appends rig defaults first and the
+// dispatch-specific values (--var, --base-branch) after them, so a later
+// base_branch=integration/<epic> must override an earlier base_branch=main.
 func extractFormulaVar(formulaVars, key string) string {
+	value := ""
 	for _, line := range strings.Split(formulaVars, "\n") {
 		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && k == key {
-			return v
+			value = v
 		}
 	}
-	return ""
+	return value
 }
 
 // truncateDescription truncates a multi-line description to a single line summary.

@@ -129,7 +129,7 @@ var (
 	slingNoConvoy      bool   // --no-convoy: skip auto-convoy creation
 	slingOwned         bool   // --owned: mark auto-convoy as caller-managed lifecycle
 	slingNoMerge       bool   // --no-merge: skip merge queue on completion (for upstream PRs/human review)
-	slingMerge         string // --merge: merge strategy for convoy (direct/mr/local)
+	slingMerge         string // --merge: convoy merge strategy (mr/direct/local); see merge_strategy_gate.go
 	slingNoBoot        bool   // --no-boot: skip wakeRigAgents (avoid witness/refinery boot and lock contention)
 	slingMaxConcurrent int    // --max-concurrent: throttle spawn rate in batch mode (spawns N, pauses, spawns N more)
 	slingBaseBranch    string // --base-branch: override base branch for polecat worktree
@@ -161,7 +161,7 @@ func init() {
 	slingCmd.Flags().BoolVar(&slingOwned, "owned", false, "Mark auto-convoy as caller-managed lifecycle (no automatic witness/refinery registration)")
 	slingCmd.Flags().BoolVar(&slingHookRawBead, "hook-raw-bead", false, "Hook raw bead without default formula (expert mode)")
 	slingCmd.Flags().BoolVar(&slingNoMerge, "no-merge", false, "Skip merge queue on completion (keep work on feature branch for review)")
-	slingCmd.Flags().StringVar(&slingMerge, "merge", "", "Merge strategy: direct (push to main), mr (merge queue, default), local (keep on branch)")
+	slingCmd.Flags().StringVar(&slingMerge, "merge", "", "Convoy merge strategy: mr (default: polecat submits to the merge queue; the refinery runs the test gate), direct (polecat pushes to the target branch itself, skipping the refinery and its test gate; rejected when the rig has a merge queue), local (keep on branch). Not the rig's merge_queue.merge_strategy")
 	slingCmd.Flags().BoolVar(&slingNoBoot, "no-boot", false, "Skip rig boot after polecat spawn (avoids witness/refinery lock contention)")
 	slingCmd.Flags().IntVar(&slingMaxConcurrent, "max-concurrent", 0, "Throttle spawn rate: spawn N polecats, pause, then spawn N more (0 = no throttle). Does not limit total concurrent polecats")
 	slingCmd.Flags().StringVar(&slingBaseBranch, "base-branch", "", "Override base branch for polecat worktree (e.g., 'develop', 'release/v2')")
@@ -663,6 +663,11 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		return err
 	}
 	if err := validateFormulaTemplateVars(formulaName, townRoot, readinessRig); err != nil {
+		return err
+	}
+	// Convoy merge strategy vs rig merge queue (gt-pd1c.37): reject direct
+	// before resolveTarget can spawn a polecat or any bead/convoy is written.
+	if err := validateConvoyMergeForRig(townRoot, readinessRig, slingMerge); err != nil {
 		return err
 	}
 

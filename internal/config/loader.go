@@ -357,7 +357,7 @@ func MergeSettingsCommand(repo, local *MergeQueueConfig) *MergeQueueConfig {
 			result.BuildCommand = local.BuildCommand
 		}
 		// Merge non-command fields from local if explicitly set
-		if local.Enabled {
+		if local.Enabled != nil {
 			result.Enabled = local.Enabled
 		}
 		if local.MergeStrategy != "" {

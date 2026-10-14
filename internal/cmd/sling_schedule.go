@@ -138,6 +138,11 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 	if err := validateFormulaTemplateVars(opts.Formula, townRoot, rigName); err != nil {
 		return err
 	}
+	// Convoy merge strategy vs rig merge queue (gt-pd1c.37): refuse before the
+	// sling context or auto-convoy is created.
+	if err := validateConvoyMergeForRig(townRoot, rigName, opts.Merge); err != nil {
+		return err
+	}
 
 	if opts.Formula != "" {
 		if err := verifyFormulaExists(opts.Formula, filepath.Dir(rigBeadsDir), townRoot); err != nil {
@@ -242,6 +247,11 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 // runBatchSchedule schedules multiple beads for deferred dispatch.
 // Returns error when all schedule attempts fail.
 func runBatchSchedule(beadIDs []string, rigName, townRoot string) error {
+	// Convoy merge strategy vs rig merge queue (gt-pd1c.37): one clear error
+	// for the whole batch, also in --dry-run (scheduleBead checks it per bead).
+	if err := validateConvoyMergeForRig(townRoot, rigName, slingMerge); err != nil {
+		return err
+	}
 	if slingDryRun {
 		fmt.Printf("%s Would schedule %d beads to rig '%s':\n", style.Bold.Render("📋"), len(beadIDs), rigName)
 		for _, beadID := range beadIDs {

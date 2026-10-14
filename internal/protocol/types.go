@@ -252,6 +252,9 @@ type PolecatDonePayload struct {
 
 // SkipMergeFlow returns true if this polecat's work should bypass the
 // standard witness/refinery merge pipeline (owned convoy + direct merge).
+// Direct landing only happens on rigs without an active merge queue, where the
+// polecat pushed to its resolved target itself (gt-pd1c.37). Current gt done
+// does not send MergeStrategy in its notification, so this is legacy input.
 func (p *PolecatDonePayload) SkipMergeFlow() bool {
 	return p.ConvoyOwned && p.MergeStrategy == "direct"
 }

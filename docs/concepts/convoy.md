@@ -192,8 +192,18 @@ gt convoy create --from-epic gt-epic-abc
 gt convoy create --from-epic gt-epic-abc "Custom convoy name"
 
 # Combine with other flags
-gt convoy create --from-epic gt-epic-abc --owned --merge=direct
+gt convoy create --from-epic gt-epic-abc --owned --merge=local
 ```
+
+`--merge` (here and on `gt sling`) selects who lands the work: `mr` (default)
+submits to the merge queue, where the refinery runs the test gate; `direct`
+lets the polecat push to its target branch itself, skipping the refinery and
+its gate; `local` keeps the work on the feature branch. `direct` is rejected
+when a tracked bead's rig has an active merge queue (`merge_queue.enabled`,
+the default), and work that still carries `direct` from older dispatches is
+submitted to the merge queue by `gt done`. Do not confuse it with the rig's
+`merge_queue.merge_strategy`, which only selects how the refinery merges work
+that already passed its gates (`direct` merge or `pr` via the VCS API).
 
 **How it works:**
 1. Verifies the given bead is an epic

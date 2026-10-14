@@ -116,12 +116,6 @@ type ConvoyInfo struct {
 	MergeStrategy string // "direct", "mr", "local", or "" (default = mr)
 }
 
-// IsOwnedDirect returns true if the convoy is owned with direct merge strategy.
-// This is the key check for skipping witness/refinery merge pipeline.
-func (c *ConvoyInfo) IsOwnedDirect() bool {
-	return c != nil && c.Owned && c.MergeStrategy == "direct"
-}
-
 // getConvoyInfoForIssue checks if an issue is tracked by a convoy and returns its info.
 // Returns nil if not tracked by any convoy.
 func getConvoyInfoForIssue(issueID string) *ConvoyInfo {
