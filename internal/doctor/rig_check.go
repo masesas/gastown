@@ -16,6 +16,7 @@ import (
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/rig"
 )
 
 // RigIsGitRepoCheck verifies the rig has a valid mayor/rig git clone.
@@ -91,7 +92,8 @@ func (c *RigIsGitRepoCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
-// GitExcludeConfiguredCheck verifies .git/info/exclude has Gas Town directories.
+// GitExcludeConfiguredCheck verifies the info/exclude file git reads for
+// mayor/rig (the common one when mayor/rig is a worktree) has Gas Town directories.
 type GitExcludeConfiguredCheck struct {
 	FixableCheck
 	missingEntries []string
@@ -116,7 +118,7 @@ func (c *GitExcludeConfiguredCheck) requiredExcludes() []string {
 	return []string{"/polecats/", "/witness/", "/refinery/", "/mayor/"}
 }
 
-// Run checks if .git/info/exclude contains required entries.
+// Run checks if the info/exclude file contains required entries.
 func (c *GitExcludeConfiguredCheck) Run(ctx *CheckContext) *CheckResult {
 	rigPath := ctx.RigPath()
 	if rigPath == "" {
@@ -129,9 +131,7 @@ func (c *GitExcludeConfiguredCheck) Run(ctx *CheckContext) *CheckResult {
 
 	// Check mayor/rig/ which is the authoritative clone
 	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
-	gitDir := filepath.Join(mayorRigPath, ".git")
-	info, err := os.Stat(gitDir)
-	if os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(mayorRigPath, ".git")); os.IsNotExist(err) {
 		return &CheckResult{
 			Name:    c.Name(),
 			Status:  StatusWarning,
@@ -140,28 +140,17 @@ func (c *GitExcludeConfiguredCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
-	// If .git is a file (worktree), read the actual git dir
-	if info.Mode().IsRegular() {
-		content, err := os.ReadFile(gitDir)
-		if err != nil {
-			return &CheckResult{
-				Name:    c.Name(),
-				Status:  StatusError,
-				Message: fmt.Sprintf("Cannot read .git file: %v", err),
-			}
-		}
-		// Format: "gitdir: /path/to/actual/git/dir"
-		line := strings.TrimSpace(string(content))
-		if strings.HasPrefix(line, "gitdir: ") {
-			gitDir = strings.TrimPrefix(line, "gitdir: ")
-			// Resolve relative paths
-			if !filepath.IsAbs(gitDir) {
-				gitDir = filepath.Join(rigPath, gitDir)
-			}
+	// Ask git which exclude file it reads: for a worktree this is the file in
+	// the common git dir, not <gitdir>/info/exclude.
+	excludePath, err := rig.GitInfoExcludePath(mayorRigPath)
+	if err != nil {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusError,
+			Message: fmt.Sprintf("Cannot resolve git exclude file: %v", err),
 		}
 	}
-
-	c.excludePath = filepath.Join(gitDir, "info", "exclude")
+	c.excludePath = excludePath
 
 	// Read existing excludes
 	existing := make(map[string]bool)
@@ -204,7 +193,7 @@ func (c *GitExcludeConfiguredCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
-// Fix appends missing entries to .git/info/exclude.
+// Fix appends missing entries to the info/exclude file found by Run.
 func (c *GitExcludeConfiguredCheck) Fix(ctx *CheckContext) error {
 	if len(c.missingEntries) == 0 {
 		return nil
