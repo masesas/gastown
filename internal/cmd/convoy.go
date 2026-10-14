@@ -1608,6 +1608,13 @@ func findStrandedConvoys(townBeads string) ([]strandedConvoyInfo, error) {
 		return nil, fmt.Errorf("listing convoys: %w", err)
 	}
 
+	// Issues whose work is already in a merge queue belong to the refinery
+	// until the MR is merged or rejected; read every rig's queue once per scan.
+	pendingMerge, pendingErr := pendingMergeSourceIssues(townBeads)
+	if pendingErr != nil {
+		fmt.Fprintf(os.Stderr, "⚠ Warning: holding convoy dispatch, cannot read merge queues: %v\n", pendingErr)
+	}
+
 	// Check each convoy for stranded state
 	for _, convoy := range convoys {
 		// Extract base_branch from convoy description fields
@@ -1648,11 +1655,16 @@ func findStrandedConvoys(townBeads string) ([]strandedConvoyInfo, error) {
 		for _, t := range tracked {
 			trackedIDs = append(trackedIDs, t.ID)
 		}
-		scheduledSet := areScheduled(trackedIDs)
+		heldSet := areScheduled(trackedIDs)
+		for _, id := range trackedIDs {
+			if pendingErr != nil || pendingMerge[id] {
+				heldSet[id] = true
+			}
+		}
 
 		var readyIssues []string
 		for _, t := range tracked {
-			if isReadyIssue(t, scheduledSet) {
+			if isReadyIssue(t, heldSet) {
 				if !isSlingableBead(townBeads, t.ID) {
 					continue
 				}
@@ -1696,8 +1708,13 @@ func findStrandedConvoys(townBeads string) ([]strandedConvoyInfo, error) {
 // - status = "open" AND (no assignee OR assignee session is dead)
 // - OR status = "in_progress"/"hooked" AND assignee session is dead (orphaned molecule)
 // - AND not blocked (cross-rig-aware from issue details)
-// scheduledSet is a pre-computed set of bead IDs with open sling contexts (from areScheduled).
-func isReadyIssue(t trackedIssueInfo, scheduledSet map[string]bool) bool {
+// - AND not held (heldSet)
+// heldSet is a pre-computed set of bead IDs that must not be dispatched now:
+// open sling contexts (areScheduled, waiting for capacity) and issues with a
+// pending merge request (pendingMergeSourceIssues). A held issue whose polecat
+// session has exited after gt done is not orphaned — its work is in a merge
+// queue (gt-ka3d).
+func isReadyIssue(t trackedIssueInfo, heldSet map[string]bool) bool {
 	status := strings.TrimSpace(t.Status)
 
 	// Unresolved issues are not safe to dispatch.
@@ -1715,8 +1732,9 @@ func isReadyIssue(t trackedIssueInfo, scheduledSet map[string]bool) bool {
 		return false
 	}
 
-	// Scheduled beads are not stranded — they're waiting for dispatch capacity.
-	if scheduledSet[t.ID] {
+	// Held beads are not stranded — they're waiting for dispatch capacity or
+	// for the refinery to land their merge request.
+	if heldSet[t.ID] {
 		return false
 	}
 
@@ -1750,6 +1768,37 @@ func isReadyIssue(t trackedIssueInfo, scheduledSet map[string]bool) bool {
 	}
 
 	return false // Session exists = worker is active
+}
+
+// pendingMergeSourceIssues returns the IDs of issues that have a pending merge
+// request (see Beads.ListPendingMergeRequests) in any rig's beads DB. MRs are
+// created in the polecat's rig DB, so every rig is scanned, as for sling
+// contexts (listAllSlingContextRecords). Any unreadable DB is an error: the
+// caller holds dispatch rather than risk a duplicate polecat.
+func pendingMergeSourceIssues(townRoot string) (map[string]bool, error) {
+	dirs, err := beadsSearchDirs(townRoot)
+	if err != nil {
+		return nil, err
+	}
+	pending := make(map[string]bool)
+	seen := make(map[string]bool)
+	for _, dir := range dirs {
+		beadsDir := beads.ResolveBeadsDir(dir)
+		if seen[beadsDir] {
+			continue
+		}
+		seen[beadsDir] = true
+		mrs, err := beads.NewWithBeadsDir(dir, beadsDir).ListPendingMergeRequests()
+		if err != nil {
+			return nil, fmt.Errorf("listing merge requests in %s: %w", beadsDir, err)
+		}
+		for _, mr := range mrs {
+			if fields := beads.ParseMRFields(mr); fields != nil && fields.SourceIssue != "" {
+				pending[fields.SourceIssue] = true
+			}
+		}
+	}
+	return pending, nil
 }
 
 // isSlingableBead reports whether a bead can be dispatched via gt sling.
