@@ -1,0 +1,23 @@
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Model · Plan
+ ▝▝   ▝▝   /…/repro
+
+
+❯ Use the Bash tool to run exactly this command: sleep 40 ; then reply with the
+  single word done.
+
+⏺ Bash(sleep 40)
+  ⎿  Error: Blocked: standalone sleep 40. To wait for a condition, use Monitor
+     with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a
+     command you started, use run_in_background: true. Do not chain shorter
+     sleeps to work around this block.
+
+⏺ Bash(sleep 40)
+  ⎿  Running in the background (↓ to manage)
+
+✢ Infusing… (11s · ↓ 304 tokens · thought for 1s)
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ← 3 agents

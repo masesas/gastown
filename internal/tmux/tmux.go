@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
@@ -1471,44 +1472,109 @@ func sanitizeNudgeMessage(msg string) string {
 // This can happen when a stray or deliberate Escape keystroke combines with
 // a previous Escape to form the double-Escape sequence that activates Rewind.
 //
-// Detection is based on pane content analysis. Returns false on any error
+// Only the visible screen is inspected: an active menu is always on screen,
+// while scrollback can hold stale text. Returns false on any error
 // (defensive — don't block nudge delivery on detection failure).
 func (t *Tmux) isInRewindMode(target string) bool {
-	content, err := t.CapturePane(target, 15)
+	content, err := t.captureScreen(target)
 	if err != nil {
 		return false
 	}
 	return containsRewindIndicators(content)
 }
 
-// containsRewindIndicators checks pane content for Claude Code Rewind menu
-// patterns. The Rewind UI takes over the terminal and shows distinctive
-// action prompts (Enter to act, Esc to cancel/exit). We require multiple
-// co-occurring indicators to avoid false positives from conversation text.
+// containsRewindIndicators reports whether pane content shows Claude Code's
+// Rewind menu: a line that is exactly the "Rewind" title plus an Enter/Esc
+// action footer (2.1.296: "Enter to continue · Esc to cancel").
+//
+// The title is required because the action footer alone also appears on
+// dialogs that must not receive a stray Escape — AskUserQuestion renders
+// "Enter to select · ↑/↓ to navigate · Esc to cancel", and an Escape there
+// answers the question as "User declined" (gt-dzck).
 func containsRewindIndicators(content string) bool {
-	lower := strings.ToLower(content)
-
-	// Primary: "rewind" appears alongside both Enter and Esc action prompts.
-	if strings.Contains(lower, "rewind") {
-		if strings.Contains(lower, "enter") && strings.Contains(lower, "esc") {
+	lines := strings.Split(content, "\n")
+	hasActions := false
+	for _, line := range footerLines(lines) {
+		l := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(l, "enter to ") && strings.Contains(l, "esc to ") {
+			hasActions = true
+		}
+	}
+	if !hasActions {
+		return false
+	}
+	for _, line := range lines {
+		if strings.EqualFold(strings.TrimSpace(line), "rewind") {
 			return true
 		}
 	}
-
-	// Secondary: specific action prompt pairs characteristic of the Rewind UI.
-	rewindActionPairs := [][2]string{
-		{"enter to continue", "esc to exit"},
-		{"enter to accept", "esc to cancel"},
-		{"enter to select", "esc to go back"},
-		{"enter to select", "esc to cancel"},
-	}
-	for _, pair := range rewindActionPairs {
-		if strings.Contains(lower, pair[0]) && strings.Contains(lower, pair[1]) {
-			return true
-		}
-	}
-
 	return false
+}
+
+// footerFallbackLines is how many bottom non-blank lines count as the footer
+// when the screen has no horizontal rule (e.g. a plain shell).
+const footerFallbackLines = 3
+
+// footerLines returns the bottom region of a screen capture where an agent TUI
+// renders its status bar or a modal's action footer: everything below the last
+// horizontal rule (Claude draws "───" around the composer and "╌╌╌" inside
+// permission prompts). Indicators are only trusted there — the same text higher
+// up is conversation or tool output (e.g. an agent reading this file).
+func footerLines(lines []string) []string {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isHorizontalRule(lines[i]) {
+			return lines[i+1:]
+		}
+	}
+	var footer []string
+	for i := len(lines) - 1; i >= 0 && len(footer) < footerFallbackLines; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			footer = append([]string{lines[i]}, footer...)
+		}
+	}
+	return footer
+}
+
+func isHorizontalRule(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if utf8.RuneCountInString(trimmed) < 10 {
+		return false
+	}
+	for _, r := range trimmed {
+		if r != '─' && r != '╌' {
+			return false
+		}
+	}
+	return true
+}
+
+// containsOpenDialog reports whether pane content shows a modal that captures
+// keystrokes — a permission prompt ("Esc to cancel · Tab to amend"),
+// AskUserQuestion ("Enter to select · … · Esc to cancel"), Rewind, or a
+// startup dialog — judged by an action footer line. Typed text plus Enter
+// would answer such a modal (e.g. pick "1. Yes" on a permission prompt), so
+// nudges must not be typed while one is open (gt-dzck).
+func containsOpenDialog(content string) bool {
+	for _, line := range footerLines(strings.Split(content, "\n")) {
+		l := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(l, "esc to cancel") ||
+			(strings.HasPrefix(l, "enter to ") && strings.Contains(l, "esc to cancel")) {
+			return true
+		}
+	}
+	return false
+}
+
+// refuseIfDialogOpen returns an ErrSubmitNotVerified-wrapped error when the
+// target's visible screen shows a modal, so callers queue or retry the nudge
+// instead of typing into the dialog. Capture errors are left to the delivery
+// path, which reports them itself.
+func (t *Tmux) refuseIfDialogOpen(target string) error {
+	content, err := t.captureScreen(target)
+	if err != nil || !containsOpenDialog(content) {
+		return nil
+	}
+	return fmt.Errorf("%w (modal dialog open on %q; not typing into it)", ErrSubmitNotVerified, target)
 }
 
 // dismissRewindMode sends Escape to cancel Claude Code's Rewind menu,
@@ -1817,6 +1883,11 @@ func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) err
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	// 1.5. Never type into an open modal: Enter would answer it. (gt-dzck)
+	if err := t.refuseIfDialogOpen(target); err != nil {
+		return fmt.Errorf("nudge to session %q: %w", session, err)
+	}
+
 	// 2. Sanitize control characters that corrupt delivery
 	sanitized := sanitizeNudgeMessage(message)
 
@@ -1829,8 +1900,8 @@ func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) err
 			opts.SkipEscape = true
 		}
 	}
-	// Snapshot before typing the nudge so the message text itself cannot look
-	// like the agent's busy indicator.
+	// Snapshot before typing the nudge so the message text itself cannot fake
+	// the vim INSERT indicator.
 	sendEscape := !opts.SkipEscape && t.shouldSendEscape(target)
 
 	// 3. Send text via send-keys -l. Messages > 512 bytes are chunked
@@ -1844,8 +1915,8 @@ func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) err
 	time.Sleep(adaptiveTextDelay(len(sanitized)))
 
 	if sendEscape {
-		// 5. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
-		// See: https://github.com/anthropics/gastown/issues/307
+		// 5. Send Escape to leave vim INSERT mode — only sent when the INSERT
+		// indicator is visible (see shouldSendEscapeForLines). GH#307
 		_, _ = t.run("send-keys", "-t", target, "Escape")
 
 		// 6. Wait 600ms — must exceed bash readline's keyseq-timeout (500ms default)
@@ -1910,10 +1981,15 @@ func (t *Tmux) NudgePane(pane, message string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	// 1.5. Never type into an open modal: Enter would answer it. (gt-dzck)
+	if err := t.refuseIfDialogOpen(pane); err != nil {
+		return fmt.Errorf("nudge to pane %q: %w", pane, err)
+	}
+
 	// 2. Sanitize control characters that corrupt delivery
 	sanitized := sanitizeNudgeMessage(message)
-	// Snapshot before typing the nudge so the message text itself cannot look
-	// like the agent's busy indicator.
+	// Snapshot before typing the nudge so the message text itself cannot fake
+	// the vim INSERT indicator.
 	sendEscape := t.shouldSendEscape(pane)
 
 	// 3. Send text via send-keys -l. Messages > 512 bytes are chunked
@@ -1926,8 +2002,8 @@ func (t *Tmux) NudgePane(pane, message string) error {
 	time.Sleep(adaptiveTextDelay(len(sanitized)))
 
 	if sendEscape {
-		// 5. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
-		// See: https://github.com/anthropics/gastown/issues/307
+		// 5. Send Escape to leave vim INSERT mode — only sent when the INSERT
+		// indicator is visible (see shouldSendEscapeForLines). GH#307
 		_, _ = t.run("send-keys", "-t", pane, "Escape")
 
 		// 6. Wait 600ms — must exceed bash readline's keyseq-timeout (500ms default)
@@ -3364,10 +3440,10 @@ func matchesPromptPrefix(line, readyPromptPrefix string) bool {
 // busyIndicators is the single source of truth for the substrings an agent TUI
 // renders in its status bar while actively generating. Detection of "is the
 // agent working?" scrapes the pane for any of these (see hasBusyIndicator), and
-// that signal underpins IsIdle, WaitForIdle, and the nudge Escape-suppression in
-// shouldSendEscape. Claude Code, Codex, and Gemini all surface "esc to
+// that signal underpins IsIdle and WaitForIdle. Claude Code, Codex, and Gemini all surface "esc to
 // interrupt"; if an agent uses different wording, add it here — that is the only
-// place that needs to change.
+// place that needs to change. (The nudge Escape no longer depends on this
+// signal; see shouldSendEscapeForLines.)
 //
 // FRAGILITY (gastownhall/gastown#4240): this couples to upstream TUI status
 // text. Scraping the status bar cannot detect a silent upstream rename on its
@@ -3396,43 +3472,46 @@ func hasBusyIndicator(line string) bool {
 	return false
 }
 
+// vimInsertIndicator is what Claude Code renders in its status bar while a
+// vim-mode composer is in INSERT mode (GH#307).
+const vimInsertIndicator = "-- INSERT --"
+
 // shouldSendEscapeForLines reports whether the vim-mode Escape keystroke
-// (nudge delivery step 5) is safe to send, given a snapshot of pane lines.
+// (nudge delivery step 5) is needed and safe, given a snapshot of pane lines.
 //
-// The Escape exists to exit a vim-mode composer's INSERT mode so the following
-// Enter submits the line (GH#307). But in Claude Code — and Codex/Gemini —
-// Escape also cancels in-flight generation; the status bar literally reads
-// "esc to interrupt" while the agent is working. Sending Escape in that state
-// would interrupt the agent's current turn (e.g. the Mayor). Returns false when
-// any line shows the busy indicator so the caller suppresses the Escape.
+// The Escape exists only to leave a vim-mode composer's INSERT mode (GH#307),
+// so it is sent only when the INSERT indicator is visible. Anywhere else an
+// Escape is destructive in Claude Code: it aborts a running tool ("The user
+// doesn't want to proceed with this tool use"), cancels an open dialog, and
+// flushes queued prompts. Deciding by the presence of a positive signal fails
+// closed: Claude Code 2.1.296 does not render "esc to interrupt" while a turn
+// or a foreground tool runs, so the earlier "no busy indicator ⇒ idle" gate
+// sent Escape into running tools (gt-dzck). While in INSERT mode, vim consumes
+// the Escape (INSERT → NORMAL) even when a tool is running.
 //
-// FRAGILITY: this depends on the agent TUI rendering the literal substring
-// "esc to interrupt" while generating (via hasBusyIndicator — the same
-// assumption IsIdle/WaitForIdle already make). If that upstream status text
-// changes, the gate fails open and silently: the Escape is sent again and
-// nudges can resume interrupting the agent. Tracked in gastownhall/gastown#4240.
+// Only the status bar counts (see footerLines), where Claude Code renders the
+// indicator at the start of the line; the same text in tool output must not
+// trigger an Escape into a running tool.
 func shouldSendEscapeForLines(lines []string) bool {
-	for _, line := range lines {
-		if hasBusyIndicator(line) {
-			return false
+	for _, line := range footerLines(lines) {
+		if strings.HasPrefix(strings.TrimSpace(line), vimInsertIndicator) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-// shouldSendEscape captures the target's pane and reports whether the vim-mode
-// Escape is safe to send right now (see shouldSendEscapeForLines). Callers
-// snapshot before writing nudge text so the message itself cannot masquerade as
-// the busy indicator. On capture failure it returns false: when we cannot
-// confirm the agent is idle, skipping the Escape is the safe default — it avoids
-// interrupting an active agent and is harmless for the common (non-vim) case
-// where Enter alone submits.
+// shouldSendEscape captures the target's visible screen and reports whether the
+// vim-mode Escape should be sent (see shouldSendEscapeForLines). Callers
+// snapshot before writing nudge text so the message itself cannot fake the
+// indicator. On capture failure it returns false: without positive evidence of
+// INSERT mode, skipping the Escape is the safe default — Enter alone submits.
 func (t *Tmux) shouldSendEscape(target string) bool {
-	lines, err := t.CapturePaneLines(target, 5)
+	content, err := t.captureScreen(target)
 	if err != nil {
 		return false
 	}
-	return shouldSendEscapeForLines(lines)
+	return shouldSendEscapeForLines(strings.Split(content, "\n"))
 }
 
 func readyPromptPrefixForSession(t *Tmux, session string) string {

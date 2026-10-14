@@ -1,0 +1,23 @@
+  ⎿  (timeout 2m)
+
+⏺ ./slow-gate.sh finished in the foreground and printed gate ok. The two earlier
+  tries were stopped before the script ran.
+
+✻ Cogitated for 49s · done 6:38 AM
+
+❯ Use the AskUserQuestion tool to ask me which color I prefer, red or blue. Do
+  nothing else.
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Color
+
+Which color do you prefer?
+
+❯ 1. Red
+     You prefer red.
+  2. Blue
+     You prefer blue.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

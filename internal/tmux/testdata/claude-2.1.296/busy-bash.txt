@@ -1,0 +1,19 @@
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Model · Plan
+ ▝▝   ▝▝   /…/repro
+
+
+❯ Run ./slow-gate.sh with the Bash tool in the foreground (not background,
+  timeout 120000). If other messages arrive, only reply with the word ack and
+  run no other commands.
+
+  Bash(./slow-gate.sh)
+  ⎿  Running… (10s · timeout 2m)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+✳ Photosynthesizing… (13s · ↓ 107 tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ← 3 agents
