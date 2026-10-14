@@ -254,8 +254,10 @@ func (m *Manager) CheckDoltHealth() error {
 	for attempt := 1; attempt <= doltMaxRetries; attempt++ {
 		// Use a lightweight beads operation to verify Dolt is responsive
 		_, err := m.beads.Show("__health_check_nonexistent__")
-		if err == nil || errors.Is(err, beads.ErrNotFound) || strings.Contains(err.Error(), "not found") {
-			// Dolt is healthy — a "not found" error means the DB responded
+		if err == nil || errors.Is(err, beads.ErrNotFound) {
+			// Dolt is healthy — bd answered that the probe issue does not exist.
+			// Other "not found" text (e.g. database "x" not found) is NOT a
+			// healthy answer; it falls through to isDoltConfigError (gt-pd1c.39).
 			return nil
 		}
 		// Optimistic lock errors mean Dolt is alive but busy with concurrent writes
@@ -285,7 +287,7 @@ func (m *Manager) CheckDoltHealth() error {
 		if recoverErr := doltserver.RecoverReadOnly(m.townRoot); recoverErr == nil {
 			// Recovery succeeded — verify health once more
 			_, err := m.beads.Show("__health_check_nonexistent__")
-			if err == nil || errors.Is(err, beads.ErrNotFound) || strings.Contains(err.Error(), "not found") {
+			if err == nil || errors.Is(err, beads.ErrNotFound) {
 				return nil
 			}
 		}

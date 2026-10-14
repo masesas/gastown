@@ -61,7 +61,8 @@ func (m *mockStorage) GetIssue(_ context.Context, id string) (*beadsdk.Issue, er
 	}
 	issue, ok := m.issues[id]
 	if !ok {
-		return nil, fmt.Errorf("issue %s not found", id)
+		// Mirror the SDK: GetIssueInTx wraps storage.ErrNotFound.
+		return nil, fmt.Errorf("%w: issue %s", beadsdk.ErrNotFound, id)
 	}
 	return issue, nil
 }
