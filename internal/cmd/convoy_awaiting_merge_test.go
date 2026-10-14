@@ -1,0 +1,132 @@
+package cmd
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/steveyegge/gastown/internal/tmux"
+)
+
+// strandedWithMRQuery runs findStrandedConvoys against a fake bd whose convoy
+// tracks one ready-looking issue (gt-work1 with the given status/assignee) and
+// whose merge-request wisp SQL is answered by queryScript.
+func strandedWithMRQuery(t *testing.T, queryScript string) strandedConvoyInfo {
+	return strandedWithIssueAndMRQuery(t, "open", "", queryScript)
+}
+
+func strandedWithIssueAndMRQuery(t *testing.T, status, assignee, queryScript string) strandedConvoyInfo {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping convoy test on Windows")
+	}
+
+	binDir := t.TempDir()
+	townRoot := t.TempDir()
+	beadsDir := filepath.Join(townRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(`{"prefix":"gt-","path":"gastown/mayor/rig"}`+"\n"), 0644); err != nil {
+		t.Fatalf("write routes: %v", err)
+	}
+
+	script := `#!/bin/sh
+i=0
+for arg in "$@"; do
+  case "$arg" in
+    --*) ;;
+    *) eval "pos$i=\"$arg\""; i=$((i+1)) ;;
+  esac
+done
+
+case "$pos0" in
+  list)
+    echo '[{"id":"hq-cv1","title":"Convoy"}]'
+    ;;
+  sql)
+    case "$*" in
+      *"issue_id = 'hq-cv1'"*) echo '[{"depends_on_id":"gt-work1"}]' ;;
+      *gt:merge-request*)
+` + queryScript + `
+        ;;
+      *) echo '[]' ;;
+    esac
+    ;;
+  dep)
+    echo '[{"id":"gt-work1","title":"Work","status":"` + status + `","issue_type":"task","assignee":"` + assignee + `","dependency_type":"tracks"}]'
+    ;;
+  show)
+    echo '[{"id":"gt-work1","title":"Work","status":"` + status + `","issue_type":"task","assignee":"` + assignee + `","blocked_by":[],"blocked_by_count":0,"dependencies":[]}]'
+    ;;
+  query)
+    echo '[]'
+    ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0755); err != nil {
+		t.Fatalf("write mock bd: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stranded, err := findStrandedConvoys(townRoot)
+	if err != nil {
+		t.Fatalf("findStrandedConvoys() error: %v", err)
+	}
+	if len(stranded) != 1 {
+		t.Fatalf("expected 1 stranded convoy, got %d", len(stranded))
+	}
+	return stranded[0]
+}
+
+// gt-ka3d: an issue whose MR is still in the merge queue is owned by the
+// refinery; the feeder must not dispatch it to another polecat.
+func TestFindStrandedConvoys_HoldsIssueWithPendingMR(t *testing.T) {
+	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr1","title":"Merge: gt-work1","status":"open","description":"branch: polecat/rust/gt-work1\ntarget: main\nsource_issue: gt-work1\nrig: gastown\n","labels":["gt:merge-request"]}]'`)
+	if s.ReadyCount != 0 {
+		t.Fatalf("ReadyCount = %d (%v), want 0 while MR is pending", s.ReadyCount, s.ReadyIssues)
+	}
+}
+
+// The reported shape: gt done left the issue hooked to the polecat whose
+// session it retired, while the MR waits in the queue.
+func TestFindStrandedConvoys_HoldsHookedIssueOfExitedPolecatWithPendingMR(t *testing.T) {
+	prev := tmux.GetDefaultSocket()
+	tmux.SetDefaultSocket("gt-test-ka3d-no-server") // assignee session is gone; never the default server
+	t.Cleanup(func() { tmux.SetDefaultSocket(prev) })
+
+	mr := `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"open","description":"source_issue: gt-work1\n"}]'`
+	if s := strandedWithIssueAndMRQuery(t, "hooked", "gastown/polecats/rust", mr); s.ReadyCount != 0 {
+		t.Fatalf("ReadyCount = %d (%v), want 0 while MR is pending", s.ReadyCount, s.ReadyIssues)
+	}
+	if s := strandedWithIssueAndMRQuery(t, "hooked", "gastown/polecats/rust", `    echo '[]'`); s.ReadyCount != 1 {
+		t.Fatalf("ReadyCount = %d, want 1: no MR and the polecat session is gone", s.ReadyCount)
+	}
+}
+
+// Once the MR is merged or rejected (closed), the issue is feedable again.
+func TestFindStrandedConvoys_FeedsIssueAfterMRClosed(t *testing.T) {
+	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr1","title":"Merge: gt-work1","status":"closed","description":"branch: polecat/rust/gt-work1\nsource_issue: gt-work1\n","labels":["gt:merge-request"]}]'`)
+	if s.ReadyCount != 1 {
+		t.Fatalf("ReadyCount = %d, want 1 after MR closed", s.ReadyCount)
+	}
+}
+
+// A pending MR for a different issue (prefix match only) must not hold it.
+func TestFindStrandedConvoys_IgnoresMRForOtherIssue(t *testing.T) {
+	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr2","status":"open","description":"source_issue: gt-work10\n","labels":["gt:merge-request"]}]'`)
+	if s.ReadyCount != 1 {
+		t.Fatalf("ReadyCount = %d, want 1 (MR belongs to gt-work10)", s.ReadyCount)
+	}
+}
+
+// If the merge queue cannot be read, hold dispatch rather than risk a duplicate.
+func TestFindStrandedConvoys_HoldsWhenMRLookupFails(t *testing.T) {
+	s := strandedWithMRQuery(t, `    echo 'dolt: connection refused' >&2
+    exit 1`)
+	if s.ReadyCount != 0 {
+		t.Fatalf("ReadyCount = %d, want 0 when MR lookup fails (fail closed)", s.ReadyCount)
+	}
+}

@@ -2,6 +2,9 @@
 package beads
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -85,6 +88,35 @@ func (b *Beads) findMRForBranch(branch string, skipClosed bool) (*Issue, error) 
 	}
 
 	return nil, nil
+}
+
+// ListPendingMergeRequests returns merge-request wisps that are not terminal:
+// submitted by gt done and not yet merged or rejected by the refinery. It uses
+// the same wisps-table SQL as ListMergeRequests, but neither hydrates details
+// nor swallows query errors, so callers deciding whether work may be
+// dispatched again can fail closed when the queue cannot be read.
+func (b *Beads) ListPendingMergeRequests() ([]*Issue, error) {
+	out, err := b.run("sql", "--json",
+		"SELECT w.id, w.status, w.description FROM wisps w "+
+			"JOIN wisp_labels l ON w.id = l.issue_id "+
+			"WHERE l.label = 'gt:merge-request' AND w.status NOT IN ('closed', 'tombstone')")
+	if err != nil {
+		return nil, fmt.Errorf("querying pending merge requests: %w", err)
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil, nil
+	}
+	var rows []*Issue
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, fmt.Errorf("parsing pending merge requests: %w", err)
+	}
+	var pending []*Issue
+	for _, row := range rows {
+		if !IssueStatus(row.Status).IsTerminal() {
+			pending = append(pending, row)
+		}
+	}
+	return pending, nil
 }
 
 // FindOpenMRsForIssue returns all open merge-request beads whose source_issue
