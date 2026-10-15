@@ -20,7 +20,7 @@ nuke your sandbox, and exit. There is no idle state. Done means gone.
 when you run `gt prime` — there are no separate step beads to close. Work through
 the checklist, then run `gt done`.
 
-**Speed principle:** You run the full gate suite AFTER rebasing onto the target
+**Pre-verify principle:** You run the full gate suite AFTER rebasing onto the target
 branch (pre-verify step). Failures surface in your session, where
 you can fix them, instead of bouncing back from the refinery. `--pre-verified`
 is informational: the refinery always runs its own gates on the merged result.
@@ -506,7 +506,7 @@ that you ran the full gate suite on a rebased branch (informational only).
 
 **Note:** If this step takes too long or the gates are not configured for this
 project, you may skip this step and use `gt done` without --pre-verified.
-The refinery will run gates normally (slower but still correct).
+The refinery runs its gates either way.
 
 **Exit criteria:** Branch rebased onto latest origin/{{base_branch}}, all configured gates pass."""
 
