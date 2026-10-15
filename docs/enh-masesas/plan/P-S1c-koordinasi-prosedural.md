@@ -2,7 +2,7 @@
 
 Spec: [`../spec/S1c-koordinasi-prosedural.md`](../spec/S1c-koordinasi-prosedural.md). Tanpa kode Go. Artefak: dua formula baru, directives, dan prosedur pilot. Prasyarat: Tahap 0 (crew `contract_owner` ada di setiap rig pilot).
 
-**Status (14 Okt 2026):** Langkah 1–5 selesai di pilot fase 1 (rig monorepo `posin`); Langkah 6–9 menunggu epic pilot.
+**Status (15 Okt 2026):** Langkah 1–9 selesai di pilot fase 1 (rig monorepo `posin`), epic pilot `kp-rcu`. Hasil dan temuan: [`../pilot/epic-1-s1c.md`](../pilot/epic-1-s1c.md). Tersisa baseline epic manual B (`../baseline/metrics-baseline.md`) sebelum keputusan gate Tahap 1.
 
 ## 0. Fakta mekanisme (dikonfirmasi dari kode)
 
