@@ -56,7 +56,9 @@ func init() {
 // If the convoy is staged_ready, it transitions unconditionally.
 // If the convoy is staged_warnings and force is true, it transitions.
 // If the convoy is staged_warnings and force is false, it returns an error.
-// If the convoy is already open or closed, it returns an error.
+// If the convoy is already open it is a no-op: launch is idempotent so it can
+// be re-run to re-dispatch beads stranded by an earlier failed spawn.
+// If the convoy is closed, it returns an error.
 func transitionConvoyToOpen(convoyID string, force bool) error {
 	result, err := bdShow(convoyID)
 	if err != nil {
@@ -77,7 +79,7 @@ func transitionConvoyToOpen(convoyID string, force bool) error {
 		return bdUpdateStatus(convoyID, convoyStatusOpen)
 
 	case convoyStatusOpen:
-		return fmt.Errorf("convoy %s is already launched", convoyID)
+		return nil
 
 	case convoyStatusClosed:
 		return fmt.Errorf("convoy %s is closed", convoyID)
@@ -189,6 +191,64 @@ func dispatchWave1(convoyID string, dag *ConvoyDAG, waves []Wave, townRoot strin
 	return results, nil
 }
 
+// readyUndispatchedTasks returns the slingable tasks of the DAG that still need
+// a worker: status open, no assignee, and every execution blocker closed. Beads
+// that are hooked, in progress, assigned, or finished are never returned, which
+// keeps re-launching an open convoy idempotent. Result is sorted by ID.
+func readyUndispatchedTasks(dag *ConvoyDAG) []string {
+	var ready []string
+	for id, node := range dag.Nodes {
+		if !isSlingableType(node.Type) || node.Status != "open" || node.Assignee != "" {
+			continue
+		}
+		blocked := false
+		for _, blockerID := range node.BlockedBy {
+			if b := dag.Nodes[blockerID]; b != nil && b.Status != "closed" && b.Status != "tombstone" {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			ready = append(ready, id)
+		}
+	}
+	sort.Strings(ready)
+	return ready
+}
+
+// dispatchReadyTasks dispatches every ready, undispatched task of an already
+// open convoy. Individual failures do not abort the remaining dispatches.
+func dispatchReadyTasks(dag *ConvoyDAG, townRoot string) []DispatchResult {
+	var results []DispatchResult
+	for _, taskID := range readyUndispatchedTasks(dag) {
+		rig := dag.Nodes[taskID].Rig
+		err := dispatchTaskDirect(townRoot, taskID, rig)
+		results = append(results, DispatchResult{BeadID: taskID, Rig: rig, Success: err == nil, Error: err})
+	}
+	return results
+}
+
+// renderRelaunchOutput formats the output of re-launching an open convoy.
+func renderRelaunchOutput(convoyID string, results []DispatchResult, dag *ConvoyDAG) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Convoy already open: %s\n", convoyID)
+	if len(results) == 0 {
+		b.WriteString("  Nothing to dispatch: no ready bead without an active worker.\n")
+		return b.String()
+	}
+	b.WriteString("Re-dispatched stranded beads:\n")
+	for _, r := range results {
+		marker := "✓"
+		errInfo := ""
+		if !r.Success {
+			marker = "✗"
+			errInfo = fmt.Sprintf("    error: %v", r.Error)
+		}
+		fmt.Fprintf(&b, "  %s %s  %s%s\n", marker, r.BeadID, dag.Nodes[r.BeadID].Title, errInfo)
+	}
+	return b.String()
+}
+
 // renderLaunchOutput formats the post-launch console output showing convoy ID,
 // wave summary, dispatched tasks with status, and helpful hints.
 func renderLaunchOutput(convoyID string, waves []Wave, results []DispatchResult, dag *ConvoyDAG) string {
@@ -263,6 +323,12 @@ func renderLaunchOutput(convoyID string, waves []Wave, results []DispatchResult,
 	return b.String()
 }
 
+// isLaunchableStatus reports whether `gt convoy launch <convoy-id>` acts on a
+// convoy in this status: staged (first launch) or open (idempotent re-launch).
+func isLaunchableStatus(status string) bool {
+	return isStagedStatus(status) || status == convoyStatusOpen
+}
+
 // runConvoyLaunch is the handler for `gt convoy launch`.
 func runConvoyLaunch(cmd *cobra.Command, args []string) error {
 	// Step 1: Validate args.
@@ -284,8 +350,9 @@ func runConvoyLaunch(cmd *cobra.Command, args []string) error {
 	// and dispatch Wave 1.
 	if len(args) == 1 {
 		result := beadTypes[args[0]]
-		if isConvoyIssue(result.IssueType, result.Labels) && isStagedStatus(normalizeConvoyStatus(result.Status)) {
+		if isConvoyIssue(result.IssueType, result.Labels) && isLaunchableStatus(normalizeConvoyStatus(result.Status)) {
 			convoyID := args[0]
+			alreadyOpen := normalizeConvoyStatus(result.Status) == convoyStatusOpen
 
 			if err := transitionConvoyToOpen(convoyID, convoyLaunchForce); err != nil {
 				return err
@@ -311,6 +378,13 @@ func runConvoyLaunch(cmd *cobra.Command, args []string) error {
 			// Check for parked/docked rigs before dispatch (gt-4owfd.1, #2120)
 			if err := checkBlockedRigsForLaunch(dag, townRoot, convoyLaunchForce); err != nil {
 				return err
+			}
+
+			if alreadyOpen {
+				// Recovery: convoy was launched before; only (re)dispatch ready
+				// beads that have no worker yet.
+				fmt.Print(renderRelaunchOutput(convoyID, dispatchReadyTasks(dag, townRoot), dag))
+				return nil
 			}
 
 			results, err := dispatchWave1(convoyID, dag, waves, townRoot)

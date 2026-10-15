@@ -879,6 +879,7 @@ type ConvoyDAGNode struct {
 	Title     string
 	Type      string // "epic", "task", "bug", etc.
 	Status    string
+	Assignee  string // current assignee ("" when unassigned)
 	Rig       string
 	BlockedBy []string // IDs of beads that block this one (execution edges)
 	Blocks    []string // IDs of beads this one blocks
@@ -1199,7 +1200,9 @@ type BeadInfo struct {
 	Title  string
 	Type   string // "epic", "task", "bug", etc.
 	Status string
-	Rig    string // resolved rig name
+	// Assignee is the bead's current assignee ("" when unassigned).
+	Assignee string
+	Rig      string // resolved rig name
 }
 
 // DepInfo represents a raw dependency from bd dep list output.
@@ -1220,11 +1223,12 @@ func buildConvoyDAG(beads []BeadInfo, deps []DepInfo) *ConvoyDAG {
 	// Create nodes from beads.
 	for _, b := range beads {
 		dag.Nodes[b.ID] = &ConvoyDAGNode{
-			ID:     b.ID,
-			Title:  b.Title,
-			Type:   b.Type,
-			Status: b.Status,
-			Rig:    b.Rig,
+			ID:       b.ID,
+			Title:    b.Title,
+			Type:     b.Type,
+			Status:   b.Status,
+			Assignee: b.Assignee,
+			Rig:      b.Rig,
 		}
 	}
 
@@ -1471,6 +1475,7 @@ type bdShowResult struct {
 	ID        string   `json:"id"`
 	Title     string   `json:"title"`
 	Status    string   `json:"status"`
+	Assignee  string   `json:"assignee"`
 	IssueType string   `json:"issue_type"`
 	Labels    []string `json:"labels"`
 }
@@ -1729,11 +1734,12 @@ func collectTaskListBeads(taskIDs []string) ([]BeadInfo, []DepInfo, error) {
 		}
 
 		allBeads = append(allBeads, BeadInfo{
-			ID:     result.ID,
-			Title:  result.Title,
-			Type:   result.IssueType,
-			Status: result.Status,
-			Rig:    rigFromBeadID(result.ID),
+			ID:       result.ID,
+			Title:    result.Title,
+			Type:     result.IssueType,
+			Status:   result.Status,
+			Assignee: result.Assignee,
+			Rig:      rigFromBeadID(result.ID),
 		})
 
 		// Fetch deps.

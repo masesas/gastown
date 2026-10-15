@@ -262,3 +262,32 @@ func TestDogFormulasDoNotForceDoltPort(t *testing.T) {
 		}
 	}
 }
+
+// TestEmbeddedFormulasDoNotDeclareRootTitleVar guards against a collision with
+// bd cook: when a formula declares a variable named "title", bd sets the proto
+// root title to "{{title}}". A defaulted/computed "title" var then renders as
+// an empty root title and wisp creation fails with "title is required"
+// (gt-pd1c.52). Use a different name (e.g. issue_title) for such variables.
+func TestEmbeddedFormulasDoNotDeclareRootTitleVar(t *testing.T) {
+	entries, err := os.ReadDir("formulas")
+	if err != nil {
+		t.Skipf("Formulas directory not found: %v", err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".formula.toml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("formulas", entry.Name()))
+		if err != nil {
+			t.Errorf("read %s: %v", entry.Name(), err)
+			continue
+		}
+		f, err := Parse(data)
+		if err != nil {
+			continue
+		}
+		if v, ok := f.Vars["title"]; ok && !v.Required && v.Default == "" {
+			t.Errorf("%s declares var \"title\" with an empty default; bd cook uses it as the wisp root title (rename it)", entry.Name())
+		}
+	}
+}

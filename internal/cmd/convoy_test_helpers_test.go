@@ -20,13 +20,14 @@ import (
 
 // testBead represents a single bead in a test DAG.
 type testBead struct {
-	ID     string
-	Title  string
-	Type   string // "epic", "task", "bug", etc.
-	Status string // default "open"
-	Rig    string // e.g. "gastown"
-	Prefix string // e.g. "gt-"
-	Parent string // parent bead ID
+	ID       string
+	Title    string
+	Type     string // "epic", "task", "bug", etc.
+	Status   string // default "open"
+	Rig      string // e.g. "gastown"
+	Assignee string // current assignee, "" when unassigned
+	Prefix   string // e.g. "gt-"
+	Parent   string // parent bead ID
 }
 
 // testDep represents a dependency edge between two beads.
@@ -181,6 +182,16 @@ func (d *testDAG) WithStatus(status string) *testDAG {
 		d.t.Fatal("WithStatus called with no current bead")
 	}
 	d.beads[d.last].Status = status
+	return d
+}
+
+// WithAssignee sets the assignee of the last-added bead.
+func (d *testDAG) WithAssignee(assignee string) *testDAG {
+	d.t.Helper()
+	if d.last == "" {
+		d.t.Fatal("WithAssignee called with no current bead")
+	}
+	d.beads[d.last].Assignee = assignee
 	return d
 }
 
@@ -465,6 +476,7 @@ func (d *testDAG) beadJSON(b *testBead) string {
 		ID        string `json:"id"`
 		Title     string `json:"title"`
 		Status    string `json:"status"`
+		Assignee  string `json:"assignee,omitempty"`
 		IssueType string `json:"issue_type"`
 		Parent    string `json:"parent,omitempty"`
 	}
@@ -473,6 +485,7 @@ func (d *testDAG) beadJSON(b *testBead) string {
 		ID:        b.ID,
 		Title:     b.Title,
 		Status:    status,
+		Assignee:  b.Assignee,
 		IssueType: issueType,
 		Parent:    b.Parent,
 	}}

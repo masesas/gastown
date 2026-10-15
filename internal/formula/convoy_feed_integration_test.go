@@ -56,7 +56,7 @@ func TestConvoyFeedWorkflow_Integration(t *testing.T) {
 	// Step 5: Verify computed variables have defaults (not required as inputs)
 	computedVars := []string{
 		"ready_count", "available_count", "dispatch_count",
-		"issue_id", "title", "rig", "polecat",
+		"issue_id", "issue_title", "rig", "polecat",
 		"error", "error_count", "report_summary",
 	}
 	for _, name := range computedVars {
