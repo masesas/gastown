@@ -1657,6 +1657,12 @@ func TestResetAbandonedBead_ResetsWhenWorkNotOnMain(t *testing.T) {
 	if !foundUpdate {
 		t.Errorf("expected bd update --status=open to be called, got calls: %v", mock.calls)
 	}
+
+	// A polecat that ran and died with the bead hooked is a work failure:
+	// this is the one place that raises the respawn counter (gt-pd1c.53).
+	if got := RecordBeadRespawn(tmpDir, "gt-work123"); got != 2 {
+		t.Errorf("respawn count after reset = %d, want 2 (reset recorded 1)", got)
+	}
 }
 
 func TestBeadRecoveredField_DefaultFalse(t *testing.T) {

@@ -96,6 +96,20 @@ func reclaimBrokenIdlePolecatForSling(polecatMgr *polecat.Manager) (bool, error)
 	return false, nil
 }
 
+// checkBeadRespawnLimit returns an error when beadID has already been reset
+// for re-dispatch MaxBeadRespawns times by the witness. It never records.
+func checkBeadRespawnLimit(townRoot, rigName, beadID string) error {
+	if !witness.ShouldBlockRespawn(townRoot, beadID) {
+		return nil
+	}
+	maxRespawns := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
+	return fmt.Errorf("respawn limit reached for %s (%d attempts). "+
+		"This bead keeps failing — investigate before re-dispatching.\n"+
+		"Override: gt sling %s %s --force\n"+
+		"Reset:    gt sling respawn-reset %s",
+		beadID, maxRespawns, beadID, rigName, beadID)
+}
+
 // SpawnPolecatForSling creates a fresh polecat and optionally starts its session.
 // This is used by gt sling when the target is a rig name.
 // The caller (sling) handles hook attachment and nudging.
@@ -158,20 +172,15 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 		defer admission.Release()
 	}
 
-	// Per-bead respawn circuit breaker (clown show #22):
-	// Track how many times this bead has been slung. Block after N attempts
-	// to prevent witness→deacon→sling feedback loops.
+	// Per-bead respawn circuit breaker (clown show #22). Gate only: the counter
+	// is raised by the witness when a polecat that ran dies with the bead still
+	// hooked, never here, so spawn/session/quota failures (gt-pd1c.53) do not
+	// consume the bead's respawn budget. Infra failure loops are bounded by the
+	// scheduler dispatch-failure circuit breaker.
 	if opts.HookBead != "" && !opts.Force {
-		if witness.ShouldBlockRespawn(townRoot, opts.HookBead) {
-			maxRespawns := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
-			return nil, fmt.Errorf("respawn limit reached for %s (%d attempts). "+
-				"This bead keeps failing — investigate before re-dispatching.\n"+
-				"Override: gt sling %s %s --force\n"+
-				"Reset:    gt sling respawn-reset %s",
-				opts.HookBead, maxRespawns,
-				opts.HookBead, rigName, opts.HookBead)
+		if err := checkBeadRespawnLimit(townRoot, rigName, opts.HookBead); err != nil {
+			return nil, err
 		}
-		witness.RecordBeadRespawn(townRoot, opts.HookBead)
 	}
 
 	if reclaimed, err := reclaimBrokenIdlePolecatForSling(polecatMgr); err != nil {
