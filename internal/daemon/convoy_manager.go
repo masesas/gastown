@@ -560,11 +560,7 @@ func (m *ConvoyManager) feedFirstReady(c strandedConvoyInfo) {
 
 		m.logger("Convoy %s: feeding %s to %s", c.ID, issueID, rig)
 
-		slingArgs := []string{"sling", issueID, rig, "--no-boot"}
-		if c.BaseBranch != "" {
-			slingArgs = append(slingArgs, "--base-branch="+c.BaseBranch)
-		}
-		cmd := exec.CommandContext(m.ctx, m.gtPath, slingArgs...)
+		cmd := exec.CommandContext(m.ctx, m.gtPath, convoy.SlingArgs(issueID, rig, c.BaseBranch)...)
 		cmd.Dir = m.townRoot
 		cmd.Env = bdMutationRoutingEnv(m.townRoot)
 		util.SetProcessGroup(cmd)

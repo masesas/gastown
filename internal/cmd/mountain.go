@@ -229,10 +229,17 @@ func runMountain(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	results, err := dispatchWave1(convoyID, dag, waves, townRoot)
+	convoyBead, err := bdShow(convoyID)
+	if err != nil {
+		return fmt.Errorf("read convoy %s for dispatch: %w", convoyID, err)
+	}
+
+	results, err := dispatchWave1(convoyID, dag, waves, townRoot, baseBranchOfConvoy(convoyBead))
 	if err != nil {
 		return fmt.Errorf("dispatch wave 1: %w", err)
 	}
+
+	wakeDispatchedRigs(results)
 
 	// Render launch output.
 	fmt.Printf("\nLaunching Wave 1 (%d tasks)...\n", len(results))

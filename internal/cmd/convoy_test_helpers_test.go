@@ -20,13 +20,15 @@ import (
 
 // testBead represents a single bead in a test DAG.
 type testBead struct {
-	ID     string
-	Title  string
-	Type   string // "epic", "task", "bug", etc.
-	Status string // default "open"
-	Rig    string // e.g. "gastown"
-	Prefix string // e.g. "gt-"
-	Parent string // parent bead ID
+	ID          string
+	Title       string
+	Type        string // "epic", "task", "bug", etc.
+	Status      string // default "open"
+	Rig         string // e.g. "gastown"
+	Assignee    string // current assignee, "" when unassigned
+	Description string
+	Prefix      string // e.g. "gt-"
+	Parent      string // parent bead ID
 }
 
 // testDep represents a dependency edge between two beads.
@@ -181,6 +183,26 @@ func (d *testDAG) WithStatus(status string) *testDAG {
 		d.t.Fatal("WithStatus called with no current bead")
 	}
 	d.beads[d.last].Status = status
+	return d
+}
+
+// WithDescription sets the description of the last-added bead.
+func (d *testDAG) WithDescription(desc string) *testDAG {
+	d.t.Helper()
+	if d.last == "" {
+		d.t.Fatal("WithDescription called with no current bead")
+	}
+	d.beads[d.last].Description = desc
+	return d
+}
+
+// WithAssignee sets the assignee of the last-added bead.
+func (d *testDAG) WithAssignee(assignee string) *testDAG {
+	d.t.Helper()
+	if d.last == "" {
+		d.t.Fatal("WithAssignee called with no current bead")
+	}
+	d.beads[d.last].Assignee = assignee
 	return d
 }
 
@@ -462,19 +484,23 @@ func (d *testDAG) beadJSON(b *testBead) string {
 	}
 
 	type beadOut struct {
-		ID        string `json:"id"`
-		Title     string `json:"title"`
-		Status    string `json:"status"`
-		IssueType string `json:"issue_type"`
-		Parent    string `json:"parent,omitempty"`
+		ID          string `json:"id"`
+		Title       string `json:"title"`
+		Status      string `json:"status"`
+		Assignee    string `json:"assignee,omitempty"`
+		Description string `json:"description,omitempty"`
+		IssueType   string `json:"issue_type"`
+		Parent      string `json:"parent,omitempty"`
 	}
 
 	out := []beadOut{{
-		ID:        b.ID,
-		Title:     b.Title,
-		Status:    status,
-		IssueType: issueType,
-		Parent:    b.Parent,
+		ID:          b.ID,
+		Title:       b.Title,
+		Status:      status,
+		Assignee:    b.Assignee,
+		Description: b.Description,
+		IssueType:   issueType,
+		Parent:      b.Parent,
 	}}
 	raw, _ := json.Marshal(out)
 	return string(raw)

@@ -96,8 +96,9 @@ func TestTransitionConvoyToOpen_StagedWarningsWithForce(t *testing.T) {
 	}
 }
 
-// IT-18: Already-open convoy returns "already launched" error.
-func TestTransitionConvoyToOpen_AlreadyOpen(t *testing.T) {
+// Re-launching an open convoy is idempotent: the status transition is a no-op
+// (no bd update) so the stranded beads can be re-dispatched (gt-pd1c.52).
+func TestTransitionConvoyToOpen_AlreadyOpenIsNoop(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows — shell stubs")
 	}
@@ -105,15 +106,63 @@ func TestTransitionConvoyToOpen_AlreadyOpen(t *testing.T) {
 	dag := newTestDAG(t).
 		Convoy("hq-cv-open", "Open Convoy").WithStatus("open")
 
-	dag.Setup(t)
+	_, logPath := dag.Setup(t)
 
-	err := transitionConvoyToOpen("hq-cv-open", false)
-	if err == nil {
-		t.Fatal("expected error for already-open convoy, got nil")
+	if err := transitionConvoyToOpen("hq-cv-open", false); err != nil {
+		t.Fatalf("transitionConvoyToOpen on open convoy: %v", err)
+	}
+	logBytes, _ := os.ReadFile(logPath)
+	if strings.Contains(string(logBytes), "CMD:update") {
+		t.Errorf("open convoy must not be updated, bd.log:\n%s", logBytes)
+	}
+}
+
+func TestTransitionConvoyToOpen_Closed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).Convoy("hq-cv-closed", "Closed").WithStatus("closed").Setup(t)
+
+	err := transitionConvoyToOpen("hq-cv-closed", false)
+	if err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("expected closed error, got %v", err)
+	}
+}
+
+// G2 regression: launching an already-open convoy dispatches only the ready
+// beads without a worker. Hooked, assigned, closed and blocked beads are left
+// alone, so repeating the launch never double-dispatches.
+func TestRunConvoyLaunch_OpenConvoyRedispatchesStrandedOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
 	}
 
-	if !strings.Contains(err.Error(), "already launched") {
-		t.Errorf("error should say 'already launched', got: %v", err)
+	td := newTestDAG(t).
+		Convoy("hq-cv-rec", "Recovery").WithStatus("open").
+		Task("hq-stranded", "Stranded", withRig("gastown")).TrackedBy("hq-cv-rec").
+		Task("hq-hooked", "Hooked", withRig("gastown")).TrackedBy("hq-cv-rec").WithStatus("hooked").
+		Task("hq-assigned", "Assigned", withRig("gastown")).TrackedBy("hq-cv-rec").WithAssignee("gastown/polecats/x").
+		Task("hq-done", "Done", withRig("gastown")).TrackedBy("hq-cv-rec").WithStatus("closed").
+		Task("hq-next", "Next wave", withRig("gastown")).TrackedBy("hq-cv-rec").BlockedBy("hq-done").
+		Task("hq-gated", "Gated", withRig("gastown")).TrackedBy("hq-cv-rec").BlockedBy("hq-hooked")
+	td.Setup(t)
+
+	var dispatched []string
+	orig := dispatchTaskDirect
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
+		dispatched = append(dispatched, beadID)
+		return nil
+	}
+	t.Cleanup(func() { dispatchTaskDirect = orig })
+
+	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-rec"}); err != nil {
+		t.Fatalf("runConvoyLaunch on open convoy: %v", err)
+	}
+
+	sort.Strings(dispatched)
+	want := []string{"hq-next", "hq-stranded"}
+	if strings.Join(dispatched, ",") != strings.Join(want, ",") {
+		t.Fatalf("dispatched = %v, want %v", dispatched, want)
 	}
 }
 
@@ -348,7 +397,7 @@ func TestDispatchWave1_AllDispatched(t *testing.T) {
 	var mu sync.Mutex
 	var dispatched []string
 	orig := dispatchTaskDirect
-	dispatchTaskDirect = func(townRoot, beadID, rig string) error {
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
 		mu.Lock()
 		dispatched = append(dispatched, beadID)
 		mu.Unlock()
@@ -356,7 +405,7 @@ func TestDispatchWave1_AllDispatched(t *testing.T) {
 	}
 	t.Cleanup(func() { dispatchTaskDirect = orig })
 
-	results, err := dispatchWave1("test-convoy", dag, waves, "")
+	results, err := dispatchWave1("test-convoy", dag, waves, "", "")
 	if err != nil {
 		t.Fatalf("dispatchWave1: %v", err)
 	}
@@ -405,7 +454,7 @@ func TestDispatchWave1_ContinuesOnFailure(t *testing.T) {
 	var mu sync.Mutex
 	var attempted []string
 	orig := dispatchTaskDirect
-	dispatchTaskDirect = func(townRoot, beadID, rig string) error {
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
 		mu.Lock()
 		attempted = append(attempted, beadID)
 		mu.Unlock()
@@ -416,7 +465,7 @@ func TestDispatchWave1_ContinuesOnFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { dispatchTaskDirect = orig })
 
-	results, err := dispatchWave1("test-convoy", dag, waves, "")
+	results, err := dispatchWave1("test-convoy", dag, waves, "", "")
 	if err != nil {
 		t.Fatalf("dispatchWave1: %v", err)
 	}
@@ -665,7 +714,7 @@ func TestDispatchWave1_EndToEnd(t *testing.T) {
 	var mu sync.Mutex
 	var dispatched []string
 	orig := dispatchTaskDirect
-	dispatchTaskDirect = func(townRoot, beadID, rig string) error {
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
 		mu.Lock()
 		dispatched = append(dispatched, beadID)
 		mu.Unlock()
@@ -685,7 +734,7 @@ func TestDispatchWave1_EndToEnd(t *testing.T) {
 		t.Fatalf("computeWaves: %v", err)
 	}
 
-	results, err := dispatchWave1("hq-cv-e2e", dag, waves, "")
+	results, err := dispatchWave1("hq-cv-e2e", dag, waves, "", "")
 	if err != nil {
 		t.Fatalf("dispatchWave1: %v", err)
 	}
@@ -796,5 +845,117 @@ esac
 	}
 	if len(deps) != 0 {
 		t.Fatalf("expected no deps for tracked beads, got %d", len(deps))
+	}
+}
+
+// Relaunch must keep beads on the convoy's base branch (e.g. integration/<epic>),
+// using the same sling arguments as the daemon feed.
+func TestRunConvoyLaunch_OpenConvoyPassesBaseBranch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).
+		Convoy("hq-cv-bb", "BB").WithStatus("open").WithDescription("base_branch: integration/epic-1").
+		Task("hq-t1", "T1", withRig("gastown")).TrackedBy("hq-cv-bb").Setup(t)
+
+	var got []string
+	orig := dispatchTaskDirect
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
+		got = append(got, beadID+"@"+baseBranch)
+		return nil
+	}
+	t.Cleanup(func() { dispatchTaskDirect = orig })
+
+	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-bb"}); err != nil {
+		t.Fatalf("runConvoyLaunch: %v", err)
+	}
+	if len(got) != 1 || got[0] != "hq-t1@integration/epic-1" {
+		t.Fatalf("dispatch = %v, want [hq-t1@integration/epic-1]", got)
+	}
+}
+
+// A real dispatch failure must surface as a non-nil error (non-zero exit) while
+// the remaining beads are still attempted.
+func TestRunConvoyLaunch_OpenConvoyReturnsErrorOnDispatchFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).
+		Convoy("hq-cv-f", "F").WithStatus("open").
+		Task("hq-f1", "F1", withRig("gastown")).TrackedBy("hq-cv-f").
+		Task("hq-f2", "F2", withRig("gastown")).TrackedBy("hq-cv-f").Setup(t)
+
+	attempted := 0
+	orig := dispatchTaskDirect
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
+		attempted++
+		return fmt.Errorf("spawn failed")
+	}
+	t.Cleanup(func() { dispatchTaskDirect = orig })
+
+	err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-f"})
+	if err == nil || !strings.Contains(err.Error(), "2 of 2 dispatches failed") {
+		t.Fatalf("expected dispatch failure error, got %v", err)
+	}
+	if attempted != 2 {
+		t.Errorf("attempted = %d, want 2", attempted)
+	}
+}
+
+// A dispatch that fails because the bead was taken meanwhile (it is no longer
+// open/unassigned) is a skip, not a failure.
+func TestRelaunchFailures_SkippedIsNotFailure(t *testing.T) {
+	results := []DispatchResult{
+		{BeadID: "a", Success: true},
+		{BeadID: "b", Skipped: true, Error: fmt.Errorf("already being slung")},
+		{BeadID: "c", Error: fmt.Errorf("boom")},
+	}
+	failed := relaunchFailures(results)
+	if len(failed) != 1 || failed[0].BeadID != "c" {
+		t.Fatalf("failures = %v, want only c", failed)
+	}
+}
+
+// Slings run with --no-boot, so launch must boot/nudge each involved rig once
+// after the dispatch loop (and only for rigs with a successful dispatch).
+func TestRunConvoyLaunch_WakesEachRigOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).
+		Convoy("hq-cv-w", "W").WithStatus("open").
+		Task("hq-w1", "W1", withRig("gastown")).TrackedBy("hq-cv-w").
+		Task("hq-w2", "W2", withRig("gastown")).TrackedBy("hq-cv-w").
+		Task("hq-w3", "W3", withRig("gastown")).TrackedBy("hq-cv-w").Setup(t)
+
+	origD, origW := dispatchTaskDirect, wakeRigFn
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error { return nil }
+	var woken []string
+	wakeRigFn = func(rig string) { woken = append(woken, rig) }
+	t.Cleanup(func() { dispatchTaskDirect, wakeRigFn = origD, origW })
+
+	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-w"}); err != nil {
+		t.Fatalf("runConvoyLaunch: %v", err)
+	}
+	if len(woken) != 1 || woken[0] != "gastown" {
+		t.Fatalf("woken = %v, want [gastown] exactly once", woken)
+	}
+}
+
+func TestWakeDispatchedRigs_OnlySuccessfulRigs(t *testing.T) {
+	orig := wakeRigFn
+	var woken []string
+	wakeRigFn = func(rig string) { woken = append(woken, rig) }
+	t.Cleanup(func() { wakeRigFn = orig })
+
+	wakeDispatchedRigs([]DispatchResult{
+		{BeadID: "a", Rig: "rigb", Success: true},
+		{BeadID: "b", Rig: "riga", Success: true},
+		{BeadID: "c", Rig: "riga", Success: true},
+		{BeadID: "d", Rig: "rigc", Error: fmt.Errorf("boom")},
+		{BeadID: "e", Rig: "rigd", Skipped: true, Error: fmt.Errorf("taken")},
+	})
+	if strings.Join(woken, ",") != "riga,rigb" {
+		t.Fatalf("woken = %v, want [riga rigb]", woken)
 	}
 }
