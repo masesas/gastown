@@ -20,10 +20,10 @@ nuke your sandbox, and exit. There is no idle state. Done means gone.
 when you run `gt prime` — there are no separate step beads to close. Work through
 the checklist, then run `gt done`.
 
-**Speed principle:** You run the full gate suite AFTER rebasing onto the target
-branch (pre-verify step). This enables the refinery to fast-path merge your MR
-in ~5 seconds instead of re-running gates. If pre-verification is skipped or
-stale, the refinery falls through to normal gate execution.
+**Pre-verify principle:** You run the full gate suite AFTER rebasing onto the target
+branch (pre-verify step). Failures surface in your session, where
+you can fix them, instead of bouncing back from the refinery. `--pre-verified`
+is informational: the refinery always runs its own gates on the merged result.
 
 **You do NOT:**
 - Push directly to main (Refinery merges from MQ)
@@ -455,9 +455,9 @@ id = "pre-verify"
 title = "Pre-merge rebase verification"
 needs = ["build-check"]
 description = """
-Rebase onto the target branch and run the full gate suite. This enables the
-refinery to fast-path merge your MR without re-running gates (~5s merge
-instead of minutes).
+Rebase onto the target branch and run the full gate suite, so gate failures
+are caught and fixed here. The refinery still runs its own gates; passing
+here does not let any MR skip them.
 
 **1. Fetch and rebase onto target:**
 ```bash
@@ -501,12 +501,12 @@ Empty commands mean "not configured" — skip silently.
 - Do NOT proceed with --pre-verified if gates failed
 
 **4. If all gates pass:**
-You will use `gt done --pre-verified` in the next step. This tells the refinery
-that you ran the full gate suite on a rebased branch, enabling fast-path merge.
+You will use `gt done --pre-verified` in the next step. This records on the MR
+that you ran the full gate suite on a rebased branch (informational only).
 
 **Note:** If this step takes too long or the gates are not configured for this
 project, you may skip this step and use `gt done` without --pre-verified.
-The refinery will run gates normally (slower but still correct).
+The refinery runs its gates either way.
 
 **Exit criteria:** Branch rebased onto latest origin/{{base_branch}}, all configured gates pass."""
 
@@ -533,7 +533,7 @@ This MUST show at least 1 commit. If it shows nothing, do NOT run `gt done`.
 
 **Run gt done:**
 ```bash
-# For code tasks with pre-verification (recommended — enables fast-path merge):
+# For code tasks with pre-verification (recommended — records that gates passed):
 gt done --pre-verified --target {{base_branch}}
 
 # For code tasks without pre-verification (gates skipped or failed):

@@ -436,6 +436,10 @@ description = """
 
 If run_tests is "false": STOP HERE. Skip everything below and proceed to the next step.
 
+**`pre_verified: true` on the MR does NOT skip this step.** It only records that
+the polecat ran gates on its own branch; you always run the configured gates on
+the merged result before merge-push.
+
 **1. Run quality checks (skip any that are not configured):**
 
 If setup_command is set: `{{setup_command}}`
