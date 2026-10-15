@@ -744,20 +744,30 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		target = args[1]
 	}
 	resolved, err := resolveTarget(target, ResolveTargetOptions{
-		DryRun:       slingDryRun,
-		Force:        force,
-		Create:       slingCreate,
-		Account:      slingAccount,
-		Agent:        slingAgent,
-		NoBoot:       slingNoBoot,
-		HookBead:     beadID,
-		BeadID:       beadID,
-		TownRoot:     townRoot,
-		BaseBranch:   slingBaseBranch,
-		ResumeBranch: slingResumeBranch,
+		DryRun:        slingDryRun,
+		Force:         force,
+		ExplicitForce: slingForce,
+		Create:        slingCreate,
+		Account:       slingAccount,
+		Agent:         slingAgent,
+		NoBoot:        slingNoBoot,
+		HookBead:      beadID,
+		BeadID:        beadID,
+		TownRoot:      townRoot,
+		BaseBranch:    slingBaseBranch,
+		ResumeBranch:  slingResumeBranch,
 	})
 	if err != nil {
 		return err
+	}
+	if resolved.NewPolecatInfo != nil {
+		// Post-spawn failures before StartSession count as infra failures
+		// (idempotent with StartSession's own accounting).
+		defer func() {
+			if retErr != nil {
+				resolved.NewPolecatInfo.finishDispatch(retErr)
+			}
+		}()
 	}
 	targetAgent := resolved.Agent
 	targetPane := resolved.Pane

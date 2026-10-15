@@ -88,7 +88,7 @@ type SlingResult struct {
 //  10. Store fields in bead (dispatcher, args, attached_molecule, no_merge)
 //  11. Create Dolt branch
 //  12. Start polecat session
-func executeSling(params SlingParams) (*SlingResult, error) {
+func executeSling(params SlingParams) (res *SlingResult, retErr error) {
 	townRoot := params.TownRoot
 	if townRoot == "" {
 		var err error
@@ -262,13 +262,14 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 
 	// 3. Spawn polecat (via spawnPolecatForSling)
 	spawnOpts := SlingSpawnOptions{
-		TownRoot:     townRoot,
-		Force:        params.Force,
-		Account:      params.Account,
-		HookBead:     params.BeadID,
-		Agent:        params.Agent,
-		BaseBranch:   params.BaseBranch,
-		ResumeBranch: params.ResumeBranch,
+		TownRoot:      townRoot,
+		Force:         params.Force,
+		ExplicitForce: explicitForce,
+		Account:       params.Account,
+		HookBead:      params.BeadID,
+		Agent:         params.Agent,
+		BaseBranch:    params.BaseBranch,
+		ResumeBranch:  params.ResumeBranch,
 		// Create is always true for rig targets: executeSling only handles
 		// rig-targeted dispatch (batch sling + queue dispatch), where a fresh
 		// polecat must be spawned. The single-sling path (runSling) handles
@@ -280,6 +281,13 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		result.ErrMsg = err.Error()
 		return result, fmt.Errorf("failed to spawn polecat: %w", err)
 	}
+	// Any failure from here until StartSession succeeds is an infra failure for
+	// the bead's counters (idempotent with StartSession's own accounting).
+	defer func() {
+		if retErr != nil {
+			spawnInfo.finishDispatch(retErr)
+		}
+	}()
 	result.SpawnInfo = spawnInfo
 	result.PolecatName = spawnInfo.PolecatName
 

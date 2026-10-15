@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/steveyegge/gastown/internal/witness"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -4949,4 +4950,50 @@ func TestResolveTargetSelfSlingByPane(t *testing.T) {
 			t.Error("expected IsSelfSling=false when resolved pane is empty (no tmux)")
 		}
 	})
+}
+
+// A failure after spawn but before StartSession (here: hook) is an infra
+// failure for the bead; it must not touch the respawn count (gt-pd1c.53).
+func TestExecuteSlingPostSpawnHookFailureCountsInfra(t *testing.T) {
+	townRoot, rigPath, _ := setupMutableBDRawSlingTest(t, "Keep this body.")
+
+	prevSpawn := spawnPolecatForSling
+	prevHook := hookBeadWithRetryWithTownRootFn
+	t.Cleanup(func() {
+		spawnPolecatForSling = prevSpawn
+		hookBeadWithRetryWithTownRootFn = prevHook
+	})
+	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
+		return &SpawnedPolecatInfo{
+			RigName:     rigName,
+			PolecatName: "toast",
+			ClonePath:   filepath.Join(townRoot, "gastown", "polecats", "toast"),
+			trackBead:   opts.HookBead,
+			townRoot:    townRoot,
+		}, nil
+	}
+	hookBeadWithRetryWithTownRootFn = func(beadID, targetAgent, hookDir, townRoot string) error {
+		return errors.New("forced hook failure")
+	}
+
+	_, err := executeSling(SlingParams{
+		BeadID:      "gt-rawrollback",
+		RigName:     "gastown",
+		TownRoot:    townRoot,
+		BeadsDir:    filepath.Join(rigPath, ".beads"),
+		HookRawBead: true,
+		NoMerge:     true,
+		ReviewOnly:  true,
+		NoConvoy:    true,
+		NoBoot:      true,
+	})
+	if err == nil {
+		t.Fatal("expected hook failure from executeSling")
+	}
+	if _, n := witness.ShouldBlockInfraFailures(townRoot, "gt-rawrollback"); n != 1 {
+		t.Fatalf("infra failures = %d, want 1", n)
+	}
+	if got := witness.BeadRespawnCount(townRoot, "gt-rawrollback"); got != 0 {
+		t.Fatalf("respawn count = %d, want 0", got)
+	}
 }

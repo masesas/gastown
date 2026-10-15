@@ -41,8 +41,24 @@ type SpawnedPolecatInfo struct {
 	// Respawn bookkeeping (gt-pd1c.53). trackBead is the hooked bead whose
 	// respawn/infra counters StartSession maintains; empty when not tracked
 	// (no bead, or --force).
-	trackBead string
-	townRoot  string
+	trackBead   string
+	townRoot    string
+	outcomeDone bool // counters already updated for this dispatch
+}
+
+// finishDispatch updates the per-bead counters exactly once per dispatch:
+// nil err = session started (one respawn, infra streak cleared); non-nil =
+// the dispatch failed after the polecat was spawned, before/at session start
+// (infra failure). StartSession calls it, and sling entry points defer it on
+// error so post-spawn failures (cook, hook, metadata) are counted too.
+// Failures after a successful session start are agent work and are left to
+// the respawn count; agent exits right after start count as respawns, not infra.
+func (s *SpawnedPolecatInfo) finishDispatch(err error) {
+	if s == nil || s.trackBead == "" || s.outcomeDone {
+		return
+	}
+	s.outcomeDone = true
+	recordSpawnOutcome(s.townRoot, s.trackBead, err)
 }
 
 // AgentID returns the agent identifier (e.g., "gastown/polecats/Toast")
@@ -59,6 +75,7 @@ func (s *SpawnedPolecatInfo) SessionStarted() bool {
 type SlingSpawnOptions struct {
 	TownRoot      string // Gas Town workspace root; falls back to cwd when empty
 	Force         bool   // Force spawn even if polecat has uncommitted work
+	ExplicitForce bool   // Operator passed --force: bypasses the respawn/infra gate. Auto-force (dead agent) must NOT set this
 	Account       string // Claude Code account handle to use
 	Create        bool   // Create polecat if it doesn't exist (currently always true for sling)
 	HookBead      string // Bead ID to set as hook_bead at spawn time (atomic assignment)
@@ -122,6 +139,13 @@ func checkBeadRespawnLimit(townRoot, rigName, beadID string) error {
 			beadID, n, beadID)
 	}
 	return nil
+}
+
+// respawnGateApplies reports whether the per-bead respawn/infra gate and
+// bookkeeping apply to this spawn. Only an operator's explicit --force bypasses
+// them; dead-agent auto-force (opts.Force without ExplicitForce) does not.
+func respawnGateApplies(opts SlingSpawnOptions) bool {
+	return opts.HookBead != "" && !opts.ExplicitForce
 }
 
 // recordSpawnOutcome maintains the per-bead counters for a dispatch attempt.
@@ -209,7 +233,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (info *Spawned
 	// here and in StartSession). Infra failures never consume the respawn
 	// budget but have their own block threshold, so neither a dead agent nor a
 	// broken environment can loop forever.
-	if opts.HookBead != "" && !opts.Force {
+	if respawnGateApplies(opts) {
 		if err := checkBeadRespawnLimit(townRoot, rigName, opts.HookBead); err != nil {
 			return nil, err
 		}
@@ -440,11 +464,7 @@ func (s *SpawnedPolecatInfo) StartSession() (pane string, retErr error) {
 	if s.SessionStarted() {
 		return s.Pane, nil
 	}
-	defer func() {
-		if s.trackBead != "" {
-			recordSpawnOutcome(s.townRoot, s.trackBead, retErr)
-		}
-	}()
+	defer func() { s.finishDispatch(retErr) }()
 
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {

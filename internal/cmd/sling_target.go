@@ -118,6 +118,7 @@ func resolveSelfTarget() (agentID string, pane string, hookRoot string, err erro
 type ResolveTargetOptions struct {
 	DryRun               bool
 	Force                bool
+	ExplicitForce        bool // operator --force (auto-force must not set): bypasses respawn gate
 	Create               bool
 	Account              string
 	Agent                string
@@ -234,6 +235,7 @@ func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, e
 		spawnOpts := SlingSpawnOptions{
 			TownRoot:      opts.TownRoot,
 			Force:         opts.Force,
+			ExplicitForce: opts.ExplicitForce,
 			Account:       opts.Account,
 			Create:        opts.Create,
 			HookBead:      opts.HookBead,
@@ -276,6 +278,7 @@ func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, e
 			spawnOpts := SlingSpawnOptions{
 				TownRoot:      opts.TownRoot,
 				Force:         opts.Force,
+				ExplicitForce: opts.ExplicitForce,
 				Account:       opts.Account,
 				Create:        opts.Create,
 				HookBead:      opts.HookBead,

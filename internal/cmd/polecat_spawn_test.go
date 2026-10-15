@@ -103,3 +103,41 @@ func TestResetBeadRespawnCount_ClearsBothCounters(t *testing.T) {
 		t.Fatal("infra count not reset")
 	}
 }
+
+// Auto-force (Force without ExplicitForce) must still pass the gate and record.
+func TestRespawnGateApplies_OnlyExplicitForceBypasses(t *testing.T) {
+	cases := []struct {
+		name string
+		opts SlingSpawnOptions
+		want bool
+	}{
+		{"plain", SlingSpawnOptions{HookBead: "b"}, true},
+		{"auto-force", SlingSpawnOptions{HookBead: "b", Force: true}, true},
+		{"explicit force", SlingSpawnOptions{HookBead: "b", Force: true, ExplicitForce: true}, false},
+		{"no bead", SlingSpawnOptions{}, false},
+	}
+	for _, c := range cases {
+		if got := respawnGateApplies(c.opts); got != c.want {
+			t.Errorf("%s: respawnGateApplies = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// finishDispatch updates the counters once: a post-spawn error then a later
+// outcome must not double count; untracked infos are no-ops.
+func TestFinishDispatch_IdempotentAndUntrackedNoop(t *testing.T) {
+	townRoot := t.TempDir()
+	info := &SpawnedPolecatInfo{trackBead: "gt-f", townRoot: townRoot}
+	info.finishDispatch(errors.New("hook failed"))
+	info.finishDispatch(errors.New("again"))
+	info.finishDispatch(nil)
+	if _, n := witness.ShouldBlockInfraFailures(townRoot, "gt-f"); n != 1 {
+		t.Fatalf("infra failures = %d, want 1", n)
+	}
+	if got := witness.BeadRespawnCount(townRoot, "gt-f"); got != 0 {
+		t.Fatalf("respawn count = %d, want 0", got)
+	}
+	(&SpawnedPolecatInfo{}).finishDispatch(errors.New("x")) // must not panic or write
+	var nilInfo *SpawnedPolecatInfo
+	nilInfo.finishDispatch(errors.New("x"))
+}
