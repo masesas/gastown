@@ -178,3 +178,24 @@ func TestSessionsOnMultipleSockets(t *testing.T) {
 		t.Errorf("cross socket has %d of %d expected sessions", crossCount, len(crossSessions))
 	}
 }
+
+func TestListClients_NoServerAndNoClients(t *testing.T) {
+	tm := newCrossTestSocket(t)
+
+	// No server running: no clients, no error.
+	clients, err := tm.ListClients()
+	if err != nil || len(clients) != 0 {
+		t.Fatalf("no server: clients=%v err=%v", clients, err)
+	}
+
+	// Server with a detached session: still no attached clients.
+	session := fmt.Sprintf("gt-test-clients-%d", os.Getpid())
+	if err := tm.NewSessionWithCommand(session, ".", "sleep 300"); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(func() { _ = tm.KillSession(session) })
+	clients, err = tm.ListClients()
+	if err != nil || len(clients) != 0 {
+		t.Fatalf("detached session: clients=%v err=%v", clients, err)
+	}
+}

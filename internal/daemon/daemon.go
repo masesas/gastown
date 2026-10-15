@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -117,6 +118,9 @@ type Daemon struct {
 	// idle tracks the idle_shutdown patrol's idle period.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
 	idle idleState
+
+	// idleDownFailed is set by the detached gt down waiter when it exits non-zero.
+	idleDownFailed atomic.Bool
 
 	// mayorZombieCount tracks consecutive patrol cycles where the Mayor tmux
 	// session exists but the agent process is not detected. A count >= 3

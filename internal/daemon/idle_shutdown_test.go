@@ -1,9 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
+
+	beadsdk "github.com/steveyegge/beads"
+	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/constants"
 )
 
 func TestIdleShutdownTimeout_Default(t *testing.T) {
@@ -159,5 +164,84 @@ func TestEvaluateIdle_EachConditionBlocks(t *testing.T) {
 		if !st.idleSince.IsZero() {
 			t.Errorf("%s: timer must reset", name)
 		}
+	}
+}
+
+func TestIsActiveWorkBead(t *testing.T) {
+	cases := []struct {
+		name  string
+		issue *beads.Issue
+		want  bool
+	}{
+		{"nil", nil, false},
+		{"deacon patrol wisp", &beads.Issue{Title: constants.MolDeaconPatrol + ": cycle"}, false},
+		{"witness patrol wisp", &beads.Issue{Title: constants.MolWitnessPatrol}, false},
+		{"refinery patrol wisp", &beads.Issue{Title: constants.MolRefineryPatrol + " rig"}, false},
+		{"agent bead by label", &beads.Issue{Title: "gt-gastown-polecat-x", Labels: []string{"gt:agent"}}, false},
+		{"agent bead by legacy type", &beads.Issue{Title: "agent", Type: "agent"}, false},
+		{"polecat task", &beads.Issue{Title: "Fix the thing", Type: "task"}, true},
+		{"dog work", &beads.Issue{Title: "Reap wisps", Assignee: "deacon/dogs/alpha"}, true},
+		{"crew/mayor work", &beads.Issue{Title: "Plan release", Assignee: "mayor"}, true},
+		{"title merely mentions patrol", &beads.Issue{Title: "Investigate mol-deacon-patrol bug"}, true},
+	}
+	for _, c := range cases {
+		if got := isActiveWorkBead(c.issue); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+type activityStore struct {
+	beadsdk.Storage
+	active []*beadsdk.Issue
+	mrs    []*beadsdk.Issue
+	err    error
+}
+
+func (s *activityStore) SearchIssues(_ context.Context, _ string, f beadsdk.IssueFilter) ([]*beadsdk.Issue, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if len(f.Labels) > 0 {
+		return s.mrs, nil
+	}
+	return s.active, nil
+}
+
+func TestCountStoreActivity(t *testing.T) {
+	stores := map[string]beadsdk.Storage{
+		"hq": &activityStore{active: []*beadsdk.Issue{
+			{Title: constants.MolDeaconPatrol, Status: "hooked"},
+			{Title: "agent", Labels: []string{"gt:agent"}, Status: "hooked"},
+		}},
+		"rig": &activityStore{
+			active: []*beadsdk.Issue{{Title: "real task", Status: "in_progress"}},
+			mrs:    []*beadsdk.Issue{{Status: "open"}, {Status: "closed"}},
+		},
+	}
+	work, mrs, err := countStoreActivity(context.Background(), stores)
+	if err != nil || work != 1 || mrs != 1 {
+		t.Fatalf("work=%d mrs=%d err=%v, want 1,1,nil", work, mrs, err)
+	}
+
+	stores["rig"] = &activityStore{err: errors.New("dolt down")}
+	if _, _, err := countStoreActivity(context.Background(), stores); err == nil {
+		t.Fatal("store error must be reported (fail-safe)")
+	}
+}
+
+func TestReleaseIdleLatch_RetriesAfterOnePeriod(t *testing.T) {
+	const timeout = 30 * time.Minute
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	st := releaseIdleLatch(t0)
+	if st.fired {
+		t.Fatal("latch must be released")
+	}
+	st, act := evaluateIdle(st, idleSnapshot{}, t0.Add(timeout-time.Second), timeout)
+	if act != idleWait {
+		t.Fatal("must wait a full period before retry")
+	}
+	if _, act = evaluateIdle(st, idleSnapshot{}, t0.Add(timeout), timeout); act != idleShutdown {
+		t.Fatal("must retry after one period")
 	}
 }

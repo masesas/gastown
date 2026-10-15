@@ -716,11 +716,24 @@ town has had no activity for a timeout. It is off unless enabled in
 ```
 
 `idle_timeout` is a Go duration (default `30m`). "Idle" means, continuously for
-the whole timeout: no live polecat session, no `hooked`/`in_progress` bead
+the whole timeout: no live polecat session, no real `hooked`/`in_progress` bead
 (town and rigs), an empty merge queue, and no tmux client attached to the town
-socket. Any lookup that fails counts as active and resets the timer. Before
-`gt down` the daemon logs, mails the overseer (`gt mail send --human`) and
-emits an `idle_shutdown` feed event; it fires once per idle period.
+socket. Deacon/witness/refinery patrol wisps and agent beads are hooked on
+purpose and do not count as work. Any lookup that fails counts as active and
+resets the timer. Before `gt down` the daemon logs, mails the overseer
+(`gt mail send --human`) and emits an `idle_shutdown` feed event; it fires once
+per idle period (if `gt down` fails to start or exits non-zero it retries after
+another full idle period).
+
+Notes:
+- Idle polecat sessions keep the town active until the idle reaper kills them,
+  so the timer effectively starts after the reap.
+- Crew and mayor sessions are not counted directly: `gt down` stops them, so
+  their work is protected only through its work bead (hooked/in_progress) or an
+  attached tmux client. Gas Town starts no tmux control-mode clients of its
+  own; only a human attach counts.
+- The daemon exits 0 on SIGTERM (`shutdown` returns nil), which is compatible
+  with a launchd `KeepAlive` of `SuccessfulExit=false`.
 
 ## Plugin Molecules
 

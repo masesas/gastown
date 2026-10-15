@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
+	beadsdk "github.com/steveyegge/beads"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/util"
@@ -27,6 +30,9 @@ const (
 	// idleShutdownMailTimeout bounds the overseer mail so a hung send cannot
 	// delay the shutdown.
 	idleShutdownMailTimeout = 30 * time.Second
+
+	// idleShutdownQueryTimeout bounds the in-process bead queries per check.
+	idleShutdownQueryTimeout = 10 * time.Second
 )
 
 // IdleShutdownConfig configures the opt-in idle_shutdown patrol.
@@ -103,6 +109,13 @@ func evaluateIdle(st idleState, snap idleSnapshot, now time.Time, timeout time.D
 	return st, idleShutdown
 }
 
+// releaseIdleLatch is applied when `gt down` could not be started or failed:
+// it clears the fired latch and restarts the idle clock at now, so a retry
+// happens only after one more full idle period.
+func releaseIdleLatch(now time.Time) idleState {
+	return idleState{idleSince: now}
+}
+
 // runIdleShutdown takes an activity snapshot and runs `gt down` once the town
 // has been idle for the configured timeout.
 func (d *Daemon) runIdleShutdown() {
@@ -115,22 +128,29 @@ func (d *Daemon) runIdleShutdown() {
 		d.logger.Printf("idle_shutdown: activity undeterminable, treating as active: %v", snap.Err)
 	}
 
-	next, action := evaluateIdle(d.idle, snap, time.Now(), timeout)
+	now := time.Now()
+	if d.idleDownFailed.Swap(false) && d.idle.fired {
+		d.logger.Printf("idle_shutdown: previous gt down failed, retrying after another %v idle", timeout)
+		d.idle = releaseIdleLatch(now)
+	}
+	next, action := evaluateIdle(d.idle, snap, now, timeout)
 	d.idle = next
 	if action != idleShutdown {
 		return
 	}
-	d.triggerIdleShutdown(timeout)
+	if !d.triggerIdleShutdown(timeout) {
+		d.idle = releaseIdleLatch(now)
+	}
 }
 
 // collectIdleSnapshot gathers the four activity signals. Errors are recorded
-// in the snapshot (joined), never swallowed.
+// in the snapshot (joined), never swallowed. Bead/MR reads go through the
+// daemon's in-process stores (no subprocess per tick).
 func (d *Daemon) collectIdleSnapshot() idleSnapshot {
 	var snap idleSnapshot
 	var errs []error
 
 	rigs := d.getKnownRigs()
-
 	for _, rigName := range rigs {
 		n, err := d.countRigPolecatSessions(rigName)
 		if err != nil {
@@ -139,33 +159,20 @@ func (d *Daemon) collectIdleSnapshot() idleSnapshot {
 		snap.PolecatSessions += n
 	}
 
-	// Town beads plus every rig's beads: active work and pending MRs.
-	stores := []struct {
-		name string
-		bd   *beads.Beads
-	}{{"town", beads.New(d.config.TownRoot)}}
-	for _, rigName := range rigs {
-		rigPath := filepath.Join(d.config.TownRoot, rigName)
-		stores = append(stores, struct {
-			name string
-			bd   *beads.Beads
-		}{rigName, beads.NewWithBeadsDir(rigPath, beads.ResolveBeadsDir(rigPath))})
+	// Every store (hq + each known rig) must be readable; a missing store
+	// means we cannot rule out activity.
+	for _, name := range append([]string{"hq"}, rigs...) {
+		if _, ok := d.beadsStores[name]; !ok {
+			errs = append(errs, fmt.Errorf("beads store %q unavailable", name))
+		}
 	}
-	for _, s := range stores {
-		n, err := countActiveBeads(s.bd)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("active beads (%s): %w", s.name, err))
-		}
-		snap.ActiveBeads += n
-		if s.name == "town" {
-			continue // merge queues live in rig stores
-		}
-		mrs, err := s.bd.ListPendingMergeRequests()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("merge queue (%s): %w", s.name, err))
-		}
-		snap.PendingMRs += len(mrs)
+	ctx, cancel := context.WithTimeout(d.ctx, idleShutdownQueryTimeout)
+	defer cancel()
+	work, mrs, err := countStoreActivity(ctx, d.beadsStores)
+	if err != nil {
+		errs = append(errs, err)
 	}
+	snap.ActiveBeads, snap.PendingMRs = work, mrs
 
 	clients, err := d.tmux.ListClients()
 	if err != nil {
@@ -199,30 +206,64 @@ func (d *Daemon) countRigPolecatSessions(rigName string) (int, error) {
 	return count, nil
 }
 
-// idleActiveStatuses are the bead statuses that mean work is in flight.
-var idleActiveStatuses = []string{"hooked", "in_progress"}
-
-// countActiveBeads counts hooked/in_progress beads in both the durable issues
-// table and the ephemeral wisps table.
-func countActiveBeads(bd *beads.Beads) (int, error) {
-	total := 0
-	for _, status := range idleActiveStatuses {
-		for _, ephemeral := range []bool{false, true} {
-			issues, err := bd.List(beads.ListOptions{Status: status, Priority: -1, Ephemeral: ephemeral})
-			if err != nil {
-				return total, fmt.Errorf("listing %s beads: %w", status, err)
-			}
-			total += len(issues)
+// isActiveWorkBead reports whether a hooked/in_progress bead represents real
+// work in flight. Patrol wisps (deacon/witness/refinery) are intentionally kept
+// hooked by their agents, and agent beads are identity records; neither is work.
+// Work for dogs, polecats, crew and mayor has an ordinary title and counts.
+func isActiveWorkBead(issue *beads.Issue) bool {
+	if issue == nil || beads.IsAgentBead(issue) {
+		return false
+	}
+	for _, mol := range []string{constants.MolDeaconPatrol, constants.MolWitnessPatrol, constants.MolRefineryPatrol} {
+		if strings.HasPrefix(issue.Title, mol) {
+			return false
 		}
 	}
-	return total, nil
+	return true
 }
 
-// triggerIdleShutdown logs, notifies the overseer, emits a feed event and then
+// sdkIssueToBead projects the fields isActiveWorkBead needs.
+func sdkIssueToBead(i *beadsdk.Issue) *beads.Issue {
+	return &beads.Issue{Title: i.Title, Type: string(i.IssueType), Status: string(i.Status), Labels: i.Labels}
+}
+
+// countStoreActivity counts real active work (hooked/in_progress, patrol wisps
+// and agent beads excluded) and non-terminal merge requests across all stores.
+// SearchIssues spans both the issues and wisps tables. The first error is
+// returned together with the partial counts.
+func countStoreActivity(ctx context.Context, stores map[string]beadsdk.Storage) (work, mrs int, err error) {
+	var errs []error
+	for name, store := range stores {
+		active, e := store.SearchIssues(ctx, "", beadsdk.IssueFilter{
+			Statuses: []beadsdk.Status{beadsdk.Status("hooked"), beadsdk.Status("in_progress")},
+		})
+		if e != nil {
+			errs = append(errs, fmt.Errorf("active beads (%s): %w", name, e))
+		}
+		for _, i := range active {
+			if isActiveWorkBead(sdkIssueToBead(i)) {
+				work++
+			}
+		}
+
+		queue, e := store.SearchIssues(ctx, "", beadsdk.IssueFilter{Labels: []string{"gt:merge-request"}})
+		if e != nil {
+			errs = append(errs, fmt.Errorf("merge queue (%s): %w", name, e))
+		}
+		for _, i := range queue {
+			if !beads.IssueStatus(i.Status).IsTerminal() {
+				mrs++
+			}
+		}
+	}
+	return work, mrs, errors.Join(errs...)
+}
+
+// triggerIdleShutdown returns false when gt down could not be started. It logs, notifies the overseer, emits a feed event and then
 // launches `gt down` detached. gt down stops this daemon, so the process is
 // started in its own process group with no daemon-bound context, and is not
 // waited on synchronously.
-func (d *Daemon) triggerIdleShutdown(timeout time.Duration) {
+func (d *Daemon) triggerIdleShutdown(timeout time.Duration) bool {
 	d.logger.Printf("idle_shutdown: town idle for %v, running gt down", timeout)
 
 	d.notifyOverseerOfIdleShutdown(timeout)
@@ -236,14 +277,16 @@ func (d *Daemon) triggerIdleShutdown(timeout time.Duration) {
 	cmd.Env = append(os.Environ(), "BD_ACTOR=daemon")
 	if err := cmd.Start(); err != nil {
 		d.logger.Printf("idle_shutdown: failed to start gt down: %v", err)
-		return
+		return false
 	}
 	d.logger.Printf("idle_shutdown: gt down started (pid %d)", cmd.Process.Pid)
 	go func() {
 		if err := cmd.Wait(); err != nil {
 			d.logger.Printf("idle_shutdown: gt down exited with error: %v", err)
+			d.idleDownFailed.Store(true)
 		}
 	}()
+	return true
 }
 
 // notifyOverseerOfIdleShutdown mails the human overseer, bounded by a timeout.
