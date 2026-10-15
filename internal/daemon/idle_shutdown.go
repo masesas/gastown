@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -70,6 +71,52 @@ type idleSnapshot struct {
 	PendingMRs      int   // non-terminal merge requests, all rigs
 	HumanClients    int   // tmux clients attached on the town socket
 	Err             error // any lookup that could not be determined
+
+	WorkIDs []string // IDs of beads counted in ActiveBeads (for diagnostics)
+	MRIDs   []string // IDs of merge requests counted in PendingMRs
+}
+
+// maxReasonIDs caps how many blocking IDs are logged per category.
+const maxReasonIDs = 5
+
+// reasonKey summarizes why the town is active, without IDs, so a change in
+// the key marks a change of blocker worth logging.
+func (s idleSnapshot) reasonKey() string {
+	key := fmt.Sprintf("polecats=%d work=%d mrs=%d clients=%d", s.PolecatSessions, s.ActiveBeads, s.PendingMRs, s.HumanClients)
+	if s.Err != nil {
+		key += " lookup_error"
+	}
+	return key
+}
+
+// reason is the human-readable log line for an active snapshot.
+func (s idleSnapshot) reason() string {
+	out := s.reasonKey()
+	if len(s.WorkIDs) > 0 {
+		out += " work_ids=" + joinCapped(s.WorkIDs)
+	}
+	if len(s.MRIDs) > 0 {
+		out += " mr_ids=" + joinCapped(s.MRIDs)
+	}
+	if s.Err != nil {
+		out += " error=" + util.FirstLine(s.Err.Error())
+	}
+	return out
+}
+
+func joinCapped(ids []string) string {
+	sorted := append([]string(nil), ids...)
+	sort.Strings(sorted)
+	if len(sorted) <= maxReasonIDs {
+		return strings.Join(sorted, ",")
+	}
+	return fmt.Sprintf("%s,+%d more", strings.Join(sorted[:maxReasonIDs], ","), len(sorted)-maxReasonIDs)
+}
+
+// shouldLogActiveReason limits "town is active" logging to one line per
+// change of blocker, or once per interval while the blocker is unchanged.
+func shouldLogActiveReason(lastKey string, lastAt time.Time, key string, now time.Time, interval time.Duration) bool {
+	return key != lastKey || lastAt.IsZero() || now.Sub(lastAt) >= interval
 }
 
 // active reports whether the town is busy. An undeterminable lookup counts as
@@ -129,6 +176,14 @@ func (d *Daemon) runIdleShutdown() {
 	}
 
 	now := time.Now()
+	if snap.active() {
+		if key := snap.reasonKey(); shouldLogActiveReason(d.idleReasonKey, d.idleReasonAt, key, now, timeout) {
+			d.logger.Printf("idle_shutdown: town active: %s", snap.reason())
+			d.idleReasonKey, d.idleReasonAt = key, now
+		}
+	} else {
+		d.idleReasonKey = ""
+	}
 	if d.idleDownFailed.Swap(false) && d.idle.fired {
 		d.logger.Printf("idle_shutdown: previous gt down failed, retrying after another %v idle", timeout)
 		d.idle = releaseIdleLatch(now)
@@ -172,7 +227,8 @@ func (d *Daemon) collectIdleSnapshot() idleSnapshot {
 	if err != nil {
 		errs = append(errs, err)
 	}
-	snap.ActiveBeads, snap.PendingMRs = work, mrs
+	snap.WorkIDs, snap.MRIDs = work, mrs
+	snap.ActiveBeads, snap.PendingMRs = len(work), len(mrs)
 
 	clients, err := d.tmux.ListClients()
 	if err != nil {
@@ -206,6 +262,18 @@ func (d *Daemon) countRigPolecatSessions(rigName string) (int, error) {
 	return count, nil
 }
 
+// idleIgnoredFormulas are formulas the daemon/agents run periodically on their
+// own: patrol wisps (kept hooked on purpose) and infrastructure dog formulas
+// the daemon slings on a timer (reaper, jsonl, compactor, checkpoint, doctor,
+// backup). They would otherwise keep the town "active" forever. Dog work with
+// any other title (slung by a human or mayor) still counts. A human slinging
+// one of these exact formulas by hand is indistinguishable and is ignored.
+var idleIgnoredFormulas = []string{
+	constants.MolDeaconPatrol, constants.MolWitnessPatrol, constants.MolRefineryPatrol,
+	constants.MolDogReaper, constants.MolDogJSONL, constants.MolDogCompactor,
+	constants.MolDogCheckpoint, constants.MolDogDoctor, constants.MolDogBackup,
+}
+
 // isActiveWorkBead reports whether a hooked/in_progress bead represents real
 // work in flight. Patrol wisps (deacon/witness/refinery) are intentionally kept
 // hooked by their agents, and agent beads are identity records; neither is work.
@@ -214,7 +282,7 @@ func isActiveWorkBead(issue *beads.Issue) bool {
 	if issue == nil || beads.IsAgentBead(issue) {
 		return false
 	}
-	for _, mol := range []string{constants.MolDeaconPatrol, constants.MolWitnessPatrol, constants.MolRefineryPatrol} {
+	for _, mol := range idleIgnoredFormulas {
 		if strings.HasPrefix(issue.Title, mol) {
 			return false
 		}
@@ -224,14 +292,14 @@ func isActiveWorkBead(issue *beads.Issue) bool {
 
 // sdkIssueToBead projects the fields isActiveWorkBead needs.
 func sdkIssueToBead(i *beadsdk.Issue) *beads.Issue {
-	return &beads.Issue{Title: i.Title, Type: string(i.IssueType), Status: string(i.Status), Labels: i.Labels}
+	return &beads.Issue{ID: i.ID, Title: i.Title, Type: string(i.IssueType), Status: string(i.Status), Labels: i.Labels}
 }
 
-// countStoreActivity counts real active work (hooked/in_progress, patrol wisps
+// countStoreActivity returns the IDs of real active work (hooked/in_progress, patrol wisps
 // and agent beads excluded) and non-terminal merge requests across all stores.
 // SearchIssues spans both the issues and wisps tables. The first error is
 // returned together with the partial counts.
-func countStoreActivity(ctx context.Context, stores map[string]beadsdk.Storage) (work, mrs int, err error) {
+func countStoreActivity(ctx context.Context, stores map[string]beadsdk.Storage) (work, mrs []string, err error) {
 	var errs []error
 	for name, store := range stores {
 		active, e := store.SearchIssues(ctx, "", beadsdk.IssueFilter{
@@ -242,7 +310,7 @@ func countStoreActivity(ctx context.Context, stores map[string]beadsdk.Storage) 
 		}
 		for _, i := range active {
 			if isActiveWorkBead(sdkIssueToBead(i)) {
-				work++
+				work = append(work, i.ID)
 			}
 		}
 
@@ -252,7 +320,7 @@ func countStoreActivity(ctx context.Context, stores map[string]beadsdk.Storage) 
 		}
 		for _, i := range queue {
 			if !beads.IssueStatus(i.Status).IsTerminal() {
-				mrs++
+				mrs = append(mrs, i.ID)
 			}
 		}
 	}

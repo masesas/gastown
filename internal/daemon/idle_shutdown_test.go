@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,6 +178,12 @@ func TestIsActiveWorkBead(t *testing.T) {
 		{"deacon patrol wisp", &beads.Issue{Title: constants.MolDeaconPatrol + ": cycle"}, false},
 		{"witness patrol wisp", &beads.Issue{Title: constants.MolWitnessPatrol}, false},
 		{"refinery patrol wisp", &beads.Issue{Title: constants.MolRefineryPatrol + " rig"}, false},
+		{"reaper dog formula", &beads.Issue{Title: constants.MolDogReaper}, false},
+		{"doctor dog formula", &beads.Issue{Title: constants.MolDogDoctor + ": run"}, false},
+		{"backup dog formula", &beads.Issue{Title: constants.MolDogBackup}, false},
+		{"jsonl dog formula", &beads.Issue{Title: constants.MolDogJSONL}, false},
+		{"compactor dog formula", &beads.Issue{Title: constants.MolDogCompactor}, false},
+		{"checkpoint dog formula", &beads.Issue{Title: constants.MolDogCheckpoint}, false},
 		{"agent bead by label", &beads.Issue{Title: "gt-gastown-polecat-x", Labels: []string{"gt:agent"}}, false},
 		{"agent bead by legacy type", &beads.Issue{Title: "agent", Type: "agent"}, false},
 		{"polecat task", &beads.Issue{Title: "Fix the thing", Type: "task"}, true},
@@ -215,13 +222,16 @@ func TestCountStoreActivity(t *testing.T) {
 			{Title: "agent", Labels: []string{"gt:agent"}, Status: "hooked"},
 		}},
 		"rig": &activityStore{
-			active: []*beadsdk.Issue{{Title: "real task", Status: "in_progress"}},
-			mrs:    []*beadsdk.Issue{{Status: "open"}, {Status: "closed"}},
+			active: []*beadsdk.Issue{{ID: "gt-task1", Title: "real task", Status: "in_progress"}},
+			mrs:    []*beadsdk.Issue{{ID: "gt-mr1", Status: "open"}, {ID: "gt-mr2", Status: "closed"}},
 		},
 	}
 	work, mrs, err := countStoreActivity(context.Background(), stores)
-	if err != nil || work != 1 || mrs != 1 {
-		t.Fatalf("work=%d mrs=%d err=%v, want 1,1,nil", work, mrs, err)
+	if err != nil || len(work) != 1 || len(mrs) != 1 {
+		t.Fatalf("work=%v mrs=%v err=%v, want 1,1,nil", work, mrs, err)
+	}
+	if work[0] != "gt-task1" || mrs[0] != "gt-mr1" {
+		t.Fatalf("ids work=%v mrs=%v", work, mrs)
 	}
 
 	stores["rig"] = &activityStore{err: errors.New("dolt down")}
@@ -243,5 +253,41 @@ func TestReleaseIdleLatch_RetriesAfterOnePeriod(t *testing.T) {
 	}
 	if _, act = evaluateIdle(st, idleSnapshot{}, t0.Add(timeout), timeout); act != idleShutdown {
 		t.Fatal("must retry after one period")
+	}
+}
+
+func TestIdleSnapshot_Reason(t *testing.T) {
+	snap := idleSnapshot{
+		PolecatSessions: 1, ActiveBeads: 7, PendingMRs: 1, HumanClients: 0,
+		WorkIDs: []string{"g7", "g1", "g2", "g3", "g4", "g5", "g6"},
+		MRIDs:   []string{"mr-1"},
+		Err:     errors.New("dolt down\nmore"),
+	}
+	got := snap.reason()
+	for _, want := range []string{"polecats=1", "work=7", "mrs=1", "clients=0",
+		"work_ids=g1,g2,g3,g4,g5,+2 more", "mr_ids=mr-1", "error=dolt down"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reason %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(snap.reasonKey(), "g1") {
+		t.Error("reasonKey must not contain IDs")
+	}
+}
+
+func TestShouldLogActiveReason(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	const iv = 30 * time.Minute
+	if !shouldLogActiveReason("", time.Time{}, "a", t0, iv) {
+		t.Error("first log must happen")
+	}
+	if shouldLogActiveReason("a", t0, "a", t0.Add(time.Minute), iv) {
+		t.Error("same reason within interval must not log")
+	}
+	if !shouldLogActiveReason("a", t0, "b", t0.Add(time.Minute), iv) {
+		t.Error("changed reason must log")
+	}
+	if !shouldLogActiveReason("a", t0, "a", t0.Add(iv), iv) {
+		t.Error("same reason after interval must log again")
 	}
 }

@@ -119,6 +119,10 @@ type Daemon struct {
 	// Only accessed from heartbeat loop goroutine - no sync needed.
 	idle idleState
 
+	// idleReasonKey/idleReasonAt rate-limit the "town active" log line.
+	idleReasonKey string
+	idleReasonAt  time.Time
+
 	// idleDownFailed is set by the detached gt down waiter when it exits non-zero.
 	idleDownFailed atomic.Bool
 
