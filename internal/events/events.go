@@ -46,6 +46,9 @@ const (
 	TypeBoot    = "boot"
 	TypeHalt    = "halt"
 
+	// Daemon idle_shutdown patrol: town idle past the timeout, gt down launched.
+	TypeIdleShutdown = "idle_shutdown"
+
 	// Session events (for seance discovery)
 	TypeSessionStart = "session_start"
 	TypeSessionEnd   = "session_end"

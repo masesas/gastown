@@ -1151,6 +1151,25 @@ func (t *Tmux) ListSessions() ([]string, error) {
 	return sessions, nil
 }
 
+// ListClients returns the tty names of all clients attached to the tmux
+// server on this socket. A missing server means no clients (nil, nil).
+func (t *Tmux) ListClients() ([]string, error) {
+	out, err := t.run("list-clients", "-F", "#{client_tty}")
+	if err != nil {
+		if errors.Is(err, ErrNoServer) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var clients []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			clients = append(clients, line)
+		}
+	}
+	return clients, nil
+}
+
 // SessionSet provides O(1) session existence checks by caching session names.
 // Use this when you need to check multiple sessions to avoid N+1 subprocess calls.
 type SessionSet struct {

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -113,6 +114,13 @@ type Daemon struct {
 	// lastMaintenanceRun tracks when scheduled maintenance last ran.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
 	lastMaintenanceRun time.Time
+
+	// idle tracks the idle_shutdown patrol's idle period.
+	// Only accessed from heartbeat loop goroutine - no sync needed.
+	idle idleState
+
+	// idleDownFailed is set by the detached gt down waiter when it exits non-zero.
+	idleDownFailed atomic.Bool
 
 	// mayorZombieCount tracks consecutive patrol cycles where the Mayor tmux
 	// session exists but the agent process is not detected. A count >= 3
@@ -682,6 +690,17 @@ func (d *Daemon) Run() (err error) {
 		d.logger.Printf("Checkpoint dog ticker started (interval %v)", interval)
 	}
 
+	// Start idle shutdown ticker if opted in (default: off).
+	var idleShutdownTicker *time.Ticker
+	var idleShutdownChan <-chan time.Time
+	if d.isPatrolActive("idle_shutdown") {
+		idleShutdownTicker = time.NewTicker(idleShutdownCheckInterval)
+		idleShutdownChan = idleShutdownTicker.C
+		defer idleShutdownTicker.Stop()
+		d.logger.Printf("Idle shutdown ticker started (check interval %v, idle timeout %v)",
+			idleShutdownCheckInterval, idleShutdownTimeout(d.patrolConfig))
+	}
+
 	// Start scheduled maintenance ticker if configured.
 	// Checks periodically whether we're in the maintenance window and
 	// runs `gt maintain --force` when commit counts exceed threshold.
@@ -806,6 +825,14 @@ func (d *Daemon) Run() (err error) {
 			// worktrees to prevent data loss from session crashes.
 			if !d.isShutdownInProgress() {
 				d.runCheckpointDog()
+			}
+
+		case <-idleShutdownChan:
+			// Idle shutdown — runs `gt down` once the town has had no activity
+			// (polecats, hooked/in_progress beads, merge queue, human clients)
+			// for the configured timeout. Opt-in.
+			if !d.isShutdownInProgress() {
+				d.runIdleShutdown()
 			}
 
 		case <-scheduledMaintenanceChan:
