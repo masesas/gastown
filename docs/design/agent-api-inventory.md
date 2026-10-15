@@ -209,7 +209,10 @@ or `POST /telemetry` with rate limit event
   connection count admission gate
 - `internal/witness/spawn_count.go` — `ShouldBlockRespawn()` (line ~74): circuit
   breaker after 3 respawns per bead, `RecordBeadRespawn()` (line ~104): flock'd
-  cross-process counter
+  cross-process counter. Recorded only by witness `resetAbandonedBead` (a
+  polecat that ran died with the bead hooked); sling only gates via
+  `checkBeadRespawnLimit()` (`internal/cmd/polecat_spawn.go`), so spawn/infra
+  failures do not consume the budget (gt-pd1c.53)
 
 **Flow**: GT internal. Admission decisions don't involve the agent.
 
