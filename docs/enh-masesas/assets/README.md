@@ -13,6 +13,7 @@ Sumber terversi untuk formula, directives, dan template S1c. Tidak ada kode Go. 
 | `directives/rig/crew.md` | `<town>/<rig>/directives/crew.md` (setiap rig yang punya crew `contract_owner`) |
 | `directives/rig/polecat.md` | `<town>/<rig>/directives/polecat.md` |
 | `templates/*.md` | `<town>/templates/contract/` (dirujuk sebagai `$GT_ROOT/templates/contract/`; agent town tidak bisa membaca repo fork) |
+| `tools/posin-gate` | Contoh `test_command` rig dengan DB sekali pakai, spesifik monorepo k-posin dari pilot; salin dan sesuaikan per repo. Lihat `../runbook-real-project.md` § 3 |
 
 ## Pemasangan (P-S1c Langkah 5)
 
