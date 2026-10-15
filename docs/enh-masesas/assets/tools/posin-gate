@@ -1,0 +1,67 @@
+#!/bin/bash
+# Quality gate for the posin rig (k-posin monorepo): runs the checks of each
+# app touched since the merge base with origin/main. Usage: posin-gate [setup|test]
+# Backend tests run against throwaway PostgreSQL + Redis containers (tmpfs, random
+# localhost ports, removed on exit). A test skipped for a missing test DB fails the gate.
+set -euo pipefail
+mode=${1:-test}
+root=$(git rev-parse --show-toplevel)
+base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD~1)
+changed=$(git -C "$root" diff --name-only "$base" HEAD)
+touched() { grep -q "^apps/$1/" <<<"$changed"; }
+pg_image=postgres:17-alpine
+redis_image=redis:8-alpine
+run_id="posin-gate-$$-$(date +%s)"
+services=0
+cleanup() { [ $services = 0 ] || docker rm -f "$run_id-pg" "$run_id-redis" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+start_container() {  # $1 name suffix, $2 container port, rest: docker run args
+  local name="$run_id-$1" port=$2; shift 2
+  docker run -d --rm --name "$name" -p "127.0.0.1::$port" "$@" >/dev/null
+  docker port "$name" "$port/tcp" | head -1 | sed 's/.*://'
+}
+
+start_test_services() {
+  local be=$1 pg_port redis_port i f
+  docker info >/dev/null 2>&1 || { echo "posin-gate: docker is not running; backend DB tests cannot run" >&2; exit 1; }
+  services=1
+  pg_port=$(start_container pg 5432 --tmpfs /var/lib/postgresql/data \
+    -e POSTGRES_USER=gate -e POSTGRES_PASSWORD=gate -e POSTGRES_DB=kposin_test "$pg_image")
+  redis_port=$(start_container redis 6379 --tmpfs /data "$redis_image" redis-server --appendonly yes)
+  for i in $(seq 1 60); do
+    docker exec "$run_id-pg" pg_isready -U gate -d kposin_test -h 127.0.0.1 >/dev/null 2>&1 && break
+    [ "$i" = 60 ] && { echo "posin-gate: test PostgreSQL did not become ready" >&2; exit 1; }
+    sleep 1
+  done
+  for f in $(ls "$be"/migrations/*.up.sql | sort); do
+    docker exec -i "$run_id-pg" psql -q -v ON_ERROR_STOP=1 -U gate -d kposin_test <"$f" >/dev/null
+  done
+  export TEST_DATABASE_URL="postgres://gate:gate@127.0.0.1:$pg_port/kposin_test?sslmode=disable"
+  export TEST_REDIS_URL="redis://127.0.0.1:$redis_port/0"
+  export GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1"
+}
+
+ran=0
+if touched app-be-posin; then
+  ran=1
+  if [ "$mode" != setup ]; then
+    be="$root/apps/app-be-posin"
+    start_test_services "$be"
+    log=$(mktemp)
+    set +e
+    (cd "$be" && make vet && go test -race -v ./... 2>&1) | tee "$log" | grep -E -A8 '^(ok|FAIL|--- FAIL|panic)'
+    status=${PIPESTATUS[0]}
+    set -e
+    skipped=$(grep -E -A2 -- '--- SKIP' "$log" | grep -E 'TEST_(DATABASE|REDIS)_URL' || true)
+    rm -f "$log"
+    [ "$status" = 0 ] || { echo "posin-gate: backend vet/test failed" >&2; exit 1; }
+    [ -z "$skipped" ] || { echo "posin-gate: tests skipped for a missing test DB:" >&2; echo "$skipped" >&2; exit 1; }
+  fi
+fi
+if touched app-mobile-posin; then
+  ran=1
+  (cd "$root/apps/app-mobile-posin" && pnpm install --frozen-lockfile --ignore-scripts)
+  [ "$mode" = setup ] || (cd "$root/apps/app-mobile-posin" && pnpm typecheck && pnpm test --ci)
+fi
+[ $ran = 1 ] || echo "posin-gate: no app changes since $base; nothing to check"
