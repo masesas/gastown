@@ -2917,3 +2917,57 @@ func TestReuseIdlePolecat_NoSessionNoop(t *testing.T) {
 		t.Fatal("expected error from worktree operations")
 	}
 }
+
+// TestAllocateName_SkipsNameBeingCleaned reproduces the G4 pilot finding: a
+// re-dispatch concurrent with a witness nuke must not receive the name whose
+// teardown is still in progress (per-polecat lock held by the remover).
+func TestAllocateName_SkipsNameBeingCleaned(t *testing.T) {
+	root := t.TempDir()
+	r := &rig.Rig{Name: "rig", Path: root}
+	m := NewManager(r, git.NewGit(root), nil)
+
+	first := m.namePool.getNames()[0]
+
+	// Simulate an in-flight removal of `first`.
+	fl, err := m.lockPolecat(first)
+	if err != nil {
+		t.Fatalf("lockPolecat: %v", err)
+	}
+
+	got, err := m.AllocateName()
+	if err != nil {
+		_ = fl.Unlock()
+		t.Fatalf("AllocateName: %v", err)
+	}
+	if got == first {
+		_ = fl.Unlock()
+		t.Fatalf("allocated %q while it was being cleaned up", got)
+	}
+
+	// Cleanup finishes: the name becomes allocatable again.
+	_ = fl.Unlock()
+	_ = os.Remove(m.pendingPath(got))
+	m.namePool.Release(got)
+	again, err := m.AllocateName()
+	if err != nil {
+		t.Fatalf("AllocateName after cleanup: %v", err)
+	}
+	if again != first {
+		t.Errorf("after cleanup got %q, want %q", again, first)
+	}
+}
+
+func TestNamePool_AllocateSkipping(t *testing.T) {
+	pool := NewNamePool(t.TempDir(), "rig")
+	names := pool.getNames()
+	got, err := pool.AllocateSkipping(func(n string) bool { return n == names[0] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != names[1] {
+		t.Errorf("got %q, want %q", got, names[1])
+	}
+	if pool.InUse[names[0]] {
+		t.Errorf("skipped name %q must not be marked in use", names[0])
+	}
+}

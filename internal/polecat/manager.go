@@ -228,6 +228,27 @@ func (m *Manager) lockPolecat(name string) (*flock.Flock, error) {
 	return fl, nil
 }
 
+// isBeingCleaned reports whether a polecat name is currently held by another
+// cleanup (nuke/reclaim). Every removal path holds the per-polecat flock for
+// its whole duration, including the final name release, so a failed non-blocking
+// acquire means the worktree, session or agent bead of that name may still be
+// mid-teardown and the name must not be handed out yet. Errors acquiring the
+// lock are treated as "not being cleaned" (the later blocking lockPolecat in
+// the spawn path surfaces real lock failures).
+func (m *Manager) isBeingCleaned(name string) bool {
+	lockDir := filepath.Join(m.rig.Path, ".runtime", "locks")
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		return false
+	}
+	fl := flock.New(filepath.Join(lockDir, fmt.Sprintf("polecat-%s.lock", name)))
+	locked, err := fl.TryLock()
+	if err != nil || !locked {
+		return err == nil
+	}
+	_ = fl.Unlock()
+	return false
+}
+
 // lockPool acquires an exclusive file lock for name pool operations.
 // This prevents concurrent gt processes from racing on AllocateName/ReconcilePool.
 // Caller must defer fl.Unlock().
@@ -672,7 +693,7 @@ func (m *Manager) AllocateAndAdd(opts AddOptions) (string, *Polecat, error) {
 
 	m.reconcilePoolInternal()
 
-	name, err := m.namePool.Allocate()
+	name, err := m.namePool.AllocateSkipping(m.isBeingCleaned)
 	if err != nil {
 		_ = poolLock.Unlock()
 		return "", nil, err
@@ -1478,7 +1499,7 @@ func (m *Manager) AllocateName() (string, error) {
 	// Reconcile without re-acquiring the pool lock
 	m.reconcilePoolInternal()
 
-	name, err := m.namePool.Allocate()
+	name, err := m.namePool.AllocateSkipping(m.isBeingCleaned)
 	if err != nil {
 		return "", err
 	}
