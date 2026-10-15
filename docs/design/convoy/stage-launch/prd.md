@@ -151,7 +151,7 @@ go vet ./... && go build ./... && go test ./internal/cmd/... ./internal/convoy/.
 - [ ] `gt convoy launch <task1> <task2>` = `gt convoy stage <task1> <task2> --launch`
 - [ ] `gt convoy launch <convoy-id>` activates an already-staged convoy (no re-analysis needed if status is `staged_ready`)
 - [ ] `gt convoy launch <convoy-id>` on a `staged_warnings` convoy requires `--force`
-- [ ] `gt convoy launch <convoy-id>` on an already-`open` convoy is idempotent: it re-dispatches only ready tracked beads (status open, no assignee, blockers closed) and never dispatches hooked, assigned or finished beads (gt-pd1c.52)
+- [ ] `gt convoy launch <convoy-id>` on an already-`open` convoy is idempotent: it re-dispatches only ready tracked beads (status open, no assignee, blockers closed) and never dispatches hooked, assigned or finished beads (gt-pd1c.52). Out of scope: beads hooked/assigned to a dead polecat are not recovered by relaunch; that is witness/refinery territory. Relaunch exits non-zero if a dispatch fails (beads already taken by another dispatcher are skipped) and passes the convoy base branch like the daemon feed.
 
 ### US-011: JSON output mode
 

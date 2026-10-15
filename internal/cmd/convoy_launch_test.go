@@ -149,7 +149,7 @@ func TestRunConvoyLaunch_OpenConvoyRedispatchesStrandedOnly(t *testing.T) {
 
 	var dispatched []string
 	orig := dispatchTaskDirect
-	dispatchTaskDirect = func(townRoot, beadID, rig string) error {
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
 		dispatched = append(dispatched, beadID)
 		return nil
 	}
@@ -397,7 +397,7 @@ func TestDispatchWave1_AllDispatched(t *testing.T) {
 	var mu sync.Mutex
 	var dispatched []string
 	orig := dispatchTaskDirect
-	dispatchTaskDirect = func(townRoot, beadID, rig string) error {
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
 		mu.Lock()
 		dispatched = append(dispatched, beadID)
 		mu.Unlock()
@@ -405,7 +405,7 @@ func TestDispatchWave1_AllDispatched(t *testing.T) {
 	}
 	t.Cleanup(func() { dispatchTaskDirect = orig })
 
-	results, err := dispatchWave1("test-convoy", dag, waves, "")
+	results, err := dispatchWave1("test-convoy", dag, waves, "", "")
 	if err != nil {
 		t.Fatalf("dispatchWave1: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestDispatchWave1_ContinuesOnFailure(t *testing.T) {
 	var mu sync.Mutex
 	var attempted []string
 	orig := dispatchTaskDirect
-	dispatchTaskDirect = func(townRoot, beadID, rig string) error {
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
 		mu.Lock()
 		attempted = append(attempted, beadID)
 		mu.Unlock()
@@ -465,7 +465,7 @@ func TestDispatchWave1_ContinuesOnFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { dispatchTaskDirect = orig })
 
-	results, err := dispatchWave1("test-convoy", dag, waves, "")
+	results, err := dispatchWave1("test-convoy", dag, waves, "", "")
 	if err != nil {
 		t.Fatalf("dispatchWave1: %v", err)
 	}
@@ -714,7 +714,7 @@ func TestDispatchWave1_EndToEnd(t *testing.T) {
 	var mu sync.Mutex
 	var dispatched []string
 	orig := dispatchTaskDirect
-	dispatchTaskDirect = func(townRoot, beadID, rig string) error {
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
 		mu.Lock()
 		dispatched = append(dispatched, beadID)
 		mu.Unlock()
@@ -734,7 +734,7 @@ func TestDispatchWave1_EndToEnd(t *testing.T) {
 		t.Fatalf("computeWaves: %v", err)
 	}
 
-	results, err := dispatchWave1("hq-cv-e2e", dag, waves, "")
+	results, err := dispatchWave1("hq-cv-e2e", dag, waves, "", "")
 	if err != nil {
 		t.Fatalf("dispatchWave1: %v", err)
 	}
@@ -845,5 +845,73 @@ esac
 	}
 	if len(deps) != 0 {
 		t.Fatalf("expected no deps for tracked beads, got %d", len(deps))
+	}
+}
+
+// Relaunch must keep beads on the convoy's base branch (e.g. integration/<epic>),
+// using the same sling arguments as the daemon feed.
+func TestRunConvoyLaunch_OpenConvoyPassesBaseBranch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).
+		Convoy("hq-cv-bb", "BB").WithStatus("open").WithDescription("base_branch: integration/epic-1").
+		Task("hq-t1", "T1", withRig("gastown")).TrackedBy("hq-cv-bb").Setup(t)
+
+	var got []string
+	orig := dispatchTaskDirect
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
+		got = append(got, beadID+"@"+baseBranch)
+		return nil
+	}
+	t.Cleanup(func() { dispatchTaskDirect = orig })
+
+	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-bb"}); err != nil {
+		t.Fatalf("runConvoyLaunch: %v", err)
+	}
+	if len(got) != 1 || got[0] != "hq-t1@integration/epic-1" {
+		t.Fatalf("dispatch = %v, want [hq-t1@integration/epic-1]", got)
+	}
+}
+
+// A real dispatch failure must surface as a non-nil error (non-zero exit) while
+// the remaining beads are still attempted.
+func TestRunConvoyLaunch_OpenConvoyReturnsErrorOnDispatchFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).
+		Convoy("hq-cv-f", "F").WithStatus("open").
+		Task("hq-f1", "F1", withRig("gastown")).TrackedBy("hq-cv-f").
+		Task("hq-f2", "F2", withRig("gastown")).TrackedBy("hq-cv-f").Setup(t)
+
+	attempted := 0
+	orig := dispatchTaskDirect
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
+		attempted++
+		return fmt.Errorf("spawn failed")
+	}
+	t.Cleanup(func() { dispatchTaskDirect = orig })
+
+	err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-f"})
+	if err == nil || !strings.Contains(err.Error(), "2 of 2 dispatches failed") {
+		t.Fatalf("expected dispatch failure error, got %v", err)
+	}
+	if attempted != 2 {
+		t.Errorf("attempted = %d, want 2", attempted)
+	}
+}
+
+// A dispatch that fails because the bead was taken meanwhile (it is no longer
+// open/unassigned) is a skip, not a failure.
+func TestRelaunchFailures_SkippedIsNotFailure(t *testing.T) {
+	results := []DispatchResult{
+		{BeadID: "a", Success: true},
+		{BeadID: "b", Skipped: true, Error: fmt.Errorf("already being slung")},
+		{BeadID: "c", Error: fmt.Errorf("boom")},
+	}
+	failed := relaunchFailures(results)
+	if len(failed) != 1 || failed[0].BeadID != "c" {
+		t.Fatalf("failures = %v, want only c", failed)
 	}
 }

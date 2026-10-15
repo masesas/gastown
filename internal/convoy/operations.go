@@ -606,15 +606,24 @@ func FireCrossRigDepNotifications(ctx context.Context, closedIssueID, townRoot s
 	}
 }
 
-// dispatchIssue dispatches an issue to a rig via gt sling.
-// The context parameter enables cancellation on daemon shutdown.
-// gtPath is the resolved path to the gt binary.
-func dispatchIssue(ctx context.Context, townRoot, issueID, rig, gtPath, baseBranch string) error {
+// SlingArgs builds the `gt sling` argument list used to dispatch a convoy
+// issue to a rig. It is shared by every convoy dispatcher (daemon feed,
+// stranded scan, `gt convoy launch`) so they cannot drift: --no-boot avoids
+// booting the rig per dispatch and --base-branch keeps the polecat on the
+// convoy's target branch (e.g. integration/<epic>).
+func SlingArgs(issueID, rig, baseBranch string) []string {
 	args := []string{"sling", issueID, rig, "--no-boot"}
 	if baseBranch != "" {
 		args = append(args, "--base-branch="+baseBranch)
 	}
-	cmd := exec.CommandContext(ctx, gtPath, args...)
+	return args
+}
+
+// dispatchIssue dispatches an issue to a rig via gt sling.
+// The context parameter enables cancellation on daemon shutdown.
+// gtPath is the resolved path to the gt binary.
+func dispatchIssue(ctx context.Context, townRoot, issueID, rig, gtPath, baseBranch string) error {
+	cmd := exec.CommandContext(ctx, gtPath, SlingArgs(issueID, rig, baseBranch)...)
 	cmd.Dir = townRoot
 	util.SetProcessGroup(cmd)
 	var stderr bytes.Buffer

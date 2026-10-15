@@ -1,6 +1,7 @@
 package formula
 
 import (
+	"github.com/BurntSushi/toml"
 	"os"
 	"path/filepath"
 	"strings"
@@ -263,12 +264,12 @@ func TestDogFormulasDoNotForceDoltPort(t *testing.T) {
 	}
 }
 
-// TestEmbeddedFormulasDoNotDeclareRootTitleVar guards against a collision with
-// bd cook: when a formula declares a variable named "title", bd sets the proto
-// root title to "{{title}}". A defaulted/computed "title" var then renders as
-// an empty root title and wisp creation fails with "title is required"
-// (gt-pd1c.52). Use a different name (e.g. issue_title) for such variables.
-func TestEmbeddedFormulasDoNotDeclareRootTitleVar(t *testing.T) {
+// TestEmbeddedFormulasDoNotDeclareEmptyRootVars guards against a collision with
+// bd cook: when a formula declares a variable named "title" (or "desc"), bd
+// sets the proto root title (or description) to "{{title}}" ("{{desc}}"). A
+// defaulted/computed var then renders empty and wisp creation fails with
+// "title is required" (gt-pd1c.52). Use another name (e.g. issue_title).
+func TestEmbeddedFormulasDoNotDeclareEmptyRootVars(t *testing.T) {
 	entries, err := os.ReadDir("formulas")
 	if err != nil {
 		t.Skipf("Formulas directory not found: %v", err)
@@ -282,12 +283,18 @@ func TestEmbeddedFormulasDoNotDeclareRootTitleVar(t *testing.T) {
 			t.Errorf("read %s: %v", entry.Name(), err)
 			continue
 		}
-		f, err := Parse(data)
-		if err != nil {
+		// Decode only [vars]: some valid formula types fail full Parse.
+		var f struct {
+			Vars map[string]Var `toml:"vars"`
+		}
+		if err := toml.Unmarshal(data, &f); err != nil {
+			t.Errorf("decode %s: %v", entry.Name(), err)
 			continue
 		}
-		if v, ok := f.Vars["title"]; ok && !v.Required && v.Default == "" {
-			t.Errorf("%s declares var \"title\" with an empty default; bd cook uses it as the wisp root title (rename it)", entry.Name())
+		for _, name := range []string{"title", "desc"} {
+			if v, ok := f.Vars[name]; ok && !v.Required && v.Default == "" {
+				t.Errorf("%s declares var %q with an empty default; bd cook uses it as the wisp root %s (rename it)", entry.Name(), name, name)
+			}
 		}
 	}
 }
