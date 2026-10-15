@@ -915,3 +915,47 @@ func TestRelaunchFailures_SkippedIsNotFailure(t *testing.T) {
 		t.Fatalf("failures = %v, want only c", failed)
 	}
 }
+
+// Slings run with --no-boot, so launch must boot/nudge each involved rig once
+// after the dispatch loop (and only for rigs with a successful dispatch).
+func TestRunConvoyLaunch_WakesEachRigOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).
+		Convoy("hq-cv-w", "W").WithStatus("open").
+		Task("hq-w1", "W1", withRig("gastown")).TrackedBy("hq-cv-w").
+		Task("hq-w2", "W2", withRig("gastown")).TrackedBy("hq-cv-w").
+		Task("hq-w3", "W3", withRig("gastown")).TrackedBy("hq-cv-w").Setup(t)
+
+	origD, origW := dispatchTaskDirect, wakeRigFn
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error { return nil }
+	var woken []string
+	wakeRigFn = func(rig string) { woken = append(woken, rig) }
+	t.Cleanup(func() { dispatchTaskDirect, wakeRigFn = origD, origW })
+
+	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-w"}); err != nil {
+		t.Fatalf("runConvoyLaunch: %v", err)
+	}
+	if len(woken) != 1 || woken[0] != "gastown" {
+		t.Fatalf("woken = %v, want [gastown] exactly once", woken)
+	}
+}
+
+func TestWakeDispatchedRigs_OnlySuccessfulRigs(t *testing.T) {
+	orig := wakeRigFn
+	var woken []string
+	wakeRigFn = func(rig string) { woken = append(woken, rig) }
+	t.Cleanup(func() { wakeRigFn = orig })
+
+	wakeDispatchedRigs([]DispatchResult{
+		{BeadID: "a", Rig: "rigb", Success: true},
+		{BeadID: "b", Rig: "riga", Success: true},
+		{BeadID: "c", Rig: "riga", Success: true},
+		{BeadID: "d", Rig: "rigc", Error: fmt.Errorf("boom")},
+		{BeadID: "e", Rig: "rigd", Skipped: true, Error: fmt.Errorf("taken")},
+	})
+	if strings.Join(woken, ",") != "riga,rigb" {
+		t.Fatalf("woken = %v, want [riga rigb]", woken)
+	}
+}

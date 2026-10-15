@@ -239,6 +239,8 @@ func runMountain(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("dispatch wave 1: %w", err)
 	}
 
+	wakeDispatchedRigs(results)
+
 	// Render launch output.
 	fmt.Printf("\nLaunching Wave 1 (%d tasks)...\n", len(results))
 

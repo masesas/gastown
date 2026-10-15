@@ -234,6 +234,28 @@ func dispatchReadyTasks(dag *ConvoyDAG, townRoot, baseBranch string) []DispatchR
 	return results
 }
 
+// wakeRigFn boots a rig and nudges its witness. Tests override it.
+var wakeRigFn = wakeRigAgents
+
+// wakeDispatchedRigs wakes each rig that received at least one successful
+// dispatch, once per rig. Every sling runs with --no-boot (avoids lock
+// contention, same as the daemon feed), so the boot and witness nudge that
+// `gt sling` would do per dispatch happen here, after the loop.
+func wakeDispatchedRigs(results []DispatchResult) {
+	seen := make(map[string]bool)
+	var rigs []string
+	for _, r := range results {
+		if r.Success && r.Rig != "" && !seen[r.Rig] {
+			seen[r.Rig] = true
+			rigs = append(rigs, r.Rig)
+		}
+	}
+	sort.Strings(rigs)
+	for _, rig := range rigs {
+		wakeRigFn(rig)
+	}
+}
+
 // beadTakenByOther reports whether a bead is no longer open and unassigned,
 // i.e. a concurrent sling (daemon feed, another launch) won the race. State
 // based on purpose: the sling lock error text is not a stable contract.
@@ -422,6 +444,7 @@ func runConvoyLaunch(cmd *cobra.Command, args []string) error {
 				// Recovery: convoy was launched before; only (re)dispatch ready
 				// beads that have no worker yet.
 				results := dispatchReadyTasks(dag, townRoot, baseBranch)
+				wakeDispatchedRigs(results)
 				fmt.Print(renderRelaunchOutput(convoyID, results, dag))
 				if failed := relaunchFailures(results); len(failed) > 0 {
 					return fmt.Errorf("relaunch %s: %d of %d dispatches failed", convoyID, len(failed), len(results))
@@ -433,6 +456,8 @@ func runConvoyLaunch(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("dispatch wave 1: %w", err)
 			}
+
+			wakeDispatchedRigs(results)
 
 			// Report results.
 			fmt.Print(renderLaunchOutput(convoyID, waves, results, dag))
