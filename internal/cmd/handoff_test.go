@@ -1050,3 +1050,50 @@ func TestEnforceHandoffCooldown(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildRestartCommand_PolecatGitIdentityMatchesSpawn(t *testing.T) {
+	setupHandoffTestRegistry(t)
+
+	origCwd, _ := os.Getwd()
+	townRoot := t.TempDir()
+	t.Cleanup(func() { _ = os.Chdir(origCwd) })
+	t.Setenv("GT_AGENT", "")
+	t.Setenv("GT_TOWN_ROOT", "")
+	t.Setenv("GT_ROOT", "")
+
+	polecatDir := filepath.Join(townRoot, "gastown", "polecats", "nuka")
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, "mayor", "town.json"), []byte(`{"name":"gastown"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(polecatDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveTownSettings(config.TownSettingsPath(townRoot), config.NewTownSettings()); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveRigSettings(config.RigSettingsPath(filepath.Join(townRoot, "gastown")), config.NewRigSettings()); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveOverseerConfig(config.OverseerConfigPath(townRoot), &config.OverseerConfig{Name: "H", Email: "h@x.io"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(polecatDir); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd, err := buildRestartCommand("gt-nuka")
+	if err != nil {
+		t.Fatalf("buildRestartCommand: %v", err)
+	}
+	for _, want := range []string{"GIT_AUTHOR_NAME=nuka", "GIT_COMMITTER_NAME=nuka", "GIT_AUTHOR_EMAIL=h+nuka@x.io", "GIT_COMMITTER_EMAIL=h+nuka@x.io"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("restart command missing %q:\n%s", want, cmd)
+		}
+	}
+	if strings.Contains(cmd, "polecats-nuka") || strings.Contains(cmd, "GIT_AUTHOR_NAME=gastown/polecats") {
+		t.Errorf("restart command used compound GT_ROLE for git identity:\n%s", cmd)
+	}
+}

@@ -156,7 +156,7 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 	}
 
 	// Git commit identity (author AND committer) = agent name + plus-address.
-	if name := gitIdentityName(cfg); name != "" {
+	if name := GitIdentityName(cfg.Role, cfg.Rig, cfg.AgentName); name != "" {
 		email := cfg.OverseerEmail
 		if email == "" {
 			email = ResolveOverseerEmail(cfg.TownRoot)
@@ -891,24 +891,4 @@ func ClaudeConfigDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".claude"), nil
-}
-
-// gitIdentityName returns the commit author/committer name for the role.
-func gitIdentityName(cfg AgentEnvConfig) string {
-	switch cfg.Role {
-	case constants.RoleMayor, constants.RoleDeacon:
-		return cfg.Role
-	case "boot":
-		return "boot"
-	case constants.RoleWitness, constants.RoleRefinery:
-		return fmt.Sprintf("%s/%s", cfg.Rig, cfg.Role)
-	case constants.RolePolecat, constants.RoleCrew:
-		return cfg.AgentName
-	case "dog":
-		if cfg.AgentName != "" {
-			return cfg.AgentName
-		}
-		return "dog"
-	}
-	return ""
 }

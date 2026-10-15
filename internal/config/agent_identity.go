@@ -1,28 +1,79 @@
 package config
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/steveyegge/gastown/internal/constants"
 )
 
-var unsafeEmailTagChars = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+var (
+	unsafeEmailTagChars = regexp.MustCompile(`[^a-z0-9._-]`)
+	repeatedDashes      = regexp.MustCompile(`-{2,}`)
+	emailLocalPattern   = regexp.MustCompile(`^[A-Za-z0-9._%+-]+$`)
+	emailDomainPattern  = regexp.MustCompile(`^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`)
+)
+
+// sanitizeEmailTag lowercases the tag, maps characters outside [a-z0-9._-]
+// to "-", collapses repeated dashes and trims dashes at both ends.
+func sanitizeEmailTag(tag string) string {
+	tag = unsafeEmailTagChars.ReplaceAllString(strings.ToLower(tag), "-")
+	tag = repeatedDashes.ReplaceAllString(tag, "-")
+	return strings.Trim(tag, "-")
+}
 
 // AgentPlusEmail builds a plus-address for an agent from the overseer's email:
 // "vandik@gmail.com" + "posin/refinery" -> "vandik+posin-refinery@gmail.com".
-// Characters outside [A-Za-z0-9._-] in the tag become "-". It returns "" when
-// the overseer email is empty or not a plain local@domain address, or the tag
-// sanitizes to nothing, so callers fall back to the git config identity.
+// An overseer email that already has a +tag has that tag replaced
+// ("vandik+x@gmail.com" -> "vandik+nuka@gmail.com") so mail stays in one inbox.
+// It returns "" when the overseer email is not a plain local@domain address
+// (exactly one "@", dotted domain, no special characters) or the tag sanitizes
+// to nothing, so callers fall back to the git config identity.
 func AgentPlusEmail(overseerEmail, tag string) string {
-	overseerEmail = strings.TrimSpace(overseerEmail)
-	at := strings.LastIndex(overseerEmail, "@")
-	if at <= 0 || at == len(overseerEmail)-1 || strings.ContainsAny(overseerEmail, " \t\r\n<>,") {
+	local, domain, ok := strings.Cut(strings.TrimSpace(overseerEmail), "@")
+	if !ok || strings.Contains(domain, "@") {
 		return ""
 	}
-	tag = strings.Trim(unsafeEmailTagChars.ReplaceAllString(tag, "-"), "-")
-	if tag == "" {
+	if !emailLocalPattern.MatchString(local) || !emailDomainPattern.MatchString(domain) {
 		return ""
 	}
-	return overseerEmail[:at] + "+" + tag + overseerEmail[at:]
+	if base, _, hasPlus := strings.Cut(local, "+"); hasPlus {
+		local = base
+	}
+	tag = sanitizeEmailTag(tag)
+	if local == "" || tag == "" {
+		return ""
+	}
+	return local + "+" + tag + "@" + domain
+}
+
+// GitIdentityName returns the commit author/committer name for an agent role.
+// It is the single source used by AgentEnv, handoff and the checkpoint dog.
+// role is the simple role ("mayor", "deacon", "boot", "witness", "refinery",
+// "polecat", "crew", "dog"); rig and agentName are as in AgentEnvConfig.
+// Unknown roles return "".
+func GitIdentityName(role, rig, agentName string) string {
+	switch role {
+	case constants.RoleMayor, constants.RoleDeacon:
+		return role
+	case "boot":
+		return "boot"
+	case constants.RoleWitness, constants.RoleRefinery:
+		return fmt.Sprintf("%s/%s", rig, role)
+	case constants.RolePolecat, constants.RoleCrew:
+		return agentName
+	case "dog":
+		if agentName != "" {
+			return agentName
+		}
+		return "dog"
+	}
+	return ""
 }
 
 // GitIdentityEnv returns the git identity env for an agent: author and
@@ -40,17 +91,67 @@ func GitIdentityEnv(name, overseerEmail string) map[string]string {
 	return env
 }
 
+const (
+	overseerEmailTTL       = 5 * time.Minute
+	overseerEmailMissedTTL = 15 * time.Second
+)
+
+type overseerEmailEntry struct {
+	email   string
+	modTime time.Time
+	at      time.Time
+}
+
+var (
+	overseerEmailMu    sync.Mutex
+	overseerEmailCache = map[string]overseerEmailEntry{}
+)
+
 // ResolveOverseerEmail returns the overseer's email for townRoot: the saved
-// mayor/overseer.json first, then git config user.email. Empty if unknown.
+// mayor/overseer.json first, then the global git config user.email (the
+// repo-local config is deliberately ignored). Empty if unknown. Results are
+// cached per townRoot, invalidated by overseer.json mtime or a TTL (short for
+// misses, so a later fix is picked up quickly).
 func ResolveOverseerEmail(townRoot string) string {
 	if townRoot == "" {
 		return ""
 	}
-	if cfg, err := LoadOverseerConfig(OverseerConfigPath(townRoot)); err == nil && cfg.Email != "" {
-		return cfg.Email
+	path := OverseerConfigPath(townRoot)
+	var modTime time.Time
+	if st, err := os.Stat(path); err == nil {
+		modTime = st.ModTime()
 	}
-	if cfg := detectFromGitConfig(townRoot); cfg != nil {
-		return cfg.Email
+
+	overseerEmailMu.Lock()
+	e, hit := overseerEmailCache[townRoot]
+	overseerEmailMu.Unlock()
+	ttl := overseerEmailTTL
+	if e.email == "" {
+		ttl = overseerEmailMissedTTL
 	}
-	return ""
+	if hit && e.modTime.Equal(modTime) && time.Since(e.at) < ttl {
+		return e.email
+	}
+
+	email := ""
+	if cfg, err := LoadOverseerConfig(path); err == nil {
+		email = strings.TrimSpace(cfg.Email)
+	}
+	if email == "" {
+		email = globalGitEmail()
+	}
+
+	overseerEmailMu.Lock()
+	overseerEmailCache[townRoot] = overseerEmailEntry{email: email, modTime: modTime, at: time.Now()}
+	overseerEmailMu.Unlock()
+	return email
+}
+
+// globalGitEmail reads user.email from the global git config only.
+func globalGitEmail() string {
+	out, err := exec.Command("git", "config", "--global", "--get", "user.email").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }

@@ -183,7 +183,7 @@ func (d *Daemon) checkpointWorktree(workDir, rigName, polecatName string) bool {
 
 	// Commit the checkpoint
 	// The daemon runs with the human's git identity; commit as the polecat.
-	identity := config.GitIdentityEnv(polecatName, config.ResolveOverseerEmail(d.config.TownRoot))
+	identity := config.GitIdentityEnv(config.GitIdentityName(constants.RolePolecat, rigName, polecatName), config.ResolveOverseerEmail(d.config.TownRoot))
 	if _, err := runGitCmdEnv(workDir, envList(identity), "commit", "-m", "WIP: checkpoint (auto)"); err != nil {
 		d.logger.Printf("checkpoint_dog: git commit failed in %s/%s: %v", rigName, polecatName, err)
 		return false

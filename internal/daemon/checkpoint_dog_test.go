@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	gtconfig "github.com/steveyegge/gastown/internal/config"
 	"io"
 	"log"
 	"os"
@@ -310,11 +311,14 @@ func TestCheckpointWorktreeCommitsAsPolecatIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Town root whose git config carries the overseer email.
+	// Town root whose overseer.json carries the overseer email.
 	townRoot := t.TempDir()
-	mustRunGit(t, townRoot, "init")
-	mustRunGit(t, townRoot, "config", "user.name", "Human Overseer")
-	mustRunGit(t, townRoot, "config", "user.email", "human@example.com")
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := gtconfig.SaveOverseerConfig(gtconfig.OverseerConfigPath(townRoot), &gtconfig.OverseerConfig{Name: "Human", Email: "human@example.com"}); err != nil {
+		t.Fatal(err)
+	}
 
 	d := &Daemon{logger: log.New(io.Discard, "", 0), config: &Config{TownRoot: townRoot}}
 	if !d.checkpointWorktree(workDir, "rig", "nuka") {

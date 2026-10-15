@@ -2653,7 +2653,7 @@ func BuildAgentStartupCommandWithAgentOverride(role, rig, townRoot, rigPath, pro
 }
 
 // BuildPolecatStartupCommand builds the startup command for a polecat.
-// Sets GT_ROLE, GT_RIG, GT_POLECAT, BD_ACTOR, GIT_AUTHOR_NAME, and GT_ROOT.
+// Sets GT_ROLE, GT_RIG, GT_POLECAT, BD_ACTOR, the GIT_AUTHOR/COMMITTER NAME+EMAIL identity, and GT_ROOT.
 func BuildPolecatStartupCommand(rigName, polecatName, rigPath, prompt string) string {
 	var townRoot string
 	if rigPath != "" {
@@ -2686,7 +2686,7 @@ func BuildPolecatStartupCommandWithAgentOverride(rigName, polecatName, rigPath, 
 }
 
 // BuildCrewStartupCommand builds the startup command for a crew member.
-// Sets GT_ROLE, GT_RIG, GT_CREW, BD_ACTOR, GIT_AUTHOR_NAME, and GT_ROOT.
+// Sets GT_ROLE, GT_RIG, GT_CREW, BD_ACTOR, the GIT_AUTHOR/COMMITTER NAME+EMAIL identity, and GT_ROOT.
 func BuildCrewStartupCommand(rigName, crewName, rigPath, prompt string) string {
 	var townRoot string
 	if rigPath != "" {

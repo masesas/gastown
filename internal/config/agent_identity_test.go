@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestAgentPlusEmail(t *testing.T) {
@@ -19,6 +20,19 @@ func TestAgentPlusEmail(t *testing.T) {
 		{"no domain", "a@", "nuka", ""},
 		{"angle brackets", "A <a@b.co>", "nuka", ""},
 		{"empty tag", "a@b.co", "", ""},
+		{"tag lowercased", "a@b.co", "Posin/Refinery", "a+posin-refinery@b.co"},
+		{"dashes collapsed", "a@b.co", "x//--y", "a+x-y@b.co"},
+		{"dashes trimmed", "a@b.co", "/x/", "a+x@b.co"},
+		{"two at", "a@b@c.co", "n", ""},
+		{"domain no dot", "a@localhost", "n", ""},
+		{"domain leading dot", "a@.co", "n", ""},
+		{"domain trailing dot", "a@b.co.", "n", ""},
+		{"local space", "a b@c.co", "n", ""},
+		{"local quote", "a\"b@c.co", "n", ""},
+		{"local semicolon", "a;b@c.co", "n", ""},
+		{"local parens", "a(b)@c.co", "n", ""},
+		{"existing plus replaced", "a+old@b.co", "nuka", "a+nuka@b.co"},
+		{"empty local before plus", "+old@b.co", "nuka", ""},
 		{"all-unsafe tag", "a@b.co", "///", ""},
 	}
 	for _, tt := range tests {
@@ -96,9 +110,57 @@ func TestAgentEnv_GitIdentityPerRole(t *testing.T) {
 }
 
 func TestAgentEnv_NoOverseerEmailKeepsLegacy(t *testing.T) {
-	t.Parallel()
+	// No overseer.json and no global git email: legacy name-only behavior.
+	empty := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", empty)
 	env := AgentEnv(AgentEnvConfig{Role: "polecat", Rig: "r", AgentName: "nuka", TownRoot: "/nonexistent-town"})
 	assertEnv(t, env, "GIT_AUTHOR_NAME", "nuka")
 	assertNotSet(t, env, "GIT_AUTHOR_EMAIL")
 	assertNotSet(t, env, "GIT_COMMITTER_EMAIL")
+}
+
+func TestGitIdentityName(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ role, rig, agent, want string }{
+		{"mayor", "", "", "mayor"},
+		{"boot", "", "boot", "boot"},
+		{"refinery", "posin", "", "posin/refinery"},
+		{"polecat", "posin", "nuka", "nuka"},
+		{"crew", "posin", "dom", "dom"},
+		{"dog", "", "", "dog"},
+		{"bogus", "r", "a", ""},
+	}
+	for _, tt := range tests {
+		if got := GitIdentityName(tt.role, tt.rig, tt.agent); got != tt.want {
+			t.Errorf("GitIdentityName(%q,%q,%q) = %q, want %q", tt.role, tt.rig, tt.agent, got, tt.want)
+		}
+	}
+}
+
+func TestResolveOverseerEmail_CacheInvalidatesOnMtime(t *testing.T) {
+	t.Parallel()
+	town := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(town, "mayor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := OverseerConfigPath(town)
+	if err := SaveOverseerConfig(path, &OverseerConfig{Name: "H", Email: "one@x.io"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveOverseerEmail(town); got != "one@x.io" {
+		t.Fatalf("got %q", got)
+	}
+	if err := SaveOverseerConfig(path, &OverseerConfig{Name: "H", Email: "two@x.io"}); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveOverseerEmail(town); got != "two@x.io" {
+		t.Errorf("after rewrite got %q, want two@x.io", got)
+	}
 }
