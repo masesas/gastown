@@ -705,6 +705,23 @@ Deacon, Witness, and Refinery run continuous patrol loops using wisps:
 4. gt patrol report --summary "..."  # Close + start next cycle
 ```
 
+### Daemon idle shutdown (opt-in)
+
+The daemon can run `gt down` (default behavior, not `--all`/`--nuke`) when the
+town has had no activity for a timeout. It is off unless enabled in
+`daemon.json`:
+
+```json
+{"patrols": {"idle_shutdown": {"enabled": true, "idle_timeout": "30m"}}}
+```
+
+`idle_timeout` is a Go duration (default `30m`). "Idle" means, continuously for
+the whole timeout: no live polecat session, no `hooked`/`in_progress` bead
+(town and rigs), an empty merge queue, and no tmux client attached to the town
+socket. Any lookup that fails counts as active and resets the timer. Before
+`gt down` the daemon logs, mails the overseer (`gt mail send --human`) and
+emits an `idle_shutdown` feed event; it fires once per idle period.
+
 ## Plugin Molecules
 
 Plugins are molecules with specific labels:

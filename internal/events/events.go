@@ -46,6 +46,9 @@ const (
 	TypeBoot    = "boot"
 	TypeHalt    = "halt"
 
+	// Daemon idle_shutdown patrol: town idle past the timeout, gt down launched.
+	TypeIdleShutdown = "idle_shutdown"
+
 	// Session events (for seance discovery)
 	TypeSessionStart = "session_start"
 	TypeSessionEnd   = "session_end"
@@ -62,9 +65,9 @@ const (
 	TypeTaskReadiness = "task_readiness"
 
 	// Witness patrol events
-	TypePatrolStarted   = "patrol_started"
-	TypePolecatChecked  = "polecat_checked"
-	TypePolecatNudged   = "polecat_nudged"
+	TypePatrolStarted    = "patrol_started"
+	TypePolecatChecked   = "polecat_checked"
+	TypePolecatNudged    = "polecat_nudged"
 	TypeEscalationSent   = "escalation_sent"
 	TypeEscalationAcked  = "escalation_acked"
 	TypeEscalationClosed = "escalation_closed"
