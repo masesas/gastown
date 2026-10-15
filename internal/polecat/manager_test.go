@@ -2971,3 +2971,44 @@ func TestNamePool_AllocateSkipping(t *testing.T) {
 		t.Errorf("skipped name %q must not be marked in use", names[0])
 	}
 }
+
+// A re-allocated name (directory or reservation marker present) must not have
+// its agent bead reset by a late nuke (gt-pd1c.54).
+func TestResetAgentBeadIfUnused_SkipsReallocatedName(t *testing.T) {
+	root := t.TempDir()
+	m := NewManager(&rig.Rig{Name: "rig", Path: root}, git.NewGit(root), nil)
+
+	if err := os.MkdirAll(m.polecatDir("nux"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if reset, err := m.ResetAgentBeadIfUnused("nux", "nuked"); reset || err != nil {
+		t.Errorf("dir present: reset=%v err=%v, want false,nil", reset, err)
+	}
+
+	if err := os.WriteFile(m.pendingPath("furiosa"), []byte("1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if reset, err := m.ResetAgentBeadIfUnused("furiosa", "nuked"); reset || err != nil {
+		t.Errorf("pending marker: reset=%v err=%v, want false,nil", reset, err)
+	}
+}
+
+// AllocateAndAdd must also pass over a name under cleanup.
+func TestAllocateAndAdd_SkipsNameBeingCleaned(t *testing.T) {
+	root := t.TempDir()
+	m := NewManager(&rig.Rig{Name: "rig", Path: root}, git.NewGit(root), nil)
+	first := m.namePool.getNames()[0]
+
+	fl, err := m.lockPolecat(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fl.Unlock() }()
+
+	// Worktree creation fails (no repo); the returned name is empty, so
+	// assert on the directory that was created for the allocated name.
+	_, _, _ = m.AllocateAndAdd(AddOptions{})
+	if _, statErr := os.Stat(m.polecatDir(first)); statErr == nil {
+		t.Errorf("AllocateAndAdd used %q while it was being cleaned up", first)
+	}
+}
