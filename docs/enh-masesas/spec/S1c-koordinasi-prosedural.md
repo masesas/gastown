@@ -40,16 +40,18 @@ Langkah berurutan dengan hasil yang dapat diperiksa:
 ### 2.4 Protokol pertanyaan dan asumsi (directives Mayor)
 
 - Mayor memutuskan sendiri semua hal di luar tabel krusial, dan mencatatnya di bagian keputusan brief.
-- Hal krusial (tabel `../14` § 2.2) menjadi bead berlabel `gt:question` dengan field: `id` (`Q-<epic>-<n>`), `class`, `question`, `context`, `options`, `assumed` (beserta alasan), `change_seam`, `affected`, `rework_cost`.
+- Hal krusial (tabel `../14` § 2.2) menjadi bead berlabel `gt:question` dengan field: `id` (`Q-<epic>-<n>`), `class`, `question`, `context`, `options`, `assumed` (beserta alasan), `change_seam`, `affected`, `rework_cost`. `affected` memuat setiap bead yang mengimplementasikan atau mengonsumsi keputusan, termasuk bead `contract_owner` bila `change_seam` ada di kontrak atau di kode milik owner.
 - Rancang untuk jawaban, bukan hanya untuk asumsi: setiap pertanyaan punya alasan default (konsisten dengan kode yang ada, mudah dibalik, paling aman, superset), dan `change_seam`, yaitu satu titik di kode/kontrak tempat keputusan itu tinggal, beserta apa yang berubah untuk setiap opsi lain. Setiap task terdampak punya AC "keputusan Q-… hanya ada di change_seam-nya".
-  - **`block`** (skema DB/migrasi, kontrak lintas-rig dengan konsumen > 1 rig, auth/RBAC/pembayaran/data pribadi, hapus/migrasi data, dependensi berbayar/lisensi tidak standar): pertanyaan dikirim segera via `gt mail send --human` dengan subjek `[BLOCK] Q-…`; pengingat setelah 24 jam. Block bersifat sempit: hanya task yang tidak aman dikerjakan sebelum jawaban yang diberi dependensi ke bead pertanyaan dan berhenti. Task lain berjalan dengan default paling aman (paling restriktif, fail-closed, paling mudah dibalik) di `change_seam`-nya dan berlabel `assumes:Q-…`. Epic tidak di-land selama pertanyaan block terbuka.
+  - **`block`** (skema DB/migrasi, kontrak lintas-rig dengan konsumen > 1 rig, auth/RBAC/pembayaran/data pribadi, hapus/migrasi data, dependensi berbayar/lisensi tidak standar): pertanyaan dikirim segera via `gt mail send --human` dengan subjek `[BLOCK] Q-…`; pengingat setelah 24 jam. Block bersifat sempit: hanya task yang tidak aman dikerjakan sebelum jawaban (opsi yang salah akan menimbulkan perubahan yang tidak bisa dibatasi di `change_seam`, mis. migrasi data, skema yang di-merge, izin yang terlanjur rilis) yang diberi dependensi ke bead pertanyaan dan berhenti. Task lain berjalan dengan default paling aman (paling restriktif, fail-closed, paling mudah dibalik) di `change_seam`-nya dan berlabel `assumes:Q-…`. Epic tidak di-land selama pertanyaan block terbuka.
   - **`proceed`** (lainnya): Mayor memilih asumsi, task berjalan dengan label `assumes:Q-<epic>-<n>` dan catatan asumsi di notes.
 - **Propagasi manual**: saat men-dispatch task, Mayor menyalin label `assumes:*` dari semua blocker yang sudah selesai, dan memperbarui `affected` di bead pertanyaan.
 - PR/MR task bertanda memuat bagian "Asumsi". Tanda tidak ditulis di kode.
 - Pertanyaan `proceed` dikirim sebagai satu daftar paling lambat saat semua child epic merged. Format jawaban: `Q-id: <jawaban>` per baris. Diam tidak dianggap setuju.
 - Setelah jawaban:
   - sama dengan asumsi → label dihapus, bead pertanyaan ditutup;
-  - berbeda → Mayor membuat satu bead rework per bead bertanda (`discovered-from` ke bead asli, dependensi disalin, kontrak lebih dulu), dikerjakan polecat baru atau contract owner, melewati gate yang sama.
+  - berbeda → Mayor membuat satu bead rework per bead bertanda (`discovered-from` ke bead asli, dependensi disalin, kontrak lebih dulu), dikerjakan polecat baru atau contract owner lewat `gt convoy stage` + `launch` (tidak pernah `gt sling`), melewati gate yang sama.
+- Jawaban pertanyaan `block` diproses dengan cara yang sama untuk task berlabel; task yang ditahan dilepas dengan menutup bead pertanyaan.
+- **Persetujuan ulang**: perubahan apa pun pada brief yang sudah disetujui (kontrak, peta kepemilikan, keputusan, AC) membuka brief kembali. Cek mekanis dan satu ronde review diulang, perubahan dan alasannya dicatat di riwayat brief, pekerja yang memakai versi lama diberi tahu, dan bead konsumen baru tidak di-dispatch sampai brief ditutup lagi.
 - PR epic → master tidak dibuat selama ada label `assumes:*` dengan pertanyaan terbuka atau bead rework belum merged.
 
 ### 2.5 Aturan dispatch
@@ -58,14 +60,16 @@ Bead konsumen hanya di-dispatch lewat `gt convoy stage` + `launch` atau schedule
 
 ## 3. Acceptance criteria
 
-- [ ] **S1c-AC1** Formula `mol-contract-brief`, `mol-contract-brief-review` (convoy review), dan `mol-contract-work` terpasang di `<town>/.beads/formulas/` pilot town dan lulus `gt formula run <nama> --dry-run` (validasi parser bawaan; tidak ada `gt formula validate`).
-- [ ] **S1c-AC2** Directives Mayor memuat: kriteria briefing wajib, tabel krusial + kelas, format bead pertanyaan, aturan tanda + propagasi, aturan pengiriman/jawaban, aturan rework, larangan sling manual konsumen, dan larangan PR epic → master dengan asumsi terbuka.
-- [ ] **S1c-AC3** Epic pilot BE + mobile dijalankan lewat brief: ada minimal satu ronde review terstruktur, checklist cek mekanis terisi dan lulus, bead brief (gate persetujuan) ditutup Mayor.
-- [ ] **S1c-AC4** Tidak ada bead konsumen yang di-dispatch sebelum skeleton kontraknya merged (diverifikasi dari timestamp bd).
-- [ ] **S1c-AC5** Area dalam peta kepemilikan hanya diubah oleh commit dari crew `contract_owner` rig itu (diverifikasi dari `git log` per path di branch epic).
-- [ ] **S1c-AC6** Setiap pertanyaan krusial di epic pilot tercatat sebagai bead `gt:question` dengan semua field; task terkait (termasuk dependen) berlabel `assumes:Q-*`; pertanyaan `block` terkirim dengan subjek `[BLOCK]`.
-- [ ] **S1c-AC7** Simulasi jawaban: satu jawaban sama (label hilang, tanpa rework) dan satu berbeda (bead rework hanya untuk task bertanda, urutan kontrak dulu).
-- [ ] **S1c-AC8** Formula baru dan directives dapat dilepas tanpa sisa (rollback diuji di town salinan).
+- [x] **S1c-AC1** Formula `mol-contract-brief`, `mol-contract-brief-review` (convoy review), dan `mol-contract-work` terpasang di `<town>/.beads/formulas/` pilot town dan lulus `gt formula run <nama> --dry-run` (validasi parser bawaan; tidak ada `gt formula validate`).
+- [x] **S1c-AC2** Directives Mayor memuat: kriteria briefing wajib, tabel krusial + kelas, format bead pertanyaan, aturan tanda + propagasi, aturan pengiriman/jawaban, aturan rework, larangan sling manual konsumen, dan larangan PR epic → master dengan asumsi terbuka.
+- [x] **S1c-AC3** Epic pilot BE + mobile dijalankan lewat brief: ada minimal satu ronde review terstruktur, checklist cek mekanis terisi dan lulus, bead brief (gate persetujuan) ditutup Mayor.
+- [x] **S1c-AC4** Tidak ada bead konsumen yang di-dispatch sebelum skeleton kontraknya merged (diverifikasi dari timestamp bd).
+- [x] **S1c-AC5** Area dalam peta kepemilikan hanya diubah oleh commit dari crew `contract_owner` rig itu (diverifikasi dari `git log` per path di branch epic).
+- [x] **S1c-AC6** Setiap pertanyaan krusial di epic pilot tercatat sebagai bead `gt:question` dengan semua field; task terkait (termasuk dependen) berlabel `assumes:Q-*`; pertanyaan `block` terkirim dengan subjek `[BLOCK]`.
+- [x] **S1c-AC7** Simulasi jawaban: satu jawaban sama (label hilang, tanpa rework) dan satu berbeda (bead rework hanya untuk task bertanda, urutan kontrak dulu).
+- [x] **S1c-AC8** Formula baru dan directives dapat dilepas tanpa sisa (rollback diuji di town salinan). *Sebagian: rollback diuji di town pilot itu sendiri, bukan salinan.*
+
+Bukti AC1–AC2: plan P-S1c Langkah 1–5. Bukti AC3–AC8: `../pilot/epic-1-s1c.md` § 3 (AC5 dengan satu pengecualian terencana).
 
 ## 4. Di luar scope
 
@@ -92,3 +96,4 @@ Pertanyaan krusial per epic; % jawaban berbeda dari asumsi; bead rework akibat a
 - 14 Okt 2026: nama crew `contract-owner` menjadi `contract_owner` (spec, plan, aset), karena `gt` menolak tanda hubung pada nama crew. Pilot fase 1 memakai satu rig monorepo `posin` (BE + mobile) sehingga epic pilot S1c-AC3 berjalan di satu rig; lihat S0.
 - 14 Okt 2026: bead brief sekaligus menjadi gate persetujuan, dan bead pertanyaan bertipe `decision`. Alasan: bd 1.3.0 tidak punya tipe `question` maupun `bd gate close`, dan bead bertipe `gate` disembunyikan dari `bd list` sehingga `gt convoy stage` tidak menahan konsumen (diuji di pilot, P-S1c Langkah 4). Semua bead S1c dibuat sebagai anak epic agar terlihat oleh convoy staging.
 - 14 Okt 2026: keputusan Anda saat epic pilot kp-rcu: pertanyaan dirancang untuk jawaban (alasan default + `change_seam` + AC isolasi), dan `block` dibuat sempit (hanya task yang tidak aman ditahan; sisanya memakai default paling aman, epic tidak di-land sebelum dijawab). Directives Mayor/polecat dan template pertanyaan diperbarui.
+- 16 Okt 2026: aturan dari temuan proses pilot (`../pilot/epic-1-s1c.md` § 5.1): persetujuan ulang untuk perubahan brief pasca-approval, rework tidak lewat `gt sling`, `affected` mencakup bead `contract_owner`, kriteria "tidak aman" untuk block sempit, jalur jawaban `block`.

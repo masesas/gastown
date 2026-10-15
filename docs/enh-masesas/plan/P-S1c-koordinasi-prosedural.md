@@ -75,7 +75,7 @@ Bead brief (`--type=decision --labels gt:brief,gt:keep --parent <epic>`) dibuat 
 1. Kriteria briefing wajib (hot path / kontrak lintas-rig / ≥ 3 bead paralel di satu rig) → jalankan `mol-contract-brief`.
 2. Larangan: menyetujui brief tanpa review + checklist; memutuskan hal krusial; menganggap diam sebagai setuju; `gt sling` manual untuk bead konsumen (pakai `gt convoy stage` + `launch`).
 3. Tabel krusial dan kelas (`../14` § 2.2), disalin utuh.
-4. Pembuatan bead pertanyaan dari `templates/question.md`: tipe non-slingable (`question` bila didukung bd terpasang, selain itu `gate`), label `gt:question,gt:keep`, field `id/class/question/context/options/assumed/affected/rework_cost` di deskripsi.
+4. Pembuatan bead pertanyaan dari `templates/question.md`: tipe non-slingable (`question` bila didukung bd terpasang, selain itu `gate`), label `gt:question,gt:keep`, field `id/class/question/context/options/assumed/change_seam/affected/rework_cost` di deskripsi.
 5. `block`: `bd dep add <task> <question>`; `gt mail send --human -s "[BLOCK] Q-<epic>-<n>: <ringkas>" --stdin`; pengingat 24 jam (Mayor memeriksa saat patrol/handoff; otomatis di S3).
 6. `proceed`: `bd label add <task> assumes:Q-<epic>-<n>`; catatan asumsi di notes; propagasi saat dispatch: salin semua label `assumes:*` dari blocker yang sudah selesai, perbarui `affected`.
 7. Pengiriman daftar `proceed` sebelum PR epic → master; format jawaban `Q-id: <jawaban>`.

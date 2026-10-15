@@ -11,7 +11,7 @@ Epic `kp-rcu` "Laporan produk terlaris" (BE + mobile) di pilot town `~/gt-pilot`
   - tes Postgres BE di integration: 720 lulus, 0 gagal, 37 skip karena butuh Redis;
   - gate mobile: 172 suite, 1640 tes lulus;
   - saat land, tes di `main` hasil merge lulus.
-- **Repo k-posin asli tetap di `4cfdde0`**, tanpa branch pilot.
+- **Repo k-posin asli tetap di `4cfdde0`**, tanpa branch pilot. (Mirror `main` `0d6368c` berada di depan `4cfdde0` karena berisi commit epic pilot S0 sebelumnya; repo asli tidak pernah menerimanya.)
 - **Alur S1c bekerja seperti yang dirancang:** brief, review dua ronde, cek mekanis, skeleton lebih dulu, konsumen ditahan, lalu jawaban dan rework yang hanya menyentuh titik ubah.
 - **Biaya terbesar justru infrastruktur, bukan koordinasi:**
   - kuota agy habis pukul 00:01, lalu epic diam semalaman (5 jam menunggu keputusan user dengan laptop menyala, sisanya laptop tidur);
@@ -47,7 +47,7 @@ Epic `kp-rcu` "Laporan produk terlaris" (BE + mobile) di pilot town `~/gt-pilot`
 | AC | Status | Bukti |
 | --- | --- | --- |
 | S1c-AC3 | Lulus | Brief `kp-rcu.1` ditutup Mayor 16:42:58Z "approved: review r2, check ok". Sintesis r1 `kp-syn-hegbe` (NOT ok → revisi), r2 `kp-syn-a7quo` (`.4` ok, `.5` ok). Checklist 5 butir di notes brief, masing-masing dengan bukti perintah |
-| S1c-AC4 | Lulus | Skeleton `.2` closed 16:54:32Z < mobile `.5` attached 16:55:35Z; parser `.3` closed 16:58:51Z < BE `.4` attached 16:59:15Z; rework `.12` closed 09:54:00Z < `.13` attached 10:03:49Z (UTC). Dispatch ulang 15 Okt juga sesudah semua blocker |
+| S1c-AC4 | Lulus | Skeleton `.2` closed 16:54:32Z < mobile `.5` attached 16:55:35Z; parser `.3` closed 16:58:51Z < BE `.4` attached 16:59:15Z; rework `.12` closed 09:54:00Z < `.13` attached 10:03:49Z (UTC). Dispatch ulang 15 Okt juga sesudah semua blocker. Waktu blocker diukur dari `closed_at` bead (lihat G8: bead ditutup saat `gt done`, merge sebenarnya sedikit lebih akhir) |
 | S1c-AC5 | Lulus, 1 pengecualian | `git log 0d6368c..integration/kp-rcu` per path owner: kontrak, file generate, parser, config codegen, tes audit, dan brief hanya diubah `contract_owner`. `report_products_stub.go` dihapus `nuka` (BE), sesuai brief ("dihapus oleh kp-rcu.4") |
 | S1c-AC6 | Lulus | 6 pertanyaan krusial sebagai bead `decision` + `gt:question,gt:keep` dengan semua field (termasuk `change_seam`); task terdampak berlabel `assumes:Q-*`; Q-2 `block` terkirim `[BLOCK] Q-kp-rcu-2` |
 | S1c-AC7 | Lulus | Sama (Q-3..Q-6): label dilepas, pertanyaan ditutup, tanpa rework. Beda (Q-1): rework hanya untuk bead bertanda, kontrak dulu (`.12` → `.13`); mobile tanpa rework karena tidak mengirim limit (bukti di notes). Label `assumes:*` tersisa: 0 |
@@ -58,7 +58,7 @@ Epic `kp-rcu` "Laporan produk terlaris" (BE + mobile) di pilot town `~/gt-pilot`
 | Metrik | Nilai |
 | --- | --- |
 | Biaya koordinasi: durasi brief | 53 menit (22:50 → 23:43), 2 ronde review; token tidak terukur |
-| Waktu tunggu konsumen terhadap skeleton/parser | mobile 63 detik setelah skeleton merged; BE 24 detik setelah parser merged |
+| Waktu tunggu konsumen terhadap skeleton/parser | mobile 63 detik setelah skeleton ditutup; BE 24 detik setelah parser ditutup (dari `closed_at`, lihat G8; merge sebenarnya sedikit lebih akhir) |
 | Pertanyaan krusial | 6 (1 block, 5 proceed); 1 dari 5 proceed berbeda dari asumsi |
 | Rework akibat asumsi | 2 bead (`.12` kontrak + parser, `.13` BE); mobile 0. Masing-masing 1 commit kecil di titik ubah (6 file ±31 baris; 4 file ±53 baris) |
 | Waktu tunggu `block` | 6 menit (22:51 → 22:57) |
@@ -76,9 +76,9 @@ Perbandingan dengan epic manual B: `../baseline/metrics-baseline.md` (kolom manu
 ### 5.1 Proses S1c
 
 1. **Aturan block sempit belum teruji.** Q-2 dijawab sebelum ada pekerjaan yang tertahan, dan saat itu Mayor masih memakai block penuh. Uji di epic berikutnya dengan membiarkan satu pertanyaan block terbuka.
-2. **Brief diubah dua kali setelah disetujui, tanpa review ulang.** Pertama, pemecahan file ownership setelah r2. Kedua, permintaan crew (stub dibungkus `auth.Secure`, satu baris rute golden). Kontrak tidak berubah, tetapi directives belum mengatur perubahan pasca-approval.
-3. **`kp-rcu.13` (rework konsumen) di-dispatch dengan `gt sling`,** melanggar directives "konsumen hanya convoy". Urutannya tetap benar. Mayor mengakuinya sendiri. Ini contoh risiko kepatuhan LLM yang perlu ditangani guard sling di S3.
-4. **Field `affected` pertanyaan tidak memuat bead pemilik kontrak**, walaupun `change_seam` menyentuh kontrak. Akibatnya Mayor menggabungkan rework kontrak ke rework parser. Template perlu menyebutkannya.
+2. **Brief diubah dua kali setelah disetujui, tanpa review ulang.** Pertama, pemecahan file ownership setelah r2. Kedua, permintaan crew (stub dibungkus `auth.Secure`, satu baris rute golden). Kontrak tidak berubah, tetapi directives belum mengatur perubahan pasca-approval. Ditangani: directives Mayor kini mewajibkan persetujuan ulang (PR #30).
+3. **`kp-rcu.13` (rework konsumen) di-dispatch dengan `gt sling`,** melanggar directives "konsumen hanya convoy". Urutannya tetap benar. Mayor mengakuinya sendiri. Ini contoh risiko kepatuhan LLM yang perlu ditangani guard sling di S3. Directives kini menyebut rework secara eksplisit (PR #30).
+4. **Field `affected` pertanyaan tidak memuat bead pemilik kontrak**, walaupun `change_seam` menyentuh kontrak. Akibatnya Mayor menggabungkan rework kontrak ke rework parser. Ditangani: directives Mayor dan template pertanyaan kini menyebutkannya (PR #30).
 5. **Titik ubah terbukti bekerja.** Rework Q-1 hanya menyentuh konstanta, kontrak, dan satu `ORDER BY`, sesuai brief. Mobile benar-benar tidak perlu diubah.
 
 ### 5.2 Gas Town (kandidat bead perbaikan)
@@ -119,5 +119,5 @@ Perbandingan dengan epic manual B: `../baseline/metrics-baseline.md` (kolom manu
 ## 7. Langkah berikutnya
 
 1. Epic manual B oleh user → isi `../baseline/metrics-baseline.md` → keputusan gate Tahap 1.
-2. Membuat bead untuk G1–G11 dan temuan proses 5.1 (2 dan 4); kandidat directives: aturan perubahan brief pasca-approval dan `affected` mencakup pemilik kontrak.
+2. Temuan proses 5.1 (2, 3, 4) sudah masuk directives (PR #30). Perbaikan G1–G5, G7: gt-pd1c.50–56 (PR #25–#29). Sisa G6, G8–G11: gt-pd1c.58–62.
 3. Epic S1c berikutnya: biarkan satu pertanyaan block terbuka untuk menguji block sempit.

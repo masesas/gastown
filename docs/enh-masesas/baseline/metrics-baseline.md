@@ -28,7 +28,7 @@ Catat waktu dalam WIB, cukup sampai menit:
 
 | Metrik | Epic manual (B) | Epic pilot S1c (A) |
 | --- | --- | --- |
-| Lead time mulai → merged ke `main` | | 18 j 28 m wall-clock; ±2 j 55 m tanpa jeda semalam (±5 j menunggu keputusan user + ±9 j 20 m laptop tidur), termasuk ±45 m gangguan spawn |
+| Lead time mulai → merged ke `main` | | 18 j 28 m wall-clock; ±2 j 55 m tanpa jeda semalam (±5 j menunggu keputusan user + ±9 j 20 m laptop tidur + ±1 j 10 m sebelum sesi dilanjutkan), termasuk ±45 m gangguan spawn |
 | Waktu sampai kontrak siap | | 64 m (brief 53 m + skeleton 10 m) |
 | Waktu tunggu konsumen terhadap skeleton | n/a | mobile 63 detik, BE 24 detik setelah blocker merged |
 | First-pass gate | | 6 MR merged, tidak teramati gate menolak; gate tidak menjalankan tes pg dan MR mobile lewat pre_verified, keduanya diverifikasi manual operator |
