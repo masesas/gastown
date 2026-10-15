@@ -1929,7 +1929,7 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 	if err := mgr.RemoveWithOptions(polecatName, opts.Force, true, false); err != nil {
 		if errors.Is(err, polecat.ErrPolecatNotFound) {
 			fmt.Printf("  %s worktree already gone\n", style.Dim.Render("○"))
-			resetPolecatAgentBeadForReuse(r, rigName, polecatName)
+			resetPolecatAgentBeadForReuse(mgr, polecatName)
 		} else {
 			return fmt.Errorf("worktree removal failed: %w", err)
 		}
@@ -1977,13 +1977,15 @@ func checkNukeActiveMRSafety(checker activeMRRemovalChecker, polecatName, rigNam
 	return nil
 }
 
-func resetPolecatAgentBeadForReuse(r *rig.Rig, rigName, polecatName string) {
-	agentBeadID := polecatBeadIDForRig(r, rigName, polecatName)
-	bd := beads.New(r.Path)
-	if err := bd.ForAgentBead().ResetAgentBeadForReuse(agentBeadID, "nuked"); err != nil {
+func resetPolecatAgentBeadForReuse(mgr *polecat.Manager, polecatName string) {
+	reset, err := mgr.ResetAgentBeadIfUnused(polecatName, "nuked")
+	switch {
+	case !reset && err == nil:
+		fmt.Printf("  %s name re-allocated concurrently; leaving agent bead untouched\n", style.Dim.Render("○"))
+	case err != nil:
 		fmt.Printf("  %s agent bead not found or already cleaned\n", style.Dim.Render("○"))
-	} else {
-		fmt.Printf("  %s reset agent bead %s\n", style.Success.Render("✓"), agentBeadID)
+	default:
+		fmt.Printf("  %s reset agent bead for %s\n", style.Success.Render("✓"), polecatName)
 	}
 }
 

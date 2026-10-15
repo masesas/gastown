@@ -228,6 +228,30 @@ func (m *Manager) lockPolecat(name string) (*flock.Flock, error) {
 	return fl, nil
 }
 
+// isBeingCleaned reports whether a polecat name is currently held by another
+// cleanup (nuke/reclaim). Every removal path holds the per-polecat flock for
+// its whole duration, including the final name release, so a failed non-blocking
+// acquire means the worktree, session or agent bead of that name may still be
+// mid-teardown and the name must not be handed out yet. Errors acquiring the
+// lock are treated as "not being cleaned" (the later blocking lockPolecat in
+// the spawn path surfaces real lock failures).
+func (m *Manager) isBeingCleaned(name string) bool {
+	lockDir := filepath.Join(m.rig.Path, ".runtime", "locks")
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		return false
+	}
+	fl := flock.New(filepath.Join(lockDir, fmt.Sprintf("polecat-%s.lock", name)))
+	locked, err := fl.TryLock()
+	if err != nil {
+		return false
+	}
+	if !locked {
+		return true
+	}
+	_ = fl.Unlock()
+	return false
+}
+
 // lockPool acquires an exclusive file lock for name pool operations.
 // This prevents concurrent gt processes from racing on AllocateName/ReconcilePool.
 // Caller must defer fl.Unlock().
@@ -358,6 +382,28 @@ func (m *Manager) createAgentBeadWithRetry(agentID string, fields *beads.AgentFi
 
 func (m *Manager) agentBeads() *beads.Beads {
 	return m.beads.ForAgentBead()
+}
+
+// ResetAgentBeadIfUnused resets the agent bead of a polecat whose worktree is
+// already gone (nuke found nothing to remove). The reset runs under the
+// per-polecat lock and only while the name is still unused: if a concurrent
+// spawn re-allocated the name (directory or reservation marker present), the
+// bead now belongs to the new polecat and resetting it would clobber it.
+// Returns whether a reset was attempted.
+func (m *Manager) ResetAgentBeadIfUnused(name, reason string) (bool, error) {
+	fl, err := m.lockPolecat(name)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = fl.Unlock() }()
+
+	if m.exists(name) {
+		return false, nil
+	}
+	if _, statErr := os.Stat(m.pendingPath(name)); statErr == nil {
+		return false, nil
+	}
+	return true, m.resetAgentBeadForReuse(m.agentBeadID(name), reason)
 }
 
 func (m *Manager) resetAgentBeadForReuse(agentID, reason string) error {
@@ -672,7 +718,7 @@ func (m *Manager) AllocateAndAdd(opts AddOptions) (string, *Polecat, error) {
 
 	m.reconcilePoolInternal()
 
-	name, err := m.namePool.Allocate()
+	name, err := m.namePool.AllocateSkipping(m.isBeingCleaned)
 	if err != nil {
 		_ = poolLock.Unlock()
 		return "", nil, err
@@ -1478,7 +1524,7 @@ func (m *Manager) AllocateName() (string, error) {
 	// Reconcile without re-acquiring the pool lock
 	m.reconcilePoolInternal()
 
-	name, err := m.namePool.Allocate()
+	name, err := m.namePool.AllocateSkipping(m.isBeingCleaned)
 	if err != nil {
 		return "", err
 	}

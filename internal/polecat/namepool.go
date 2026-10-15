@@ -268,6 +268,14 @@ func (p *NamePool) Save() error {
 // It prefers names in order from the theme list, and falls back to overflow names
 // when the pool is exhausted.
 func (p *NamePool) Allocate() (string, error) {
+	return p.AllocateSkipping(nil)
+}
+
+// AllocateSkipping is Allocate, except that themed names for which skip returns
+// true are passed over (and stay unmarked) in favour of the next candidate.
+// Overflow names are fresh sequence numbers and are never skipped. skip runs
+// while the pool mutex is held, so it must not call back into the pool.
+func (p *NamePool) AllocateSkipping(skip func(name string) bool) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -276,10 +284,14 @@ func (p *NamePool) Allocate() (string, error) {
 	// Try to find first available name from the theme
 	for i := 0; i < len(names) && i < p.MaxSize; i++ {
 		name := names[i]
-		if !p.InUse[name] {
-			p.InUse[name] = true
-			return name, nil
+		if p.InUse[name] {
+			continue
 		}
+		if skip != nil && skip(name) {
+			continue
+		}
+		p.InUse[name] = true
+		return name, nil
 	}
 
 	// Pool exhausted, use overflow naming
