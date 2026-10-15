@@ -20,7 +20,8 @@ import (
 // See GH#3006.
 var IdentityEnvVars = []string{
 	"GT_ROLE", "GT_RIG", "GT_CREW", "GT_POLECAT", "GT_DOG_NAME",
-	"GT_SESSION", "GT_AGENT", "BD_ACTOR", "GIT_AUTHOR_NAME", "BEADS_AGENT_NAME",
+	"GT_SESSION", "GT_AGENT", "BD_ACTOR", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+	"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "BEADS_AGENT_NAME",
 }
 
 var bdTargetSelectorEnvVars = []string{
@@ -87,6 +88,11 @@ type AgentEnvConfig struct {
 	// Added as gt.session to OTEL_RESOURCE_ATTRIBUTES so all Claude logs from a
 	// single GT session can be correlated, and as GT_SESSION env var.
 	SessionName string
+
+	// OverseerEmail is the human overseer's email, base of the agent's
+	// plus-address commit email. When empty it is resolved from TownRoot
+	// (overseer.json, then git config); no valid email leaves git config in effect.
+	OverseerEmail string
 }
 
 // AgentEnv returns all environment variables for an agent based on the config.
@@ -101,36 +107,30 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 	case constants.RoleMayor:
 		env["GT_ROLE"] = constants.RoleMayor
 		env["BD_ACTOR"] = constants.RoleMayor
-		env["GIT_AUTHOR_NAME"] = constants.RoleMayor
 
 	case constants.RoleDeacon:
 		env["GT_ROLE"] = constants.RoleDeacon
 		env["BD_ACTOR"] = constants.RoleDeacon
-		env["GIT_AUTHOR_NAME"] = constants.RoleDeacon
 
 	case "boot":
 		env["GT_ROLE"] = "deacon/boot"
 		env["BD_ACTOR"] = "deacon-boot"
-		env["GIT_AUTHOR_NAME"] = "boot"
 
 	case constants.RoleWitness:
 		env["GT_ROLE"] = fmt.Sprintf("%s/witness", cfg.Rig)
 		env["GT_RIG"] = cfg.Rig
 		env["BD_ACTOR"] = fmt.Sprintf("%s/witness", cfg.Rig)
-		env["GIT_AUTHOR_NAME"] = fmt.Sprintf("%s/witness", cfg.Rig)
 
 	case constants.RoleRefinery:
 		env["GT_ROLE"] = fmt.Sprintf("%s/refinery", cfg.Rig)
 		env["GT_RIG"] = cfg.Rig
 		env["BD_ACTOR"] = fmt.Sprintf("%s/refinery", cfg.Rig)
-		env["GIT_AUTHOR_NAME"] = fmt.Sprintf("%s/refinery", cfg.Rig)
 
 	case constants.RolePolecat:
 		env["GT_ROLE"] = fmt.Sprintf("%s/polecats/%s", cfg.Rig, cfg.AgentName)
 		env["GT_RIG"] = cfg.Rig
 		env["GT_POLECAT"] = cfg.AgentName
 		env["BD_ACTOR"] = fmt.Sprintf("%s/polecats/%s", cfg.Rig, cfg.AgentName)
-		env["GIT_AUTHOR_NAME"] = cfg.AgentName
 		// Disable Dolt auto-commit for polecats. With branch-per-polecat,
 		// individual commits are pointless — all changes merge at gt done time
 		// via DOLT_MERGE. Without this, concurrent polecats cause manifest
@@ -142,7 +142,6 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 		env["GT_RIG"] = cfg.Rig
 		env["GT_CREW"] = cfg.AgentName
 		env["BD_ACTOR"] = fmt.Sprintf("%s/crew/%s", cfg.Rig, cfg.AgentName)
-		env["GIT_AUTHOR_NAME"] = cfg.AgentName
 
 	case "dog":
 		// Dogs are town-level workers with role_agents key "dog".
@@ -151,10 +150,19 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 		if cfg.AgentName != "" {
 			env["GT_DOG_NAME"] = cfg.AgentName
 			env["BD_ACTOR"] = fmt.Sprintf("deacon/dogs/%s", cfg.AgentName)
-			env["GIT_AUTHOR_NAME"] = cfg.AgentName
 		} else {
 			env["BD_ACTOR"] = "dog"
-			env["GIT_AUTHOR_NAME"] = "dog"
+		}
+	}
+
+	// Git commit identity (author AND committer) = agent name + plus-address.
+	if name := gitIdentityName(cfg); name != "" {
+		email := cfg.OverseerEmail
+		if email == "" {
+			email = ResolveOverseerEmail(cfg.TownRoot)
+		}
+		for k, v := range GitIdentityEnv(name, email) {
+			env[k] = v
 		}
 	}
 
@@ -883,4 +891,24 @@ func ClaudeConfigDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".claude"), nil
+}
+
+// gitIdentityName returns the commit author/committer name for the role.
+func gitIdentityName(cfg AgentEnvConfig) string {
+	switch cfg.Role {
+	case constants.RoleMayor, constants.RoleDeacon:
+		return cfg.Role
+	case "boot":
+		return "boot"
+	case constants.RoleWitness, constants.RoleRefinery:
+		return fmt.Sprintf("%s/%s", cfg.Rig, cfg.Role)
+	case constants.RolePolecat, constants.RoleCrew:
+		return cfg.AgentName
+	case "dog":
+		if cfg.AgentName != "" {
+			return cfg.AgentName
+		}
+		return "dog"
+	}
+	return ""
 }
