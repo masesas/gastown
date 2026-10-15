@@ -1,4 +1,5 @@
 #!/bin/bash
+# EXAMPLE, specific to the k-posin monorepo (S1c pilot). Copy and adapt per repo.
 # Quality gate for the posin rig (k-posin monorepo): runs the checks of each
 # app touched since the merge base with origin/main. Usage: posin-gate [setup|test]
 # Backend tests run against throwaway PostgreSQL + Redis containers (tmpfs, random

@@ -35,7 +35,7 @@ Syarat minimum sebelum Gas Town dipakai di repo sungguhan, diturunkan dari pilot
 
 ## 4. Identitas commit
 
-- Isi `<town>/mayor/overseer.json` dengan email Anda. Agent commit sebagai author dan committer `<nama-agent> <local+nama-agent@domain>` (PR #28).
+- Isi field `email` di `<town>/mayor/overseer.json`; bila kosong dipakai email global git (`user.email` di config global; config lokal repo diabaikan). Agent commit sebagai author dan committer `<nama-agent>` (witness/refinery: `<rig>/<role>`) dengan email `local+<tag>@domain`, dengan tag = nama agent dalam huruf kecil dan `/` menjadi `-` (mis. `local+nuka@domain`, `local+posin-refinery@domain`). Email overseer yang tidak valid berarti email tidak di-set (PR #28).
 - Sesi yang sudah berjalan sebelum binary baru baru memakai identitas baru setelah restart atau handoff.
 
 ## 5. Kapasitas
@@ -44,6 +44,7 @@ Syarat minimum sebelum Gas Town dipakai di repo sungguhan, diturunkan dari pilot
   ```json
   { "scheduler": { "max_polecats": 2 } }
   ```
+  Nilai N > 0 mengaktifkan dispatch tertunda: `gt sling` dan convoy memberi label pada bead, lalu daemon men-dispatch per heartbeat (batch 1) selama slot tersedia. Nilai -1 (default) atau 0 berarti dispatch langsung tanpa batas. Periksa dengan `gt scheduler status`.
 - Pakai satu provider agent per epic. Cek sisa kuota sebelum epic dimulai. Kegagalan spawn karena kuota tidak lagi menghabiskan batas respawn (PR #26), dan dispatch berhenti setelah 5 kegagalan infra berturut-turut. Pulihkan dengan `gt sling respawn-reset <bead>`.
 - Bead yang terdampar setelah kegagalan spawn: `gt convoy launch <convoy>` aman diulang (PR #29).
 
@@ -53,7 +54,7 @@ Aktifkan di `<town>/mayor/daemon.json` (gabung dengan isi yang ada, jangan timpa
 ```json
 { "patrols": { "idle_shutdown": { "enabled": true, "idle_timeout": "30m" } } }
 ```
-Town di-`gt down` setelah 30 menit tanpa polecat hidup, tanpa bead kerja hooked/in_progress, tanpa MR terbuka, dan tanpa client tmux attach. Alasan town dianggap aktif ditulis di log daemon (`idle_shutdown: town active: ...`). Uji sekali dengan `idle_timeout` pendek, lalu pastikan daemon tidak dinyalakan ulang oleh launchd setelah down. Laptop yang ditinggal tetap sebaiknya di-`gt down` manual (temuan pilot: pilot ikut jalan saat laptop tidur).
+Town di-`gt down` setelah 30 menit tanpa polecat hidup, tanpa bead kerja hooked/in_progress, tanpa MR terbuka, dan tanpa client tmux attach. Wisp patrol, agent bead, dan formula dog infrastruktur tidak dihitung sebagai kerja. Kegagalan membaca bead, MR, atau tmux dianggap aktif. Overseer dikirimi mail sebelum `gt down`. Pengujian launchd di bawah adalah langkah operator, bukan perilaku Gas Town. Alasan town dianggap aktif ditulis di log daemon (`idle_shutdown: town active: ...`). Uji sekali dengan `idle_timeout` pendek, lalu pastikan daemon tidak dinyalakan ulang oleh launchd setelah down. Laptop yang ditinggal tetap sebaiknya di-`gt down` manual (temuan pilot: pilot ikut jalan saat laptop tidur).
 
 ## 7. Pengawasan
 
