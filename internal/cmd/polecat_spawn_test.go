@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -31,33 +32,74 @@ func TestEffectivePolecatDirCap(t *testing.T) {
 	}
 }
 
-// Dispatching (and failing to spawn/start) must never raise the per-bead
-// respawn counter: only a polecat that ran and died does (witness). gt-pd1c.53.
-func TestCheckBeadRespawnLimit_DoesNotRecordAttempts(t *testing.T) {
+// (a) A failed start (here: no workspace) raises the infra counter, not the respawn counter.
+func TestStartSession_FailureCountsAsInfraNotRespawn(t *testing.T) {
 	townRoot := t.TempDir()
-	for i := 0; i < 10; i++ {
-		if err := checkBeadRespawnLimit(townRoot, "rig", "gt-infra"); err != nil {
-			t.Fatalf("attempt %d: unexpected block: %v", i, err)
-		}
+	t.Chdir(t.TempDir()) // not a Gas Town workspace: StartSession fails early
+	info := &SpawnedPolecatInfo{RigName: "rig", PolecatName: "p", trackBead: "gt-x", townRoot: townRoot}
+	if _, err := info.StartSession(); err == nil {
+		t.Fatal("expected StartSession to fail outside a workspace")
 	}
-	if witness.ShouldBlockRespawn(townRoot, "gt-infra") {
-		t.Fatal("dispatch attempts alone must not trip the respawn limit")
+	if blocked, n := witness.ShouldBlockInfraFailures(townRoot, "gt-x"); blocked || n != 1 {
+		t.Fatalf("infra failures = %d blocked=%v, want 1 not blocked", n, blocked)
 	}
-	// RecordBeadRespawn returns the new count: 1 proves nothing was recorded before.
-	if got := witness.RecordBeadRespawn(townRoot, "gt-infra"); got != 1 {
-		t.Fatalf("first record returned %d, want 1 (nothing recorded by dispatch checks)", got)
+	if got := witness.BeadRespawnCount(townRoot, "gt-x"); got != 0 {
+		t.Fatalf("respawn count = %d, want 0 after infra failure", got)
 	}
 }
 
-// The loop guard stays: agent-work failures recorded by the witness block re-dispatch.
-func TestCheckBeadRespawnLimit_BlocksAfterWorkFailures(t *testing.T) {
+// (b) Consecutive infra failures block dispatch, with a message naming respawn-reset.
+func TestCheckBeadRespawnLimit_BlocksAfterInfraFailures(t *testing.T) {
 	townRoot := t.TempDir()
-	max := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
-	for i := 0; i < max; i++ {
-		witness.RecordBeadRespawn(townRoot, "gt-bad")
+	for i := 0; i < witness.MaxBeadInfraFailures; i++ {
+		if err := checkBeadRespawnLimit(townRoot, "rig", "gt-infra"); err != nil {
+			t.Fatalf("attempt %d blocked early: %v", i, err)
+		}
+		recordSpawnOutcome(townRoot, "gt-infra", errors.New("tmux: no space"))
 	}
-	err := checkBeadRespawnLimit(townRoot, "rig", "gt-bad")
+	err := checkBeadRespawnLimit(townRoot, "rig", "gt-infra")
+	if err == nil || !strings.Contains(err.Error(), "respawn-reset") {
+		t.Fatalf("expected infra block mentioning respawn-reset, got %v", err)
+	}
+	if got := witness.BeadRespawnCount(townRoot, "gt-infra"); got != 0 {
+		t.Fatalf("respawn count = %d, want 0", got)
+	}
+}
+
+// (c) A started session counts as one respawn and clears the infra streak; the
+// respawn limit then blocks (loop guard for work failures).
+func TestRecordSpawnOutcome_SuccessCountsRespawnAndResetsInfra(t *testing.T) {
+	townRoot := t.TempDir()
+	recordSpawnOutcome(townRoot, "gt-ok", errors.New("boom"))
+	recordSpawnOutcome(townRoot, "gt-ok", nil)
+	if _, n := witness.ShouldBlockInfraFailures(townRoot, "gt-ok"); n != 0 {
+		t.Fatalf("infra failures = %d, want 0 after success", n)
+	}
+	if got := witness.BeadRespawnCount(townRoot, "gt-ok"); got != 1 {
+		t.Fatalf("respawn count = %d, want 1", got)
+	}
+	max := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
+	for i := 1; i < max; i++ {
+		recordSpawnOutcome(townRoot, "gt-ok", nil)
+	}
+	err := checkBeadRespawnLimit(townRoot, "rig", "gt-ok")
 	if err == nil || !strings.Contains(err.Error(), "respawn limit reached") {
 		t.Fatalf("expected respawn limit error, got %v", err)
+	}
+}
+
+// (d) respawn-reset clears both counters.
+func TestResetBeadRespawnCount_ClearsBothCounters(t *testing.T) {
+	townRoot := t.TempDir()
+	recordSpawnOutcome(townRoot, "gt-r", nil)
+	recordSpawnOutcome(townRoot, "gt-r", errors.New("x"))
+	if err := witness.ResetBeadRespawnCount(townRoot, "gt-r"); err != nil {
+		t.Fatal(err)
+	}
+	if witness.BeadRespawnCount(townRoot, "gt-r") != 0 {
+		t.Fatal("respawn count not reset")
+	}
+	if _, n := witness.ShouldBlockInfraFailures(townRoot, "gt-r"); n != 0 {
+		t.Fatal("infra count not reset")
 	}
 }

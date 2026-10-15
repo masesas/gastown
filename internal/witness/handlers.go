@@ -2744,7 +2744,8 @@ func getBeadStatus(bd *BdCli, workDir, beadID string) (string, bool) {
 // If the bead is in "hooked" or "in_progress" status, it:
 //  0. Checks if the polecat's work is already on main — if so, closes
 //     the bead instead of resetting (prevents re-dispatch of completed work)
-//  1. Records the respawn in the witness spawn-count ledger
+//  1. Reads the respawn count from the spawn-count ledger (recorded by sling
+//     when a dispatch actually started a session, so one death = one count)
 //  2. Resets status to open
 //  3. Clears assignee
 //  4. Sends mail to deacon for re-dispatch (includes respawn count; SPAWN_STORM
@@ -2813,8 +2814,10 @@ then either close the bead or reset the respawn counter.`,
 		return false
 	}
 
-	// Track respawn count for audit and storm detection.
-	respawnCount := RecordBeadRespawn(workDir, hookBead)
+	// Respawn count for audit and storm detection. Recording happens at
+	// dispatch (SpawnedPolecatInfo.StartSession), not here, so every death path
+	// (witness, deacon, polecat manager) is covered without double counting.
+	respawnCount := BeadRespawnCount(workDir, hookBead)
 
 	// Reset bead status to open and clear assignee
 	if err := bd.Run(workDir, "update", hookBead, "--status=open", "--assignee="); err != nil {
