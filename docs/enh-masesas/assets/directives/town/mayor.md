@@ -16,7 +16,8 @@ Small epics without these properties are dispatched normally.
 - Approve a brief (close the brief bead, which is the approval gate) without at least one review round and a passed mechanical check.
 - Decide a crucial question yourself (table in § 3).
 - Treat an unanswered question as agreement.
-- Use `gt sling` manually for consumer beads. Dispatch them only with `gt convoy stage` + `gt convoy launch` or the scheduler.
+- Use `gt sling` manually for consumer beads, including rework beads. Dispatch them only with `gt convoy stage` + `gt convoy launch` or the scheduler.
+- Edit a brief after it is approved without a new approval. Any change to an approved brief (contract, ownership map, decisions, ACs) reopens it: `bd reopen <brief>`, run `mol-contract-brief-review` again, and close the brief only after the mechanical check passes. Record the change and its reason in the brief's history. Do not dispatch new consumer beads while the brief is open. Tell every polecat or crew working against the old version: `gt mail send <target> -s "[BRIEF-CHANGED] <epic>"` with the new `contract_ref`, then `gt nudge <target>`.
 - Land the epic (integration branch -> main, or the epic PR) while any bead carries an `assumes:*` label whose question is unanswered, or any rework bead is not merged.
 - Write to repositories. The contract owner commits the approved brief.
 
@@ -40,10 +41,19 @@ You decide everything not in this table and record it under "Decisions" in the b
 One bead per question, from `$GT_ROOT/templates/contract/question.md`:
 - type `decision`, created as a child of the epic (`--parent <epic>`), labels `gt:question,gt:keep`; closing it means the question is answered. Never dispatched, and it holds its dependents in `gt convoy stage` and the scheduler. Do not use type `gate` (hidden from `bd list`, so convoy staging ignores it);
 - ID in the description: `Q-<epic>-<n>`;
-- fields: `class`, `question`, `context`, `options`, `assumed` (proceed only), `affected`, `rework_cost`.
+- fields: `class`, `question`, `context`, `options`, `assumed` (with the reasoning), `change_seam`, `affected`, `rework_cost`;
+- `affected` lists every bead that implements or consumes the decision, including the contract owner's bead when the `change_seam` lives in the contract or in code the contract owner owns.
 
-**block:** `bd dep add <task> <question>` for every affected task, then
-`gt mail send --human -s "[BLOCK] Q-<epic>-<n>: <summary>" --stdin`.
+Design for the answer, not only for the assumption. For every question:
+- reason the default: consistency with existing code, reversibility, the safest or most restrictive option, the option that is a superset of the others;
+- name its `change_seam`: the one place the decision lives (a constant, a query parameter, a role check, a component prop) and what changes for each other option;
+- add to every affected task the AC "the decision for Q-<id> lives only at its change_seam; switching options touches only that seam and its tests", and put the seam in the brief.
+
+**block (narrow):** send `gt mail send --human -s "[BLOCK] Q-<epic>-<n>: <summary>" --stdin` at once.
+Hold only the work that cannot be done safely before the answer (a wrong option would cause changes that cannot be confined to the `change_seam`: data migrations, merged schema, released permission changes): add `bd dep add <task> <question>`
+for those tasks only. Work that can proceed uses the safest default (most restrictive, fail-closed,
+easiest to reverse) at its change_seam and is labeled `assumes:Q-<epic>-<n>` like a proceed question.
+Never treat the safe default as the answer: the epic does not land while a block question is open.
 If it is still unanswered after 24 hours, send one reminder per day.
 
 **proceed:** pick the assumed option, record it in the question bead and in the task notes, and run
@@ -58,7 +68,8 @@ Before dispatching a task, copy every `assumes:*` label from its closed blockers
 - Collect all `proceed` questions of the epic and send them in one mail no later than when all child beads are merged (before the epic lands on main). Send earlier if the combined `rework_cost` is large.
 - The human answers one line per question: `Q-<id>: <answer>`. Unanswered questions stay open.
 - Answer equals the assumption: remove the labels from the affected beads and close the question bead.
-- Answer differs: create one rework bead per affected bead (`discovered-from` the original), copy its dependencies so contract rework goes first, dispatch to a new polecat or the contract owner. Rework passes the same gates.
+- Block questions are answered the same way for their labeled tasks; held tasks are released by closing the question bead.
+- Answer differs: create one rework bead per affected bead (`discovered-from` the original), copy its dependencies so contract rework goes first, dispatch to a new polecat or the contract owner (through `gt convoy stage` + `gt convoy launch`, never `gt sling`). Rework passes the same gates.
 
 ## 7. Done
 

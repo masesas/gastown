@@ -383,7 +383,7 @@ Kandidat diambil dari E01–E30 ditambah satu kandidat baru (E31). Hanya kandida
 Masing-masing XS–S. Boleh dikerjakan oportunistik saat menyentuh file terkait.
 
 - Hapus atau implementasikan `on_conflict` dan `max_retry_count`. Config yang diam-diam tidak berlaku menyesatkan operator. [V]
-- Fast-path `pre_verified` dijanjikan di formula polecat tetapi tidak ada di formula refinery. Selaraskan teks formula. [V]
+- Fast-path `pre_verified` dijanjikan di formula polecat tetapi tidak ada di formula refinery. Selaraskan teks formula. [V] Selesai: PR #27 (gt-pd1c.56); `--pre-verified` informasional, refinery selalu menjalankan gate.
 - Batasi konkurensi `runBdCmd` di dashboard dengan semaphore (#4820) bila dashboard dipakai. [V]
 - `gt doctor` ikut menjalankan cek embedded-vs-store `bd_version`, yang saat ini hanya ada di daemon. [V]
 - Tambahkan formula `mol-validate-prd` yang dirujuk `appendValidationWave` (`cmd/convoy_stage.go:1094-1097`) atau hapus rujukannya. [V, Revisi 1]

@@ -184,7 +184,7 @@ Mode `pr` belum diuji (mirror tanpa API PR); tetap untuk fase 2.
 | `gt up` cold start: cek safety stop kena circuit breaker bd; Usage tercetak untuk error runtime | Refinery tidak start | PR #17 (gt-pd1c.38) |
 | `--merge=direct` (dipilih mayor) mendarat di `main`, mengabaikan integration branch dan gate | Kode tanpa gate di `main` | PR #18 (gt-pd1c.37) |
 | Cek safety stop fail-open ("not found" apa pun = bead tidak ada) | Refinery bisa start tanpa cek | Terbuka: gt-pd1c.39 |
-| Refinery melewati gate untuk MR pre-verified | Gate bergantung klaim polecat | Terbuka: gt-pd1c.40 |
+| Refinery melewati gate untuk MR pre-verified | Gate bergantung klaim polecat | Selesai: PR #20 (gt-pd1c.40, engine Go) + PR #27 (gt-pd1c.56, teks formula; pilot S1c membuktikan refinery LLM masih melewati gate sebelum #27) |
 | Lain-lain kecil | — | Terbuka: gt-pd1c.33 (tmux tersisa setelah `gt down`), .34 (`prompt_flag` preset), .35 (`base_branch` ganda, hitungan merged), .36 (spam log daemon), .41 (SilenceUsage), .42 (cleanup land), gt-m67s (`lsof` tanpa `-a` di `gt down`) |
 
 Perilaku operasional yang perlu diketahui:
