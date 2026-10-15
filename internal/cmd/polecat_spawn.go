@@ -37,6 +37,28 @@ type SpawnedPolecatInfo struct {
 	// Internal fields for deferred session start
 	account string
 	agent   string
+
+	// Respawn bookkeeping (gt-pd1c.53). trackBead is the hooked bead whose
+	// respawn/infra counters StartSession maintains; empty when not tracked
+	// (no bead, or --force).
+	trackBead   string
+	townRoot    string
+	outcomeDone bool // counters already updated for this dispatch
+}
+
+// finishDispatch updates the per-bead counters exactly once per dispatch:
+// nil err = session started (one respawn, infra streak cleared); non-nil =
+// the dispatch failed after the polecat was spawned, before/at session start
+// (infra failure). StartSession calls it, and sling entry points defer it on
+// error so post-spawn failures (cook, hook, metadata) are counted too.
+// Failures after a successful session start are agent work and are left to
+// the respawn count; agent exits right after start count as respawns, not infra.
+func (s *SpawnedPolecatInfo) finishDispatch(err error) {
+	if s == nil || s.trackBead == "" || s.outcomeDone {
+		return
+	}
+	s.outcomeDone = true
+	recordSpawnOutcome(s.townRoot, s.trackBead, err)
 }
 
 // AgentID returns the agent identifier (e.g., "gastown/polecats/Toast")
@@ -53,6 +75,7 @@ func (s *SpawnedPolecatInfo) SessionStarted() bool {
 type SlingSpawnOptions struct {
 	TownRoot      string // Gas Town workspace root; falls back to cwd when empty
 	Force         bool   // Force spawn even if polecat has uncommitted work
+	ExplicitForce bool   // Operator passed --force: bypasses the respawn/infra gate. Auto-force (dead agent) must NOT set this
 	Account       string // Claude Code account handle to use
 	Create        bool   // Create polecat if it doesn't exist (currently always true for sling)
 	HookBead      string // Bead ID to set as hook_bead at spawn time (atomic assignment)
@@ -96,10 +119,56 @@ func reclaimBrokenIdlePolecatForSling(polecatMgr *polecat.Manager) (bool, error)
 	return false, nil
 }
 
+// checkBeadRespawnLimit gates dispatch of beadID. It blocks when the bead has
+// been dispatched MaxBeadRespawns times (work failures: every dispatch that
+// actually started a session counts, whatever killed the polecat), or when it
+// hit MaxBeadInfraFailures consecutive spawn/start failures. It never records.
+func checkBeadRespawnLimit(townRoot, rigName, beadID string) error {
+	if witness.ShouldBlockRespawn(townRoot, beadID) {
+		maxRespawns := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
+		return fmt.Errorf("respawn limit reached for %s (%d dispatches). "+
+			"This bead keeps failing — investigate before re-dispatching.\n"+
+			"Override: gt sling %s %s --force\n"+
+			"Reset:    gt sling respawn-reset %s",
+			beadID, maxRespawns, beadID, rigName, beadID)
+	}
+	if blocked, n := witness.ShouldBlockInfraFailures(townRoot, beadID); blocked {
+		return fmt.Errorf("dispatch of %s blocked after %d consecutive spawn/start failures "+
+			"(infrastructure, not the bead). Fix the cause (quota, tmux, disk), then:\n"+
+			"Reset:    gt sling respawn-reset %s",
+			beadID, n, beadID)
+	}
+	return nil
+}
+
+// respawnGateApplies reports whether the per-bead respawn/infra gate and
+// bookkeeping apply to this spawn. Only an operator's explicit --force bypasses
+// them; dead-agent auto-force (opts.Force without ExplicitForce) does not.
+func respawnGateApplies(opts SlingSpawnOptions) bool {
+	return opts.HookBead != "" && !opts.ExplicitForce
+}
+
+// recordSpawnOutcome maintains the per-bead counters for a dispatch attempt.
+// Failure before/at session start counts as infra; a started session counts
+// as one respawn and clears the infra streak. No-op for untracked beads.
+func recordSpawnOutcome(townRoot, beadID string, err error) {
+	if beadID == "" || townRoot == "" {
+		return
+	}
+	if err != nil {
+		n := witness.RecordBeadInfraFailure(townRoot, beadID)
+		fmt.Fprintf(os.Stderr, "gt: dispatch of %s failed before the agent started (infra failure %d/%d, respawn count unchanged): %v\n",
+			beadID, n, witness.MaxBeadInfraFailures, err)
+		return
+	}
+	witness.ResetBeadInfraFailures(townRoot, beadID)
+	witness.RecordBeadRespawn(townRoot, beadID)
+}
+
 // SpawnPolecatForSling creates a fresh polecat and optionally starts its session.
 // This is used by gt sling when the target is a rig name.
 // The caller (sling) handles hook attachment and nudging.
-func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
+func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (info *SpawnedPolecatInfo, retErr error) {
 	// Find workspace
 	townRoot := opts.TownRoot
 	if townRoot == "" {
@@ -158,20 +227,24 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 		defer admission.Release()
 	}
 
-	// Per-bead respawn circuit breaker (clown show #22):
-	// Track how many times this bead has been slung. Block after N attempts
-	// to prevent witness→deacon→sling feedback loops.
-	if opts.HookBead != "" && !opts.Force {
-		if witness.ShouldBlockRespawn(townRoot, opts.HookBead) {
-			maxRespawns := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
-			return nil, fmt.Errorf("respawn limit reached for %s (%d attempts). "+
-				"This bead keeps failing — investigate before re-dispatching.\n"+
-				"Override: gt sling %s %s --force\n"+
-				"Reset:    gt sling respawn-reset %s",
-				opts.HookBead, maxRespawns,
-				opts.HookBead, rigName, opts.HookBead)
+	// Per-bead circuit breakers (clown show #22, gt-pd1c.53). Two counters:
+	// respawns (a session was started for the bead; recorded by StartSession)
+	// and infra failures (spawn/start failed before the agent ran; recorded
+	// here and in StartSession). Infra failures never consume the respawn
+	// budget but have their own block threshold, so neither a dead agent nor a
+	// broken environment can loop forever.
+	if respawnGateApplies(opts) {
+		if err := checkBeadRespawnLimit(townRoot, rigName, opts.HookBead); err != nil {
+			return nil, err
 		}
-		witness.RecordBeadRespawn(townRoot, opts.HookBead)
+		defer func() {
+			if retErr != nil {
+				recordSpawnOutcome(townRoot, opts.HookBead, retErr)
+			} else if info != nil {
+				info.trackBead = opts.HookBead
+				info.townRoot = townRoot
+			}
+		}()
 	}
 
 	if reclaimed, err := reclaimBrokenIdlePolecatForSling(polecatMgr); err != nil {
@@ -387,10 +460,11 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 // This is called after the molecule/bead is attached, so the polecat
 // sees its work when gt prime runs on session start.
 // Returns the pane ID after session start.
-func (s *SpawnedPolecatInfo) StartSession() (string, error) {
+func (s *SpawnedPolecatInfo) StartSession() (pane string, retErr error) {
 	if s.SessionStarted() {
 		return s.Pane, nil
 	}
+	defer func() { s.finishDispatch(retErr) }()
 
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
@@ -474,7 +548,7 @@ func (s *SpawnedPolecatInfo) StartSession() (string, error) {
 
 	// Get pane — if this fails, the session may have died during startup.
 	// Kill the dead session to prevent "session already running" on next attempt (gt-jn40ft).
-	pane, err := getSessionPane(s.SessionName)
+	pane, err = getSessionPane(s.SessionName)
 	if err != nil {
 		// Session likely died — clean up the tmux session so it doesn't block re-sling
 		_ = t.KillSession(s.SessionName)

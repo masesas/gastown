@@ -181,9 +181,10 @@ var slingRespawnResetCmd = &cobra.Command{
 	Short: "Reset the respawn counter for a bead",
 	Long: `Reset the per-bead respawn counter so it can be slung again.
 
-When a bead hits the respawn limit (3 attempts), gt sling blocks further
+When a bead hits the respawn limit (3 dispatches that started a session), or
+5 consecutive spawn/start (infrastructure) failures, gt sling blocks further
 dispatches to prevent spawn storms. After investigating the root cause,
-use this command to allow re-dispatch.`,
+use this command to clear both counters and allow re-dispatch.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSlingRespawnReset,
 }
@@ -743,20 +744,30 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		target = args[1]
 	}
 	resolved, err := resolveTarget(target, ResolveTargetOptions{
-		DryRun:       slingDryRun,
-		Force:        force,
-		Create:       slingCreate,
-		Account:      slingAccount,
-		Agent:        slingAgent,
-		NoBoot:       slingNoBoot,
-		HookBead:     beadID,
-		BeadID:       beadID,
-		TownRoot:     townRoot,
-		BaseBranch:   slingBaseBranch,
-		ResumeBranch: slingResumeBranch,
+		DryRun:        slingDryRun,
+		Force:         force,
+		ExplicitForce: slingForce,
+		Create:        slingCreate,
+		Account:       slingAccount,
+		Agent:         slingAgent,
+		NoBoot:        slingNoBoot,
+		HookBead:      beadID,
+		BeadID:        beadID,
+		TownRoot:      townRoot,
+		BaseBranch:    slingBaseBranch,
+		ResumeBranch:  slingResumeBranch,
 	})
 	if err != nil {
 		return err
+	}
+	if resolved.NewPolecatInfo != nil {
+		// Post-spawn failures before StartSession count as infra failures
+		// (idempotent with StartSession's own accounting).
+		defer func() {
+			if retErr != nil {
+				resolved.NewPolecatInfo.finishDispatch(retErr)
+			}
+		}()
 	}
 	targetAgent := resolved.Agent
 	targetPane := resolved.Pane

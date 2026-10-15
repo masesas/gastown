@@ -1657,6 +1657,11 @@ func TestResetAbandonedBead_ResetsWhenWorkNotOnMain(t *testing.T) {
 	if !foundUpdate {
 		t.Errorf("expected bd update --status=open to be called, got calls: %v", mock.calls)
 	}
+
+	// Recording happens at dispatch, not in the reset: one death = one count.
+	if got := RecordBeadRespawn(tmpDir, "gt-work123"); got != 1 {
+		t.Errorf("respawn count after reset = %d, want 1 (reset must not record)", got-1)
+	}
 }
 
 func TestBeadRecoveredField_DefaultFalse(t *testing.T) {
