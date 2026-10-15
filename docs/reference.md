@@ -718,8 +718,10 @@ town has had no activity for a timeout. It is off unless enabled in
 `idle_timeout` is a Go duration (default `30m`). "Idle" means, continuously for
 the whole timeout: no live polecat session, no real `hooked`/`in_progress` bead
 (town and rigs), an empty merge queue, and no tmux client attached to the town
-socket. Deacon/witness/refinery patrol wisps and agent beads are hooked on
-purpose and do not count as work. Any lookup that fails counts as active and
+socket. Deacon/witness/refinery patrol wisps, the daemon-dispatched infrastructure
+dog formulas (`mol-dog-*`) and agent beads do not count as work. While the
+town is active the daemon logs why (counts and a few blocking bead/MR IDs),
+once per change or per `idle_timeout`. Any lookup that fails counts as active and
 resets the timer. Before `gt down` the daemon logs, mails the overseer
 (`gt mail send --human`) and emits an `idle_shutdown` feed event; it fires once
 per idle period (if `gt down` fails to start or exits non-zero it retries after
