@@ -146,7 +146,7 @@ func TestIdentityEnvVars_CoversAgentEnvOutput(t *testing.T) {
 	identityKeys := map[string]bool{
 		"GT_ROLE": true, "GT_RIG": true, "GT_CREW": true,
 		"GT_POLECAT": true, "GT_DOG_NAME": true, "GT_SESSION": true,
-		"GT_AGENT": true, "BD_ACTOR": true, "GIT_AUTHOR_NAME": true,
+		"GT_AGENT": true, "BD_ACTOR": true, "GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
 		"BEADS_AGENT_NAME": true,
 	}
 

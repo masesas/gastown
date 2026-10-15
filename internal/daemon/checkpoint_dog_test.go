@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	gtconfig "github.com/steveyegge/gastown/internal/config"
 	"io"
 	"log"
 	"os"
@@ -236,7 +237,7 @@ func TestCheckpointWorktreeExcludesNestedRuntimeArtifacts(t *testing.T) {
 		t.Fatalf("modify runtime file: %v", err)
 	}
 
-	d := &Daemon{logger: log.New(io.Discard, "", 0)}
+	d := &Daemon{logger: log.New(io.Discard, "", 0), config: &Config{TownRoot: t.TempDir()}}
 	if !d.checkpointWorktree(workDir, "rig", "polecat") {
 		t.Fatal("checkpointWorktree did not create a checkpoint commit")
 	}
@@ -272,7 +273,7 @@ func TestCheckpointWorktreeSkipsRuntimeOnlyNestedArtifacts(t *testing.T) {
 		t.Fatalf("modify runtime file: %v", err)
 	}
 
-	d := &Daemon{logger: log.New(io.Discard, "", 0)}
+	d := &Daemon{logger: log.New(io.Discard, "", 0), config: &Config{TownRoot: t.TempDir()}}
 	if d.checkpointWorktree(workDir, "rig", "polecat") {
 		t.Fatal("checkpointWorktree created a checkpoint for runtime-only changes")
 	}
@@ -294,4 +295,37 @@ func mustRunGit(t *testing.T, workDir string, args ...string) string {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
 	return out
+}
+
+func TestCheckpointWorktreeCommitsAsPolecatIdentity(t *testing.T) {
+	workDir := t.TempDir()
+	mustRunGit(t, workDir, "init")
+	mustRunGit(t, workDir, "config", "user.name", "Human Overseer")
+	mustRunGit(t, workDir, "config", "user.email", "human@example.com")
+	if err := os.WriteFile(filepath.Join(workDir, "a.txt"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunGit(t, workDir, "add", "a.txt")
+	mustRunGit(t, workDir, "commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(workDir, "a.txt"), []byte("2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Town root whose overseer.json carries the overseer email.
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := gtconfig.SaveOverseerConfig(gtconfig.OverseerConfigPath(townRoot), &gtconfig.OverseerConfig{Name: "Human", Email: "human@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &Daemon{logger: log.New(io.Discard, "", 0), config: &Config{TownRoot: townRoot}}
+	if !d.checkpointWorktree(workDir, "rig", "nuka") {
+		t.Fatal("checkpointWorktree did not create a checkpoint commit")
+	}
+	got := strings.TrimSpace(mustRunGit(t, workDir, "log", "-1", "--format=%an|%ae|%cn|%ce"))
+	if want := "nuka|human+nuka@example.com|nuka|human+nuka@example.com"; got != want {
+		t.Fatalf("checkpoint identity = %q, want %q", got, want)
+	}
 }

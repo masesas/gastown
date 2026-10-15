@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	gtgit "github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/session"
@@ -181,7 +182,9 @@ func (d *Daemon) checkpointWorktree(workDir, rigName, polecatName string) bool {
 	}
 
 	// Commit the checkpoint
-	if _, err := runGitCmd(workDir, "commit", "-m", "WIP: checkpoint (auto)"); err != nil {
+	// The daemon runs with the human's git identity; commit as the polecat.
+	identity := config.GitIdentityEnv(config.GitIdentityName(constants.RolePolecat, rigName, polecatName), config.ResolveOverseerEmail(d.config.TownRoot))
+	if _, err := runGitCmdEnv(workDir, envList(identity), "commit", "-m", "WIP: checkpoint (auto)"); err != nil {
 		d.logger.Printf("checkpoint_dog: git commit failed in %s/%s: %v", rigName, polecatName, err)
 		return false
 	}
@@ -230,8 +233,34 @@ func runGitCmd(workDir string, args ...string) (string, error) {
 }
 
 func runGitCmdRaw(workDir string, args ...string) (string, error) {
+	return runGitCmdRawEnv(workDir, nil, args...)
+}
+
+// runGitCmdEnv is runGitCmd with extra KEY=VALUE env entries layered over the
+// daemon's environment.
+func runGitCmdEnv(workDir string, extraEnv []string, args ...string) (string, error) {
+	out, err := runGitCmdRawEnv(workDir, extraEnv, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// envList renders an env map as KEY=VALUE entries.
+func envList(env map[string]string) []string {
+	list := make([]string, 0, len(env))
+	for k, v := range env {
+		list = append(list, k+"="+v)
+	}
+	return list
+}
+
+func runGitCmdRawEnv(workDir string, extraEnv []string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = workDir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...) // last entry wins
+	}
 	util.SetDetachedProcessGroup(cmd)
 
 	var stdout, stderr bytes.Buffer
