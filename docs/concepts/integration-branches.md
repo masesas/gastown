@@ -350,7 +350,18 @@ identity (`GT_ROLE`, `BD_ACTOR`, `GT_POLECAT` or `GT_CREW`) is refused before
 any fetch or merge with `auto-land disabled for rig <rig>; a human must run gt
 mq integration land <epic-id>`. `--force` does not bypass this; `--dry-run` is
 still allowed for agents. With `integration_branch_auto_land: true` agents may
-land as before.
+land as before. If the rig settings file cannot be read, auto-land counts as off
+and the refusal includes the read error.
+
+Operators land from a plain shell: open a fresh terminal (outside any agent
+tmux session), or strip the agent variables for one command:
+
+```bash
+env -u GT_ROLE -u BD_ACTOR -u GT_POLECAT -u GT_CREW gt mq integration land <epic-id>
+```
+
+Note that `BD_ACTOR` exported in your own shell rc also identifies you as an
+agent and triggers the refusal.
 
 **What it does:**
 

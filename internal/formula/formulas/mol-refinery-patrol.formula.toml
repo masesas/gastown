@@ -80,8 +80,10 @@ resolve that placeholder with this rule:
 ## FORBIDDEN Actions
 
 - FORBIDDEN: Landing integration branches to the default branch via raw git commands (`git merge`, `git push`).
-  Integration branches may ONLY be landed via `gt mq integration land <epic-id>`.
-  This applies regardless of `auto_land` configuration. The pre-push hook enforces this.
+  Integration branches are never landed with raw git; the pre-push hook enforces this. The only land
+  command is `gt mq integration land <epic-id>`, and the refinery may run it
+  only when integration_branch_auto_land = "true". Otherwise a human lands; the refinery just reports
+  the ready epic to the mayor (see check-integration-branches).
 
 ## Step Execution Order
 
@@ -961,6 +963,8 @@ Read the two config values above, then:
   3. If `ready_to_land: true`: run `gt mq integration land <epic-id>` and capture exit code + stderr
   4. If `ready_to_land: false`: do nothing, epic work is incomplete
   Never land partial epics — ALL children must be closed first.
+- Otherwise (any combination not covered above): do NOT land, whatever the values are.
+  Say "Integration branch config unclear; not landing." Close step.
 
 ## CRITICAL: Handling `gt mq integration land` failures (gh#3604)
 

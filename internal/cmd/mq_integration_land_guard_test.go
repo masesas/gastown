@@ -40,7 +40,7 @@ func TestCheckIntegrationLandAllowed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkIntegrationLandAllowed("posin", "kp-4az", tt.autoLand, tt.dryRun, envFrom(tt.env))
+			err := checkIntegrationLandAllowed("posin", "kp-4az", autoLandSetting{enabled: tt.autoLand}, tt.dryRun, envFrom(tt.env))
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("checkIntegrationLandAllowed() err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -52,6 +52,10 @@ func TestCheckIntegrationLandAllowed(t *testing.T) {
 			if !strings.Contains(msg, want) {
 				t.Fatalf("error %q does not contain %q", msg, want)
 			}
+			hint := "env -u GT_ROLE -u BD_ACTOR -u GT_POLECAT -u GT_CREW gt mq integration land kp-4az"
+			if !strings.Contains(msg, hint) {
+				t.Fatalf("error %q lacks clean-shell hint %q", msg, hint)
+			}
 		})
 	}
 }
@@ -60,7 +64,7 @@ func TestCheckIntegrationLandAllowed(t *testing.T) {
 // the error text: only the name of the variable that identified the agent is
 // reported.
 func TestCheckIntegrationLandAllowed_ErrorOmitsEnvValues(t *testing.T) {
-	err := checkIntegrationLandAllowed("posin", "kp-4az", false, false,
+	err := checkIntegrationLandAllowed("posin", "kp-4az", autoLandSetting{}, false,
 		envFrom(map[string]string{"BD_ACTOR": "secret-actor-value"}))
 	if err == nil {
 		t.Fatal("expected refusal")
@@ -104,20 +108,51 @@ func TestIntegrationAutoLandEnabled(t *testing.T) {
 		return rig
 	}
 	tests := []struct {
-		name string
-		body string
-		want bool
+		name    string
+		body    string
+		want    bool
+		wantErr bool
 	}{
-		{"no settings file: disabled", "", false},
-		{"corrupt settings: disabled (fail closed)", "{not json", false},
-		{"explicit false", `{"type":"rig-settings","version":1,"merge_queue":{"integration_branch_auto_land":false}}`, false},
-		{"explicit true", `{"type":"rig-settings","version":1,"merge_queue":{"integration_branch_auto_land":true}}`, true},
+		{"no settings file: disabled, not an error", "", false, false},
+		{"corrupt settings: disabled (fail closed), error kept", "{not json", false, true},
+		{"explicit false", `{"type":"rig-settings","version":1,"merge_queue":{"integration_branch_auto_land":false}}`, false, false},
+		{"explicit true", `{"type":"rig-settings","version":1,"merge_queue":{"integration_branch_auto_land":true}}`, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := integrationAutoLandEnabled(write(t, tt.body)); got != tt.want {
-				t.Fatalf("integrationAutoLandEnabled() = %v, want %v", got, tt.want)
+			got := loadAutoLandSetting(write(t, tt.body))
+			if got.enabled != tt.want {
+				t.Fatalf("loadAutoLandSetting().enabled = %v, want %v", got.enabled, tt.want)
+			}
+			if integrationAutoLandEnabled(write(t, tt.body)) != tt.want {
+				t.Fatalf("integrationAutoLandEnabled() != %v", tt.want)
+			}
+			if (got.loadErr != "") != tt.wantErr {
+				t.Fatalf("loadErr = %q, wantErr %v", got.loadErr, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestCheckIntegrationLandAllowed_ReportsSettingsError: when the rig settings
+// could not be read, the refusal says why (first line only).
+func TestCheckIntegrationLandAllowed_ReportsSettingsError(t *testing.T) {
+	err := checkIntegrationLandAllowed("posin", "kp-4az",
+		autoLandSetting{loadErr: "parsing settings: invalid character 'n'"}, false,
+		envFrom(map[string]string{"GT_ROLE": "refinery"}))
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+	if !strings.Contains(err.Error(), "rig settings unreadable: parsing settings: invalid character 'n'") {
+		t.Fatalf("error lacks settings error: %q", err.Error())
+	}
+}
+
+func TestFirstLine(t *testing.T) {
+	if got := firstLine("a\nb"); got != "a" {
+		t.Fatalf("firstLine = %q", got)
+	}
+	if got := firstLine("  only  "); got != "only" {
+		t.Fatalf("firstLine = %q", got)
 	}
 }

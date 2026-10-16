@@ -471,11 +471,11 @@ func runMqIntegrationLand(cmd *cobra.Command, args []string) error {
 
 	// Human-only gate (gt-pd1c.71): with auto-land disabled an agent may
 	// preview (--dry-run) but never land. Checked before any fetch or merge.
-	autoLand := integrationAutoLandEnabled(r.Path)
+	autoLand := loadAutoLandSetting(r.Path)
 	if err := checkIntegrationLandAllowed(r.Name, epicID, autoLand, mqIntegrationLandDryRun, os.Getenv); err != nil {
 		return err
 	}
-	if !autoLand && agentSessionEnvVar(os.Getenv) != "" {
+	if !autoLand.enabled && agentSessionEnvVar(os.Getenv) != "" {
 		fmt.Printf("%s auto-land disabled for rig %s; only a human can perform the real land\n\n",
 			style.Bold.Render("⚠"), r.Name)
 	}

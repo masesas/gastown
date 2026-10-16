@@ -41,3 +41,33 @@ func TestRefineryPatrolIntegrationLandRequiresAutoLand(t *testing.T) {
 		t.Errorf("land instruction must come after the BOTH-true gate (gate=%d land=%d)", gate, landRun)
 	}
 }
+
+// TestRefineryPatrolNoLandRegardlessOfAutoLand: the global FORBIDDEN section
+// used to say landing via `gt mq integration land` "applies regardless of
+// auto_land", which contradicts the auto-land gate. It must be gone from the
+// whole formula, and the global rule must state the auto_land condition.
+func TestRefineryPatrolNoLandRegardlessOfAutoLand(t *testing.T) {
+	contentBytes, err := formulasFS.ReadFile("formulas/mol-refinery-patrol.formula.toml")
+	if err != nil {
+		t.Fatalf("reading refinery formula: %v", err)
+	}
+	content := string(contentBytes)
+	for _, bad := range []string{"regardless of `auto_land`", "may ONLY be landed via"} {
+		if strings.Contains(content, bad) {
+			t.Errorf("refinery formula still contains %q", bad)
+		}
+	}
+	if !strings.Contains(content, "only when integration_branch_auto_land = \"true\"") {
+		t.Error("global FORBIDDEN section must gate the land command on integration_branch_auto_land = \"true\"")
+	}
+}
+
+// TestRefineryPatrolCheckIntegrationBranchesHasOtherwise: every config
+// combination must have an explicit outcome.
+func TestRefineryPatrolCheckIntegrationBranchesHasOtherwise(t *testing.T) {
+	f := loadRefineryPatrolFormula(t)
+	d := requireFormulaStep(t, f, "check-integration-branches").Description
+	if !strings.Contains(d, "Otherwise (any combination not covered above)") {
+		t.Error("check-integration-branches needs an explicit otherwise branch")
+	}
+}
