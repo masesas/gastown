@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -20,21 +22,31 @@ import (
 // The Gas Town managed pre-push hook (internal/pushguard) pipes git's
 // pre-push input into `gt hooks pre-push <remote> <url>`. All rules live here:
 //
-//   - Push target classification: only the rig default branch and
-//     integration/* (the merge-request targets) are checked. polecat/* and
-//     every other branch, tags and deletions pass without any I/O beyond
-//     reading stdin, so normal polecat work is not slowed down.
+//   - Targets: the rig default branch and integration/* (the merge-request
+//     targets). polecat/* and every other branch and tags pass without any
+//     I/O beyond reading stdin, so normal polecat work is not slowed down.
+//   - Rig detection: from the real (symlink-resolved) git common dir, then the
+//     real working directory. An agent push to a target from a repository
+//     whose rig cannot be detected is refused (fail closed). When the rig's
+//     default_branch is unknown, agents treat main, master and origin/HEAD
+//     as default branches.
+//   - Deletions (agents): the default branch may never be deleted; an
+//     integration/* branch only once its tip is already on the remote default
+//     branch (landed), as gt mq integration land cleanup does. Otherwise a
+//     delete-then-merge would hide the land from the land guard.
 //   - Land guard: a push to a target that newly contains the tip of another
-//     integration/* branch on the push remote is an integration land. An
-//     agent (agentSessionEnvVar, shared with gt mq integration land) may land
-//     only when merge_queue.integration_branch_auto_land is true AND the push
-//     comes from gt mq integration land (GT_INTEGRATION_LAND=1). With
-//     auto-land off GT_INTEGRATION_LAND is ignored for agents. Humans keep the
-//     previous rule: landing needs GT_INTEGRATION_LAND=1.
+//     integration/* branch (on the push remote, or a local integration/*
+//     branch or refs/remotes/<remote>/integration/* tracking ref) is a land.
+//     An agent (agentSessionEnvVar, shared with gt mq integration land) is
+//     refused while merge_queue.integration_branch_auto_land is not true,
+//     whatever GT_INTEGRATION_LAND says. With auto-land on, an agent push with
+//     GT_INTEGRATION_LAND=1 passes; the variable is a policy marker set by
+//     gt mq integration land, not proof of origin (any agent could set it).
+//     Humans keep the previous rule: landing needs GT_INTEGRATION_LAND=1.
 //   - Scope guard (agents only): the pushed range remote_sha..local_sha (for a
-//     new branch: merge-base with the default branch..local_sha) must stay
-//     inside merge_queue.allowed_paths (checkMergeScopeWith, as gt done and
-//     gt mq submit).
+//     new branch: merge-base of the remote default branch tip, read with
+//     ls-remote, and local_sha) must stay inside merge_queue.allowed_paths
+//     (checkMergeScopeWith, as gt done and gt mq submit).
 //
 // Everything that cannot be verified is refused (fail closed). Errors never
 // include the push URL (it may carry credentials).
@@ -52,18 +64,21 @@ pre-push hook runs this with git's arguments and pipes git's pre-push input
 ("<local_ref> <local_sha> <remote_ref> <remote_sha>" per line) to stdin.
 
 Rules (agent = GT_ROLE, BD_ACTOR, GT_POLECAT or GT_CREW is set):
-  - polecat/*, other branches, tags, deletions: allowed, not checked.
+  - polecat/*, other branches, tags: allowed, not checked.
+  - Agent push to the default branch or integration/* from a repository whose
+    rig cannot be detected: refused.
+  - Agent deletion of the default branch: refused; of integration/*: refused
+    unless the branch has already landed on the default branch.
   - Push to the rig default branch or integration/* that lands another
     integration branch: refused for agents unless
-    merge_queue.integration_branch_auto_land is true and the push comes from
-    gt mq integration land. Humans need GT_INTEGRATION_LAND=1 (set by
-    gt mq integration land).
+    merge_queue.integration_branch_auto_land is true (and GT_INTEGRATION_LAND=1,
+    set by gt mq integration land). Humans need GT_INTEGRATION_LAND=1.
   - Agent push to the default branch or integration/*: every changed path in
     the pushed range must match merge_queue.allowed_paths (when set).
 Anything that cannot be verified is refused.
 
 The hook is installed by gt rig add, gt up, polecat/crew creation and
-gt doctor --fix. git push --no-verify skips local hooks; protect the real
+gt doctor --fix. Local hooks can be skipped by the pusher; protect the real
 remote with branch protection (see docs/HOOKS.md).`,
 	Args:          cobra.RangeArgs(1, 2),
 	SilenceUsage:  true,
@@ -94,11 +109,52 @@ func runHooksPrePush(cmd *cobra.Command, args []string) error {
 		getenv: os.Getenv,
 		git:    git.NewGit(cwd),
 		loadRig: func() (*prePushRig, error) {
-			townRoot, _ := workspace.Find(cwd) // not in a town: no rig
-			return resolvePrePushRig(townRoot, cwd)
+			return detectPrePushRig(prePushLocations(cwd))
 		},
 	}
 	return g.check(updates)
+}
+
+// realPath resolves symlinks so a cwd reached through a symlink still maps
+// to its town and rig. Falls back to the absolute path.
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
+}
+
+// prePushLocations returns the real paths that identify the repository: its
+// git common dir (shared .repo.git for worktrees, <clone>/.git otherwise),
+// then the working directory.
+func prePushLocations(cwd string) []string {
+	var locs []string
+	cmd := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	cmd.Dir = cwd
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err == nil {
+		if common := strings.TrimSpace(out.String()); common != "" {
+			locs = append(locs, realPath(common))
+		}
+	}
+	return append(locs, realPath(cwd))
+}
+
+// detectPrePushRig returns the rig of the first location inside a rig, or
+// nil when none is.
+func detectPrePushRig(locations []string) (*prePushRig, error) {
+	for _, loc := range locations {
+		townRoot, _ := workspace.Find(loc)
+		r, err := resolvePrePushRig(townRoot, loc)
+		if err != nil || r != nil {
+			return r, err
+		}
+	}
+	return nil, nil
 }
 
 // prePushUpdate is one line of git's pre-push input.
@@ -131,21 +187,21 @@ func parsePrePushUpdates(r io.Reader) ([]prePushUpdate, error) {
 // prePushRig is the rig policy the guard applies.
 type prePushRig struct {
 	name          string
-	defaultBranch string // "" = detect from git
+	defaultBranch string // "" = unknown (agents check main, master and origin/HEAD)
 	autoLand      autoLandSetting
 	allowed       []string
 	allowedErr    error // scope unknown: agent pushes to targets fail closed
 }
 
-// resolvePrePushRig maps cwd to its rig (<townRoot>/<rig>/...) and reads the
-// policy straight from the rig files, so a broken rigs.json cannot turn the
-// guard off. Returns nil, nil outside a rig. Unreadable settings fail closed:
-// auto-land off, scope error.
-func resolvePrePushRig(townRoot, cwd string) (*prePushRig, error) {
+// resolvePrePushRig maps path to its rig (<townRoot>/<rig>/..., where the rig
+// directory has config.json) and reads the policy straight from the rig
+// files, so a broken rigs.json cannot turn the guard off. Returns nil, nil
+// outside a rig. Unreadable settings fail closed: auto-land off, scope error.
+func resolvePrePushRig(townRoot, path string) (*prePushRig, error) {
 	if townRoot == "" {
 		return nil, nil
 	}
-	rel, err := filepath.Rel(townRoot, cwd)
+	rel, err := filepath.Rel(townRoot, path)
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return nil, nil
 	}
@@ -154,6 +210,9 @@ func resolvePrePushRig(townRoot, cwd string) (*prePushRig, error) {
 		return nil, nil
 	}
 	rigPath := filepath.Join(townRoot, name)
+	if _, err := os.Stat(filepath.Join(rigPath, "config.json")); err != nil {
+		return nil, nil
+	}
 	r := &prePushRig{name: name, autoLand: loadAutoLandSetting(rigPath)}
 	if cfg, err := rig.LoadRigConfig(rigPath); err == nil {
 		r.defaultBranch = strings.TrimSpace(cfg.DefaultBranch)
@@ -165,6 +224,7 @@ func resolvePrePushRig(townRoot, cwd string) (*prePushRig, error) {
 // prePushGit is the git surface the guard needs.
 type prePushGit interface {
 	ListRemoteRefsWithHashes(remote, prefix string) ([]git.RemoteRef, error)
+	ListLocalRefsWithHashes(prefix string) ([]git.RemoteRef, error)
 	IsAncestor(ancestor, descendant string) (bool, error)
 	Rev(ref string) (string, error)
 	MergeBase(a, b string) (string, error)
@@ -180,12 +240,13 @@ type prePushGuard struct {
 	git     prePushGit
 	loadRig func() (*prePushRig, error)
 
-	rigLoaded bool
-	rig       *prePushRig
-	rigErr    error
-	tips      []git.RemoteRef
-	tipsErr   error
-	tipsDone  bool
+	rigLoaded  bool
+	rig        *prePushRig
+	rigErr     error
+	tips       []git.RemoteRef
+	tipsErr    error
+	tipsDone   bool
+	remoteSHAs map[string]string // branch -> tip on the push remote ("" = absent)
 }
 
 // check returns nil when every update may be pushed, else an error naming
@@ -202,10 +263,14 @@ func (g *prePushGuard) check(updates []prePushUpdate) error {
 
 func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 	branch, ok := strings.CutPrefix(u.RemoteRef, "refs/heads/")
-	if !ok || strings.HasPrefix(branch, "polecat/") || u.LocalSHA == prePushZeroSHA {
-		return nil // tag/other ref, polecat work, or deletion
+	if !ok || strings.HasPrefix(branch, "polecat/") {
+		return nil // tag/other ref or polecat work
 	}
 	agentVar := agentSessionEnvVar(g.getenv)
+	deletion := u.LocalSHA == prePushZeroSHA
+	if deletion && agentVar == "" {
+		return nil
+	}
 	r, err := g.loadRigOnce()
 	if err != nil {
 		if agentVar != "" {
@@ -213,15 +278,16 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 		}
 		r = nil // human: fall back to git defaults
 	}
-	defaultBranch := ""
-	if r != nil {
-		defaultBranch = r.defaultBranch
-	}
-	if defaultBranch == "" {
-		defaultBranch = g.git.RemoteDefaultBranch()
-	}
-	if branch != defaultBranch && !strings.HasPrefix(branch, integrationBranchPrefix) {
+	defaults := g.defaultBranches(r, agentVar != "")
+	if !containsString(defaults, branch) && !strings.HasPrefix(branch, integrationBranchPrefix) {
 		return nil
+	}
+	if agentVar != "" && r == nil {
+		return fmt.Errorf("BLOCKED: push to %s: no Gas Town rig detected for this repository; "+
+			"refusing agent push to a merge target (fail closed)", branch)
+	}
+	if deletion {
+		return g.checkAgentDelete(u, branch, defaults)
 	}
 	if err := g.checkLand(u, branch, r, agentVar); err != nil {
 		return err
@@ -229,7 +295,7 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 	if agentVar == "" {
 		return nil
 	}
-	return g.checkScope(u, branch, defaultBranch, r)
+	return g.checkScope(u, branch, defaults[0], r)
 }
 
 func (g *prePushGuard) loadRigOnce() (*prePushRig, error) {
@@ -238,6 +304,110 @@ func (g *prePushGuard) loadRigOnce() (*prePushRig, error) {
 		g.rigLoaded = true
 	}
 	return g.rig, g.rigErr
+}
+
+// defaultBranches returns the branch names treated as the default branch; the
+// first is the one used as merge base. The rig's default_branch when known;
+// otherwise origin/HEAD for humans and, for agents (fail closed), also main
+// and master.
+func (g *prePushGuard) defaultBranches(r *prePushRig, agent bool) []string {
+	if r != nil && r.defaultBranch != "" {
+		return []string{r.defaultBranch}
+	}
+	out := []string{g.git.RemoteDefaultBranch()}
+	if agent {
+		for _, b := range []string{"main", "master"} {
+			if !containsString(out, b) {
+				out = append(out, b)
+			}
+		}
+	}
+	return out
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// errInvalidPushRemote: an empty or option-looking remote/URL (L1).
+var errInvalidPushRemote = errors.New("invalid push remote")
+
+// pushTarget is the repository git pushes to (URL when known), validated so
+// it cannot be taken for an option.
+func (g *prePushGuard) pushTarget() (string, error) {
+	target := g.url
+	if target == "" {
+		target = g.remote
+	}
+	if target == "" || strings.HasPrefix(target, "-") {
+		return "", errInvalidPushRemote
+	}
+	return target, nil
+}
+
+// remoteBranchSHA returns the tip of refs/heads/<branch> on the push remote,
+// "" when the branch does not exist there.
+func (g *prePushGuard) remoteBranchSHA(branch string) (string, error) {
+	if sha, ok := g.remoteSHAs[branch]; ok {
+		return sha, nil
+	}
+	target, err := g.pushTarget()
+	if err != nil {
+		return "", err
+	}
+	refs, err := g.git.ListRemoteRefsWithHashes(target, "refs/heads/"+branch)
+	if err != nil {
+		return "", errors.New("cannot read the push remote; retry when it is reachable")
+	}
+	sha := ""
+	for _, ref := range refs {
+		if ref.Name == "refs/heads/"+branch {
+			sha = ref.Hash
+		}
+	}
+	if g.remoteSHAs == nil {
+		g.remoteSHAs = map[string]string{}
+	}
+	g.remoteSHAs[branch] = sha
+	return sha, nil
+}
+
+// checkAgentDelete allows an agent to delete integration/<x> only once its
+// tip is already contained in the remote default branch, and never the
+// default branch itself.
+func (g *prePushGuard) checkAgentDelete(u prePushUpdate, branch string, defaults []string) error {
+	if containsString(defaults, branch) {
+		return fmt.Errorf("BLOCKED: agents may not delete the default branch %s", branch)
+	}
+	refuse := func(why string) error {
+		return fmt.Errorf("BLOCKED: agent deletion of %s refused: %s. Integration branches are "+
+			"deleted by gt mq integration land after landing, or by a human", branch, why)
+	}
+	defaultSHA, err := g.remoteBranchSHA(defaults[0])
+	if err != nil {
+		return refuse(err.Error())
+	}
+	if defaultSHA == "" {
+		return refuse("default branch " + defaults[0] + " not found on the push remote")
+	}
+	for _, sha := range []string{u.RemoteSHA, defaultSHA} {
+		if _, err := g.git.Rev(sha + "^{commit}"); err != nil {
+			return refuse("the remote tips are not in this repository; fetch first")
+		}
+	}
+	landed, err := g.git.IsAncestor(u.RemoteSHA, defaultSHA)
+	if err != nil {
+		return refuse("cannot verify ancestry: " + firstLine(err.Error()))
+	}
+	if !landed {
+		return refuse("it has not landed on " + defaults[0])
+	}
+	return nil
 }
 
 // checkLand refuses a push that lands an integration branch (see file doc).
@@ -251,6 +421,9 @@ func (g *prePushGuard) checkLand(u prePushUpdate, branch string, r *prePushRig, 
 		return nil // creating a branch is not a land; scope still applies
 	}
 	tips, err := g.integrationTips()
+	if errors.Is(err, errInvalidPushRemote) {
+		return verifyError(branch, err.Error(), agentVar)
+	}
 	if err != nil {
 		return verifyError(branch, "cannot list integration branches on the push remote; retry when it is reachable", agentVar)
 	}
@@ -269,16 +442,52 @@ func (g *prePushGuard) checkLand(u prePushUpdate, branch string, r *prePushRig, 
 	return nil
 }
 
+// integrationTips lists integration/* tips on the push remote plus the local
+// integration/* branches and remote-tracking refs, so a branch deleted on the
+// remote still counts while this repository knows it. Names are normalised to
+// refs/heads/integration/<x>.
 func (g *prePushGuard) integrationTips() ([]git.RemoteRef, error) {
-	if !g.tipsDone {
-		target := g.url
-		if target == "" {
-			target = g.remote
-		}
-		g.tips, g.tipsErr = g.git.ListRemoteRefsWithHashes(target, "refs/heads/"+integrationBranchPrefix)
-		g.tipsDone = true
+	if g.tipsDone {
+		return g.tips, g.tipsErr
 	}
-	return g.tips, g.tipsErr
+	g.tipsDone = true
+	target, err := g.pushTarget()
+	if err != nil {
+		g.tipsErr = err
+		return nil, err
+	}
+	tips, err := g.git.ListRemoteRefsWithHashes(target, "refs/heads/"+integrationBranchPrefix)
+	if err != nil {
+		g.tipsErr = err
+		return nil, err
+	}
+	remotes := []string{"origin"}
+	if g.remote != "" && g.remote != "origin" && !strings.ContainsAny(g.remote, "/:\\") && !strings.HasPrefix(g.remote, "-") {
+		remotes = append(remotes, g.remote)
+	}
+	seen := map[string]bool{}
+	for _, t := range tips {
+		seen[t.Name+" "+t.Hash] = true
+	}
+	prefixes := []string{"refs/heads/"} // local integration branches
+	for _, name := range remotes {
+		prefixes = append(prefixes, "refs/remotes/"+name+"/")
+	}
+	for _, prefix := range prefixes {
+		local, err := g.git.ListLocalRefsWithHashes(prefix + integrationBranchPrefix)
+		if err != nil {
+			continue // tracking refs are defense in depth only
+		}
+		for _, t := range local {
+			t.Name = "refs/heads/" + strings.TrimPrefix(t.Name, prefix)
+			if !seen[t.Name+" "+t.Hash] {
+				seen[t.Name+" "+t.Hash] = true
+				tips = append(tips, t)
+			}
+		}
+	}
+	g.tips = tips
+	return tips, nil
 }
 
 // introduces reports whether tip is reachable from the pushed commit but not
@@ -341,11 +550,8 @@ func verifyError(branch, reason, agentVar string) error {
 }
 
 // checkScope enforces merge_queue.allowed_paths on an agent push to an MR
-// target branch.
+// target branch (r is non-nil: agents without a rig are refused earlier).
 func (g *prePushGuard) checkScope(u prePushUpdate, branch, defaultBranch string, r *prePushRig) error {
-	if r == nil {
-		return nil // not in a rig: no scope declared
-	}
 	if r.allowedErr != nil {
 		return fmt.Errorf("BLOCKED: push to %s: %v (refusing agent push while the merge scope is unknown)", branch, r.allowedErr)
 	}
@@ -368,23 +574,22 @@ func (g *prePushGuard) checkScope(u prePushUpdate, branch, defaultBranch string,
 	return nil
 }
 
-// newBranchBase returns the merge-base of local with the default branch, for
-// a push that creates a branch.
+// newBranchBase returns the merge-base of local with the default branch tip
+// on the push remote (ls-remote, not a local ref that could be moved).
 func (g *prePushGuard) newBranchBase(local, defaultBranch string) (string, error) {
-	var candidates []string
-	if g.remote != "" && !strings.ContainsAny(g.remote, "/:") {
-		candidates = append(candidates, "refs/remotes/"+g.remote+"/"+defaultBranch)
+	sha, err := g.remoteBranchSHA(defaultBranch)
+	if err != nil {
+		return "", fmt.Errorf("%v; cannot check merge scope", err)
 	}
-	candidates = append(candidates, "refs/remotes/origin/"+defaultBranch, "refs/heads/"+defaultBranch)
-	for _, ref := range candidates {
-		if _, err := g.git.Rev(ref + "^{commit}"); err != nil {
-			continue
-		}
-		mb, err := g.git.MergeBase(ref, local)
-		if err != nil {
-			return "", fmt.Errorf("no merge-base with %s; cannot check merge scope", defaultBranch)
-		}
-		return mb, nil
+	if sha == "" {
+		return "", fmt.Errorf("default branch %s not found on the push remote; cannot check merge scope", defaultBranch)
 	}
-	return "", fmt.Errorf("default branch %s not found locally; cannot check merge scope", defaultBranch)
+	if _, err := g.git.Rev(sha + "^{commit}"); err != nil {
+		return "", fmt.Errorf("the remote %s tip is not in this repository; fetch first, then push again", defaultBranch)
+	}
+	mb, err := g.git.MergeBase(sha, local)
+	if err != nil {
+		return "", fmt.Errorf("no merge-base with %s; cannot check merge scope", defaultBranch)
+	}
+	return mb, nil
 }

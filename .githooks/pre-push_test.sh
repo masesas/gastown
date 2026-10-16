@@ -274,6 +274,8 @@ else
   echo "  PASS: agent refusal does not suggest GT_INTEGRATION_LAND"
   PASS=$((PASS + 1))
 fi
+# Agent deleting an integration branch that has not landed — BLOCKED.
+GT_ROLE=refinery assert_block "Agent delete of unlanded integration branch blocked" run_hook "(delete)" "0000000000000000000000000000000000000000" "refs/heads/integration/epic-5" "$(get_sha integration/epic-5)"
 # Agent normal push still allowed.
 git checkout -b polecat/nux >/dev/null 2>&1
 echo "polecat" >> file.txt

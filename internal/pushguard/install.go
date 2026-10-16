@@ -143,13 +143,14 @@ func inspectLayout(repo string, l layout) (Status, error) {
 	if _, err := os.Lstat(filepath.Join(l.hooksDir, ChainedHookName)); err == nil {
 		st.Chained = true
 	}
-	content, err := os.ReadFile(filepath.Join(l.hooksDir, "pre-push"))
+	hook := filepath.Join(l.hooksDir, "pre-push")
+	content, err := os.ReadFile(hook)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		st.State = StateMissing
 	case err != nil:
 		return st, fmt.Errorf("reading pre-push hook: %w", err)
-	case string(content) == Script():
+	case string(content) == Script() && isExecutable(hook):
 		st.State = StateInstalled
 	case bytes.Contains(content, []byte(Marker)):
 		st.State = StateOutdated
@@ -174,7 +175,7 @@ func inspectProjectHooksPath(st Status, l layout) (Status, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return st, fmt.Errorf("reading project pre-push hook: %w", err)
 	}
-	if err == nil && bytes.Contains(content, []byte(DelegationMarker)) {
+	if err == nil && isExecutable(filepath.Join(l.hooksDir, "pre-push")) && delegates(content) {
 		st.State = StateDelegated
 		return st, nil
 	}
@@ -247,4 +248,25 @@ func writeHook(dir string) error {
 		return fmt.Errorf("installing pre-push hook: %w", err)
 	}
 	return nil
+}
+
+// isExecutable reports whether git would run the file as a hook.
+func isExecutable(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+// delegates reports whether a project hook calls DelegationMarker on a line
+// that is not a shell comment.
+func delegates(content []byte) bool {
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if code, _, _ := strings.Cut(line, " #"); strings.Contains(code, DelegationMarker) {
+			return true
+		}
+	}
+	return false
 }

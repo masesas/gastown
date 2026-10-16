@@ -490,8 +490,15 @@ push is a land.
 
 - **Agents** (`GT_ROLE`, `BD_ACTOR`, `GT_POLECAT` or `GT_CREW` set) are refused
   when `integration_branch_auto_land` is not `true`, even with
-  `GT_INTEGRATION_LAND=1`. With auto-land on they may land only through
-  `gt mq integration land`.
+  `GT_INTEGRATION_LAND=1`. With auto-land on, a push carrying
+  `GT_INTEGRATION_LAND=1` (set by `gt mq integration land`) passes; the
+  variable is a policy marker, not proof of origin.
+- Agents may not delete the default branch, nor an `integration/*` branch
+  that has not landed yet (delete-then-merge would hide the land). Local
+  `integration/*` branches and `refs/remotes/<remote>/integration/*` tips
+  also count for land detection.
+- Squash merges, cherry-picks and rebases create new SHAs and are not detected
+  as a land; remote branch protection is the mitigation.
 - **Humans** are refused unless `GT_INTEGRATION_LAND=1` is set.
 
 The same hook enforces `merge_queue.allowed_paths` on every agent push to the

@@ -251,28 +251,53 @@ is set (the same helper as the `gt mq integration land` gate).
 
 | Push | Agent | Human |
 |---|---|---|
-| `polecat/*`, other branches, tags, deletions | allowed, nothing checked | allowed |
-| Default branch or `integration/*` that newly contains the tip of another `integration/*` branch on the push remote (a land) | refused when `merge_queue.integration_branch_auto_land` is not `true`, **even with `GT_INTEGRATION_LAND=1`**; with auto-land on, allowed only from `gt mq integration land` (`GT_INTEGRATION_LAND=1`) | refused unless `GT_INTEGRATION_LAND=1` (set by `gt mq integration land`) |
-| Default branch or `integration/*` | every changed path in `remote_sha..local_sha` (new branch: merge-base with the default branch `..local_sha`) must match `merge_queue.allowed_paths`, when set | not scope-checked |
+| `polecat/*`, other branches, tags | allowed, nothing checked | allowed |
+| Default branch or `integration/*` from a repository whose rig cannot be detected | refused (fail closed) | checked as below, without rig settings |
+| Delete the default branch | refused | allowed |
+| Delete `integration/*` | allowed only when its tip is already contained in the default branch on the push remote (what `gt mq integration land` cleanup does); otherwise refused, so delete-then-merge cannot hide a land | allowed |
+| Default branch or `integration/*` that newly contains the tip of another `integration/*` branch (a land) | refused when `merge_queue.integration_branch_auto_land` is not `true`, **even with `GT_INTEGRATION_LAND=1`**; with auto-land on, allowed with `GT_INTEGRATION_LAND=1` (set by `gt mq integration land`) | refused unless `GT_INTEGRATION_LAND=1` |
+| Default branch or `integration/*` | every changed path in `remote_sha..local_sha` (new branch: merge-base of the remote default-branch tip, read with `ls-remote`, and `local_sha`) must match `merge_queue.allowed_paths`, when set | not scope-checked |
 
-The default branch is the rig's `default_branch` (`<rig>/config.json`),
-falling back to `origin/HEAD`. The rig is derived from the directory
-(`<town>/<rig>/...`) and its settings are read straight from
-`<rig>/settings/config.json`. Fail closed: an unreadable settings file means
-auto-land off and an unknown scope (agent pushes to targets refused); a
-remote that cannot be listed, a remote tip missing locally, or a malformed
-input line refuses the push. Refusals never print the push URL, and messages
-to agents never suggest `GT_INTEGRATION_LAND`.
+The rig is derived from the real (symlink-resolved) git common dir of the
+repository, then the real working directory (`<town>/<rig>/...`, where the rig
+directory has `config.json`); its settings are read straight from
+`<rig>/settings/config.json`. The default branch is the rig's `default_branch`
+(`<rig>/config.json`). When it is unknown, humans fall back to `origin/HEAD`
+and agents treat `origin/HEAD`, `main` and `master` all as default branches.
+Fail closed: an unreadable settings file means auto-land off and an unknown
+scope (agent pushes to targets refused); a remote that cannot be listed, a
+remote tip missing locally, an option-looking remote/URL, or a malformed input
+line refuses the push. Refusals never print the push URL, and messages to
+agents never suggest `GT_INTEGRATION_LAND`.
 
-Land detection compares against integration branches that exist on the push
-remote. Creating a branch (remote sha all zeros) is never a land; it is still
-scope-checked. Cherry-picked integration commits (new SHAs) are not detected.
+Land detection compares against `integration/*` tips on the push remote, the
+local `integration/*` branches and the local
+`refs/remotes/<remote>/integration/*` tracking refs, so a branch deleted on the
+remote still counts while the pushing repository knows it. An integration
+branch that a human deleted on the remote and that is gone locally too (no
+branch, tracking ref pruned) is no longer recognised. Creating a branch (remote
+sha all zeros) is never a land; it is still scope-checked.
 
 ### Limits
 
-A local hook is advisory against a determined caller: `git push --no-verify`,
-`git -c core.hooksPath=/dev/null push`, deleting the hook, or clearing the
-agent variables skip it. The hard boundary for a real project is the remote:
+- A local hook is advisory against a determined caller: `git push --no-verify`,
+  `git -c core.hooksPath=/dev/null push`, deleting the hook, or clearing the
+  agent variables skip it.
+- Land detection is ancestry-based. A squash merge, cherry-pick or rebase of
+  integration commits onto the default branch creates new SHAs and is **not**
+  detected as a land (it is only scope-checked). Mitigation: remote branch
+  protection.
+- `GT_INTEGRATION_LAND=1` is a policy marker, not proof that the push comes
+  from `gt mq integration land`: with auto-land on, any agent that sets it can
+  land through a raw push.
+- With `allowed_paths` unset, any agent (refinery, crew or polecat) can push a
+  non-land change straight to the default branch or `integration/*`. Polecats
+  are not refused outright because the direct convoy merge strategy has
+  `gt done` push polecat work straight to the target branch.
+- Agents can no longer delete an unlanded `integration/*` branch (e.g. to
+  abandon an epic); a human does that.
+
+The hard boundary for a real project is the remote:
 point the rig at a local mirror and protect the real origin's branches, with
 promotion through a human-reviewed PR (see
 `docs/enh-masesas/runbook-real-project.md`, section 2).

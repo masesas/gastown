@@ -125,6 +125,13 @@ fi
 while read local_ref local_sha remote_ref remote_sha; do
   [[ -z "$remote_ref" ]] && continue
   branch="${remote_ref#refs/heads/}"
+  # Agents may not delete merge targets here: deleting integration/x first
+  # would hide a later land from the check below.
+  if [[ "$is_agent" == "1" && "$local_sha" == "$zero" && \
+        ( "$branch" == "$default_branch" || "$branch" == integration/* ) ]]; then
+    echo "BLOCKED: agents may not delete $branch (no gt with 'hooks pre-push' on PATH)."
+    exit 1
+  fi
   [[ "$branch" == "$default_branch" ]] || continue
   if [[ "$is_agent" == "0" && "$GT_INTEGRATION_LAND" == "1" ]]; then
     continue

@@ -396,3 +396,45 @@ func TestEnsureRigLegacyPolecatAndBrokenRepo(t *testing.T) {
 		t.Fatalf("legacy polecat clone should be installed: %+v", sts)
 	}
 }
+
+func TestInspectNonExecutableManagedHookIsOutdated(t *testing.T) {
+	repo := newRepo(t, filepath.Join(t.TempDir(), "r"))
+	hook := filepath.Join(repo, ".git", "hooks", "pre-push")
+	if err := os.WriteFile(hook, []byte(Script()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Inspect(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateOutdated || !st.Fixable() {
+		t.Fatalf("non-executable hook git would ignore: got %+v", st)
+	}
+	if st, err = Install(repo); err != nil || st.State != StateInstalled {
+		t.Fatalf("install: %+v %v", st, err)
+	}
+	info, _ := os.Stat(hook)
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatal("install must restore the exec bit")
+	}
+}
+
+func TestDelegationIgnoresComments(t *testing.T) {
+	repo := newRepo(t, filepath.Join(t.TempDir(), "r"))
+	gitT(t, repo, "config", "core.hooksPath", ".githooks")
+	hook := filepath.Join(repo, ".githooks", "pre-push")
+	writeExec(t, hook, "#!/bin/sh\n# TODO: gt hooks pre-push\necho hi # gt hooks pre-push\nexit 0\n")
+	if st, _ := Inspect(repo); st.State != StateConflict {
+		t.Fatalf("comment-only mention must not count as delegation: %+v", st)
+	}
+	writeExec(t, hook, "#!/bin/sh\nprintf '%s\\n' \"$input\" | gt hooks pre-push \"$@\" || exit 1\n")
+	if st, _ := Inspect(repo); st.State != StateDelegated {
+		t.Fatalf("real delegation: %+v", st)
+	}
+	if err := os.Chmod(hook, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := Inspect(repo); st.State != StateConflict {
+		t.Fatalf("non-executable project hook does not run: %+v", st)
+	}
+}

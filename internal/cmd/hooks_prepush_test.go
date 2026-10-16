@@ -137,11 +137,26 @@ func TestPrePushGuard(t *testing.T) {
 			update: prePushUpd("refs/heads/polecat/nux/gt-1", f.bad, testZeroSHA)},
 		{name: "agent other branch allowed", rig: scoped, env: agent, update: prePushUpd("refs/heads/feature/x", f.bad, testZeroSHA)},
 		{name: "agent tag allowed", rig: broken, env: agent, update: prePushUpd("refs/tags/v1", f.bad, testZeroSHA)},
-		{name: "agent deletion allowed", rig: broken, env: agent, update: prePushUpd("refs/heads/integration/epic-a", testZeroSHA, f.epicSHA)},
+		{name: "agent deletion of unlanded integration branch refused (H1)", rig: plain, env: agent,
+			update: prePushUpd("refs/heads/integration/epic-a", testZeroSHA, f.epicSHA), wantErr: "has not landed"},
+		{name: "agent deletion of default branch refused (H1)", rig: plain, env: agent,
+			update: prePushUpd("refs/heads/main", testZeroSHA, f.mainSHA), wantErr: "may not delete the default branch"},
+		{name: "human deletion of integration branch allowed", rig: plain,
+			update: prePushUpd("refs/heads/integration/epic-a", testZeroSHA, f.epicSHA)},
+		{name: "agent deletion of other branch allowed", rig: broken, env: agent,
+			update: prePushUpd("refs/heads/feature/x", testZeroSHA, f.epicSHA)},
+		{name: "agent unknown default: master is a target too (M2)", rig: &prePushRig{name: "myrig", allowed: []string{"apps/api/**"}}, env: agent,
+			update: prePushUpd("refs/heads/master", f.bad, f.mainSHA), wantErr: "infra/secret.tf"},
+		{name: "human unknown default: master is not a target", rig: &prePushRig{name: "myrig", allowed: []string{"apps/api/**"}},
+			update: prePushUpd("refs/heads/master", f.bad, f.mainSHA)},
+		{name: "option-looking push URL refused (L1)", rig: plain, env: agent, url: "--upload-pack=touch /tmp/x",
+			update: prePushUpd("refs/heads/main", f.good, f.mainSHA), wantErr: "invalid push remote"},
 		{name: "agent unreadable scope fails closed", rig: broken, env: agent,
 			update: prePushUpd("refs/heads/main", f.good, f.mainSHA), wantErr: "parsing settings"},
-		{name: "agent outside a rig: land rejected", rig: nil, env: agent,
-			update: prePushUpd("refs/heads/main", f.land, f.mainSHA), wantErr: "auto-land treated as off"},
+		{name: "agent outside a rig: target push refused (H2)", rig: nil, env: agent,
+			update: prePushUpd("refs/heads/main", f.good, f.mainSHA), wantErr: "no Gas Town rig detected"},
+		{name: "agent outside a rig: polecat push allowed", rig: nil, env: agent,
+			update: prePushUpd("refs/heads/polecat/a", f.good, testZeroSHA)},
 		{name: "agent unreachable remote fails closed", rig: plain, env: agent, url: filepath.Join(t.TempDir(), "missing.git"),
 			update: prePushUpd("refs/heads/main", f.good, f.mainSHA), wantErr: "cannot list integration branches", forbidden: "GT_INTEGRATION_LAND"},
 		{name: "human unreachable remote fails closed with hint", rig: plain, url: filepath.Join(t.TempDir(), "missing.git"),
@@ -182,7 +197,7 @@ func TestPrePushGuard(t *testing.T) {
 			if tt.forbidden != "" && strings.Contains(err.Error(), tt.forbidden) {
 				t.Fatalf("error must not mention %q: %v", tt.forbidden, err)
 			}
-			if strings.Contains(err.Error(), f.remote) {
+			if strings.Contains(err.Error(), f.remote) || strings.Contains(err.Error(), "upload-pack") {
 				t.Fatalf("error leaks the push URL: %v", err)
 			}
 		})
@@ -261,6 +276,9 @@ func TestResolvePrePushRig(t *testing.T) {
 	if r, err := resolvePrePushRig("", cwd); err != nil || r != nil {
 		t.Fatalf("no town: r=%+v err=%v", r, err)
 	}
+	if r, err := resolvePrePushRig(town, filepath.Join(town, "deacon", "x")); err != nil || r != nil {
+		t.Fatalf("a town dir without config.json is not a rig: r=%+v err=%v", r, err)
+	}
 	if r, err := resolvePrePushRig(town, filepath.Join(town, "mayor")); err != nil || r != nil {
 		t.Fatalf("mayor dir is not a rig: r=%+v err=%v", r, err)
 	}
@@ -303,5 +321,115 @@ func TestRunHooksPrePushCommand(t *testing.T) {
 	}
 	if err := run("garbage\n", "origin", f.remote); err == nil {
 		t.Fatal("malformed input must be refused")
+	}
+}
+
+func newGuard(f prePushFixture, r *prePushRig, env ...string) *prePushGuard {
+	return &prePushGuard{
+		remote:  "origin",
+		url:     f.remote,
+		getenv:  prePushEnv(env...),
+		git:     gitpkg.NewGit(f.repo),
+		loadRig: func() (*prePushRig, error) { return r, nil },
+	}
+}
+
+// H1: deleting the integration branch on the remote must not hide a later
+// land; the local tracking ref still names its tip.
+func TestPrePushGuardDeleteThenLandStillDetected(t *testing.T) {
+	f := newPrePushFixture(t)
+	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
+	// Delete the branch on the remote directly (as a human would, no hook).
+	// Pushing by URL keeps the tracking ref: it alone must catch the land.
+	runGitForMQSubmitTest(t, f.repo, "branch", "-m", "integration/epic-a", "epic-renamed")
+	runGitForMQSubmitTest(t, f.repo, "push", f.remote, ":refs/heads/integration/epic-a")
+	land := []prePushUpdate{prePushUpd("refs/heads/main", f.land, f.mainSHA)}
+	err := newGuard(f, plain, "GT_ROLE", "refinery").check(land)
+	if err == nil || !strings.Contains(err.Error(), "integration/epic-a") {
+		t.Fatalf("land after remote deletion (tracking ref) must be refused, got %v", err)
+	}
+	// Deleting via the remote name also prunes the tracking ref; the local
+	// integration branch must then catch it.
+	runGitForMQSubmitTest(t, f.repo, "update-ref", "-d", "refs/remotes/origin/integration/epic-a")
+	runGitForMQSubmitTest(t, f.repo, "update-ref", "refs/heads/integration/epic-a", f.epicSHA)
+	err = newGuard(f, plain, "GT_ROLE", "refinery").check(land)
+	if err == nil || !strings.Contains(err.Error(), "integration/epic-a") {
+		t.Fatalf("land after remote deletion (local branch) must be refused, got %v", err)
+	}
+}
+
+// H1: an agent may delete an integration branch once it has landed.
+func TestPrePushGuardAgentDeletesLandedIntegrationBranch(t *testing.T) {
+	f := newPrePushFixture(t)
+	runGitForMQSubmitTest(t, f.repo, "push", f.remote, f.land+":refs/heads/main")
+	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
+	err := newGuard(f, plain, "GT_ROLE", "refinery").check([]prePushUpdate{
+		prePushUpd("refs/heads/integration/epic-a", testZeroSHA, f.epicSHA)})
+	if err != nil {
+		t.Fatalf("deleting a landed integration branch should pass: %v", err)
+	}
+}
+
+// L3: the new-branch base comes from the remote, not a movable local ref.
+func TestPrePushGuardNewBranchBaseIgnoresLocalTrackingRef(t *testing.T) {
+	f := newPrePushFixture(t)
+	runGitForMQSubmitTest(t, f.repo, "update-ref", "refs/remotes/origin/main", f.bad)
+	scoped := &prePushRig{name: "myrig", defaultBranch: "main", allowed: []string{"apps/api/**", "docs/**"}}
+	err := newGuard(f, scoped, "GT_ROLE", "refinery").check([]prePushUpdate{
+		prePushUpd("refs/heads/integration/epic-b", f.bad, testZeroSHA)})
+	if err == nil || !strings.Contains(err.Error(), "infra/secret.tf") {
+		t.Fatalf("moved local tracking ref must not hide out-of-scope paths, got %v", err)
+	}
+}
+
+// H2: a cwd reached through a symlink still resolves the rig, so the scope
+// check runs; outside any rig an agent push to a target is refused.
+func TestRunHooksPrePushSymlinkCwd(t *testing.T) {
+	f := newPrePushFixture(t)
+	town := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(town, "mayor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(town, "mayor", "town.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rigPath := filepath.Join(town, "myrig")
+	writeMQScopeRigSettings(t, rigPath, map[string]any{"allowed_paths": []string{"apps/api/**", "docs/**"}})
+	if err := os.WriteFile(filepath.Join(rigPath, "config.json"), []byte(`{"type":"rig","default_branch":"main"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	crew := filepath.Join(rigPath, "crew", "dom")
+	runGitForMQSubmitTest(t, town, "clone", "-q", f.repo, crew)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(crew, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(link)
+	t.Setenv("PWD", link)
+	for _, k := range agentSessionEnvVars {
+		t.Setenv(k, "")
+	}
+	t.Setenv("GT_ROLE", "crew")
+	run := func(stdin string) error {
+		hooksPrePushCmd.SetIn(strings.NewReader(stdin))
+		defer hooksPrePushCmd.SetIn(nil)
+		return runHooksPrePush(hooksPrePushCmd, []string{"origin", f.remote})
+	}
+	err := run("refs/heads/main " + f.bad + " refs/heads/main " + f.mainSHA + "\n")
+	if err == nil || !strings.Contains(err.Error(), "infra/secret.tf") {
+		t.Fatalf("scope must be enforced through a symlinked cwd, got %v", err)
+	}
+	if err := run("refs/heads/main " + f.good + " refs/heads/main " + f.mainSHA + "\n"); err != nil {
+		t.Fatalf("in-scope push through symlink should pass: %v", err)
+	}
+
+	// Outside any town: agent push to main is refused, polecat push allowed.
+	t.Chdir(f.repo)
+	if err := run("refs/heads/main " + f.good + " refs/heads/main " + f.mainSHA + "\n"); err == nil ||
+		!strings.Contains(err.Error(), "no Gas Town rig detected") {
+		t.Fatalf("agent push outside a rig must be refused, got %v", err)
+	}
+	if err := run("refs/heads/polecat/x " + f.good + " refs/heads/polecat/x " + testZeroSHA + "\n"); err != nil {
+		t.Fatalf("polecat push outside a rig: %v", err)
 	}
 }
