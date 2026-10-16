@@ -216,14 +216,15 @@ func (d *Daemon) collectIdleSnapshot() idleSnapshot {
 
 	// Every store (hq + each known rig) must be readable; a missing store
 	// means we cannot rule out activity.
+	stores := d.liveBeadsStores()
 	for _, name := range append([]string{"hq"}, rigs...) {
-		if _, ok := d.beadsStores[name]; !ok {
+		if _, ok := stores[name]; !ok {
 			errs = append(errs, fmt.Errorf("beads store %q unavailable", name))
 		}
 	}
 	ctx, cancel := context.WithTimeout(d.ctx, idleShutdownQueryTimeout)
 	defer cancel()
-	work, mrs, err := countStoreActivity(ctx, d.beadsStores)
+	work, mrs, err := countStoreActivity(ctx, stores)
 	if err != nil {
 		errs = append(errs, err)
 	}

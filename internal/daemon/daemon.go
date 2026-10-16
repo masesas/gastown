@@ -59,7 +59,6 @@ type Daemon struct {
 	cancel        context.CancelFunc
 	curator       *feed.Curator
 	convoyManager *ConvoyManager
-	beadsStores   map[string]beadsdk.Storage
 	doltServer    *DoltServerManager
 	krcPruner     *KRCPruner
 
@@ -541,7 +540,7 @@ func (d *Daemon) Run() (err error) {
 	// Start convoy manager (event-driven + periodic stranded scan)
 	// Try opening beads stores eagerly; if Dolt isn't ready yet,
 	// pass the opener as a callback for lazy retry on each poll tick.
-	d.beadsStores, err = d.openBeadsStores()
+	initialStores, err := d.openBeadsStores()
 	if err != nil {
 		return err
 	}
@@ -555,7 +554,7 @@ func (d *Daemon) Run() (err error) {
 		return !ok
 	}
 	var storeOpener func() map[string]beadsdk.Storage
-	if len(d.beadsStores) == 0 {
+	if len(initialStores) == 0 {
 		storeOpener = func() map[string]beadsdk.Storage {
 			stores, err := d.openBeadsStores()
 			if err != nil {
@@ -565,7 +564,7 @@ func (d *Daemon) Run() (err error) {
 			return stores
 		}
 	}
-	d.convoyManager = NewConvoyManager(d.config.TownRoot, d.logger.Printf, d.gtPath, 0, d.beadsStores, storeOpener, isRigParked)
+	d.convoyManager = NewConvoyManager(d.config.TownRoot, d.logger.Printf, d.gtPath, 0, initialStores, storeOpener, isRigParked)
 	if err := d.convoyManager.Start(); err != nil {
 		d.logger.Printf("Warning: failed to start convoy manager: %v", err)
 	} else {
@@ -1436,7 +1435,8 @@ func (d *Daemon) ensureBootRunning() {
 // Returns true conservatively on error or when no stores are available, so the
 // caller falls through to spawn Boot rather than suppressing it incorrectly.
 func (d *Daemon) hasActiveWork() bool {
-	if len(d.beadsStores) == 0 {
+	stores := d.liveBeadsStores()
+	if len(stores) == 0 {
 		// No stores open — cannot inspect; let Boot run to be safe.
 		return true
 	}
@@ -1444,7 +1444,7 @@ func (d *Daemon) hasActiveWork() bool {
 	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 	defer cancel()
 
-	for name, store := range d.beadsStores {
+	for name, store := range stores {
 		for _, rawStatus := range []string{"in_progress"} {
 			s := beadsdk.Status(rawStatus)
 			filter := beadsdk.IssueFilter{Status: &s, Limit: 1}
@@ -2100,6 +2100,18 @@ func (d *Daemon) killDefaultPrefixGhosts() {
 	}
 }
 
+// liveBeadsStores returns a snapshot of the beads stores currently owned by the
+// convoy manager, which is the single owner of the daemon's store set (it also
+// opens them lazily when Dolt was not ready at startup). The returned map is a
+// copy and is empty when no manager exists, stores are not yet open, or the
+// manager has been stopped. Callers must not close the stores.
+func (d *Daemon) liveBeadsStores() map[string]beadsdk.Storage {
+	if d.convoyManager == nil {
+		return nil
+	}
+	return d.convoyManager.Stores()
+}
+
 // openBeadsStores opens beads stores for the town (hq) and all known rigs.
 // Returns a map keyed by "hq" for town-level and rig names for per-rig stores.
 // Stores that fail to open are logged and skipped. Successfully opened stores
@@ -2313,7 +2325,6 @@ func (d *Daemon) shutdown(state *State) error { //nolint:unparam // error return
 		d.convoyManager.Stop()
 		d.logger.Println("Convoy manager stopped")
 	}
-	d.beadsStores = nil
 
 	// Stop KRC pruner
 	if d.krcPruner != nil {

@@ -51,11 +51,11 @@ func writeDeaconHeartbeat(t *testing.T, townRoot string, age time.Duration) {
 func newTestDaemonWithStores(t *testing.T, townRoot string, stores map[string]beadsdk.Storage) *Daemon {
 	t.Helper()
 	return &Daemon{
-		config:      &Config{TownRoot: townRoot},
-		logger:      log.New(io.Discard, "", 0),
-		tmux:        tmux.NewTmux(),
-		beadsStores: stores,
-		ctx:         context.Background(),
+		config:        &Config{TownRoot: townRoot},
+		logger:        log.New(io.Discard, "", 0),
+		tmux:          tmux.NewTmux(),
+		ctx:           context.Background(),
+		convoyManager: NewConvoyManager(townRoot, func(string, ...interface{}) {}, "gt", 0, stores, nil, nil),
 	}
 }
 
@@ -111,7 +111,7 @@ func TestHasActiveWork(t *testing.T) {
 		{
 			name: "active work in second store only",
 			stores: map[string]beadsdk.Storage{
-				"hq":  &searchStorage{results: map[string][]*beadsdk.Issue{}},
+				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{}},
 				"rig": &searchStorage{results: map[string][]*beadsdk.Issue{
 					"in_progress": {{ID: "nw-xyz"}},
 				}},
@@ -123,10 +123,10 @@ func TestHasActiveWork(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &Daemon{
-				config:      &Config{TownRoot: t.TempDir()},
-				logger:      log.New(io.Discard, "", 0),
-				beadsStores: tc.stores,
-				ctx:         context.Background(),
+				config:        &Config{TownRoot: t.TempDir()},
+				logger:        log.New(io.Discard, "", 0),
+				ctx:           context.Background(),
+				convoyManager: NewConvoyManager("", func(string, ...interface{}) {}, "gt", 0, tc.stores, nil, nil),
 			}
 			got := d.hasActiveWork()
 			if got != tc.want {
