@@ -166,3 +166,36 @@ func TestReleaseWorkBead_ReleasesWorkerWhenQueueUnreadable(t *testing.T) {
 		t.Fatalf("worker must still be released, calls:\n%s", calls)
 	}
 }
+
+type ancestorProver struct {
+	fakeProver
+	ancestorOfBase bool
+}
+
+func (a ancestorProver) IsAncestor(ancestor, descendant string) (bool, error) {
+	return a.ancestorOfBase, nil
+}
+
+// An MR whose commit was already in the target at submit (base_sha) carried no
+// new work: being reachable from the target must not read as "landed".
+func TestMRFieldsLanded_CommitAlreadyInBaseIsNotLanded(t *testing.T) {
+	fields := &MRFields{Target: "main", CommitSHA: "c1", BaseSHA: "b1"}
+	if MRFieldsLanded(StatusClosed, fields, ancestorProver{fakeProver{"c1": true}, true}) {
+		t.Fatal("commit that is an ancestor of base_sha must not count as landed")
+	}
+	if !MRFieldsLanded(StatusClosed, fields, ancestorProver{fakeProver{"c1": true}, false}) {
+		t.Fatal("new commit reachable from target must count as landed")
+	}
+	noBase := &MRFields{Target: "main", CommitSHA: "c1"}
+	if !MRFieldsLanded(StatusClosed, noBase, ancestorProver{fakeProver{"c1": true}, true}) {
+		t.Fatal("without base_sha the guard does not apply (older MRs)")
+	}
+}
+
+func TestMRFields_BaseSHARoundTrip(t *testing.T) {
+	in := &MRFields{Branch: "b", Target: "main", SourceIssue: "gt-1", CommitSHA: "c1", BaseSHA: "b1"}
+	out := ParseMRFields(&Issue{Description: FormatMRFields(in)})
+	if out == nil || out.BaseSHA != "b1" {
+		t.Fatalf("round trip lost base_sha: %+v", out)
+	}
+}

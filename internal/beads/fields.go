@@ -624,6 +624,7 @@ type MRFields struct {
 	Worker      string // Who did the work
 	Rig         string // Which rig
 	CommitSHA   string // HEAD commit SHA at submission time (GH#3032: dedup key)
+	BaseSHA     string // origin/<target> tip at submission time; commit_sha being its ancestor means no new work
 	PRURL       string // Recorded pull request URL, if one exists for this MR
 	PRNumber    int    // Recorded pull request number, scoped to the target repo
 	MergeCommit string // SHA of merge commit (set on close)
@@ -695,6 +696,9 @@ func ParseMRFields(issue *Issue) *MRFields {
 			hasFields = true
 		case "commit_sha", "commit-sha", "commitsha":
 			fields.CommitSHA = value
+			hasFields = true
+		case "base_sha", "base-sha", "basesha":
+			fields.BaseSHA = value
 			hasFields = true
 		case "pr_url", "pr-url", "prurl":
 			fields.PRURL = value
@@ -781,6 +785,9 @@ func FormatMRFields(fields *MRFields) string {
 	}
 	if fields.CommitSHA != "" {
 		lines = append(lines, "commit_sha: "+fields.CommitSHA)
+	}
+	if fields.BaseSHA != "" {
+		lines = append(lines, "base_sha: "+fields.BaseSHA)
 	}
 	if fields.PRURL != "" {
 		lines = append(lines, "pr_url: "+fields.PRURL)
@@ -883,6 +890,9 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 		"pre-verified-at":   true,
 		"preverifiedat":     true,
 		"pre_verified_base": true,
+		"base_sha":          true,
+		"base-sha":          true,
+		"basesha":           true,
 		"pre-verified-base": true,
 		"preverifiedbase":   true,
 	}

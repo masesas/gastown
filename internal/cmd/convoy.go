@@ -1791,6 +1791,10 @@ func isReadyIssue(t trackedIssueInfo, heldSet map[string]bool) bool {
 	return false // Session exists = worker is active
 }
 
+// landedHoldNoted dedups the "already landed" note to once per bead per process
+// (the daemon feeder rescans every cycle).
+var landedHoldNoted sync.Map
+
 // mergeProverResolver builds the per-rig git prover; tests override it.
 var mergeProverResolver = mergeproof.Resolver
 
@@ -1854,7 +1858,9 @@ func mergeQueueHeldIssues(townRoot string) (mergeQueueHeld, error) {
 				held = true
 				// Escape hatch for deliberate rework: a bead whose MR already
 				// landed is done. Rework needs a new bead.
-				fmt.Fprintf(os.Stderr, "note: %s not dispatched: its MR %s already landed on the target (create a new bead for rework)\n", issueID, mrID)
+				if _, seen := landedHoldNoted.LoadOrStore(issueID, true); !seen {
+					fmt.Fprintf(os.Stderr, "note: %s not dispatched: its MR %s already landed on the target (create a new bead for rework)\n", issueID, mrID)
+				}
 			}
 		}
 		memo[issueID] = held

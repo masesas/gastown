@@ -184,12 +184,20 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		style.PrintWarning("could not resolve submitted branch SHA: %v (falling back to branch-only dedup)", shaErr)
 	}
 
+	baseSHA := submitBaseSHA(g, target)
+	if err := checkSubmitHasNewWork(g, commitSHA, baseSHA, target); err != nil {
+		return err
+	}
+
 	// Build MR bead title and description
 	title := fmt.Sprintf("Merge: %s", issueID)
 	description := fmt.Sprintf("branch: %s\ntarget: %s\nsource_issue: %s\nrig: %s",
 		branch, target, issueID, rigName)
 	if commitSHA != "" {
 		description += fmt.Sprintf("\ncommit_sha: %s", commitSHA)
+	}
+	if baseSHA != "" {
+		description += fmt.Sprintf("\nbase_sha: %s", baseSHA)
 	}
 	if worker != "" {
 		description += fmt.Sprintf("\nworker: %s", worker)
@@ -305,6 +313,33 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		// polecatCleanup may timeout while waiting, but MR was already created
 	}
 
+	return nil
+}
+
+// submitBaseSHA returns the local view of origin/<target> at submit time, or ""
+// when unknown. It is recorded on the MR as base_sha.
+func submitBaseSHA(g *git.Git, target string) string {
+	sha, err := g.Rev("refs/remotes/origin/" + target + "^{commit}")
+	if err != nil {
+		return ""
+	}
+	return sha
+}
+
+// checkSubmitHasNewWork rejects a submit whose commit is already an ancestor of
+// the target: there is nothing to merge, and an MR for it would later read as
+// "landed" and close the source bead without any work (gt-pd1c.70).
+func checkSubmitHasNewWork(g *git.Git, commitSHA, baseSHA, target string) error {
+	if commitSHA == "" || baseSHA == "" {
+		return nil
+	}
+	isAncestor, err := g.IsAncestor(commitSHA, baseSHA)
+	if err != nil {
+		return nil // cannot tell; the later checks still apply
+	}
+	if isAncestor {
+		return fmt.Errorf("nothing to merge: commit %s is already on origin/%s", commitSHA, target)
+	}
 	return nil
 }
 

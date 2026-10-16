@@ -98,10 +98,12 @@ func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (
 	// One rule for merged MRs: the source bead is closed exactly when its MR is
 	// closed as merged, in this function, so no merge path (post-merge, engineer
 	// success, already-merged recheck, post-merge retry) can leave it behind.
-	// An already-terminal MR is only treated as merged when it recorded
-	// close_reason=merged, so a retry heals a source whose first close failed
-	// while a rejected MR never closes its source. The work bead is resolved
-	// before the agent's active_mr is cleared below.
+	// An already-terminal MR counts as merged when it recorded
+	// close_reason/merge_commit merged, or when git proves its commit is on the
+	// target (beads.MRFieldsLanded; covers an MR closed by hand without
+	// post-merge). A retry thus heals a source whose first close failed, while a
+	// rejected MR that never landed never closes its source. The work bead is
+	// resolved before the agent's active_mr is cleared below.
 	if mergedMRClose(opts.Reason, status, fields, opts.Prover) {
 		result.SourceCloseAttempted = true
 		result.SourceClose = closeMergedWorkBead(b, nil, opts.Out, mergedWorkBeadCloseRequest{

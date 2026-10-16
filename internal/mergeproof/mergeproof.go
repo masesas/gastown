@@ -33,6 +33,11 @@ type memoProver struct {
 	seen map[string]error
 }
 
+// IsAncestor forwards to git (beads.MRFieldsLanded's no-new-work guard).
+func (m *memoProver) IsAncestor(ancestor, descendant string) (bool, error) {
+	return m.g.IsAncestor(ancestor, descendant)
+}
+
 func (m *memoProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
 	key := remote + "\x00" + branch + "\x00" + commit
 	m.mu.Lock()

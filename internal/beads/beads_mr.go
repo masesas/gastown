@@ -192,7 +192,21 @@ func MRFieldsLanded(status IssueStatus, fields *MRFields, prover MergeProver) bo
 	if prover == nil || target == "" || commit == "" {
 		return false
 	}
+	// A commit already in the target when the MR was submitted carried no new
+	// work; reachability would then be a false positive.
+	if base := strings.TrimSpace(fields.BaseSHA); base != "" {
+		if a, ok := prover.(ancestorChecker); ok {
+			if isAnc, err := a.IsAncestor(commit, base); err != nil || isAnc {
+				return false
+			}
+		}
+	}
 	return prover.VerifyPushedCommitReachableFromPushTarget("origin", target, commit) == nil
+}
+
+// ancestorChecker is optionally implemented by a MergeProver (*git.Git does).
+type ancestorChecker interface {
+	IsAncestor(ancestor, descendant string) (bool, error)
 }
 
 // MergeRequestsBySource lists pending and closed MRs of this DB grouped by
