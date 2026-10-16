@@ -129,3 +129,34 @@ func TestPickReplyTo(t *testing.T) {
 		}
 	})
 }
+
+func TestHumanRecipient(t *testing.T) {
+	tests := []struct {
+		name    string
+		toFlag  string
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{name: "human only", want: "overseer"},
+		{name: "with positional address", args: []string{"mayor/"}, wantErr: true},
+		{name: "with --to", toFlag: "mayor/", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := humanRecipient(tt.toFlag, tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMailSendHasHumanFlag(t *testing.T) {
+	if mailSendCmd.Flags().Lookup("human") == nil {
+		t.Fatal("gt mail send --human is documented (AGENTS.md, role templates, formulas) but not defined")
+	}
+}
