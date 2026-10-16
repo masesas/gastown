@@ -67,7 +67,7 @@ func runMailSend(cmd *cobra.Command, args []string) error {
 	} else if len(args) > 0 {
 		to = args[0]
 	} else {
-		return fmt.Errorf("address required (use positional arg, --to, or --self)")
+		return fmt.Errorf("address required (use positional arg, --to, --self, or --human)")
 	}
 
 	// All mail uses town beads (two-level architecture)
