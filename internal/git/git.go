@@ -2281,6 +2281,11 @@ func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
 	return true, nil
 }
 
+// MergeBase returns the best common ancestor of a and b (git merge-base).
+func (g *Git) MergeBase(a, b string) (string, error) {
+	return g.run("merge-base", a, b)
+}
+
 // Cherry runs `git cherry <upstream> <head>` to list commits on head that are
 // not yet on upstream, comparing by patch-id. Each output line is prefixed with
 // "+ " (patch not on upstream) or "- " (patch already applied upstream, e.g.

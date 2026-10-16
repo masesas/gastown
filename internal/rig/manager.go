@@ -23,6 +23,7 @@ import (
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/hooks"
+	"github.com/steveyegge/gastown/internal/pushguard"
 	"github.com/steveyegge/gastown/internal/templates/commands"
 	"github.com/steveyegge/gastown/internal/util"
 )
@@ -888,6 +889,16 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	if err := m.createPluginDirectories(rigPath); err != nil {
 		// Non-fatal: log warning but continue
 		fmt.Fprintf(os.Stderr, "  Warning: Could not create plugin directories: %v\n", err)
+	}
+
+	// Install the Gas Town managed pre-push guard in the shared repo (covers
+	// refinery and polecat worktrees) and mayor/rig (gt-pd1c.72). Non-fatal:
+	// gt doctor reports and fixes a missing guard; a conflict needs a human.
+	if _, err := pushguard.EnsureRig(rigPath); err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: pre-push guard not fully installed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Run 'gt doctor' for details.\n")
+	} else {
+		fmt.Printf("   ✓ Installed pre-push guard\n")
 	}
 
 	// Register in town config

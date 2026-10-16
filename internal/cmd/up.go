@@ -29,6 +29,7 @@ import (
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/mayor"
 	"github.com/steveyegge/gastown/internal/polecat"
+	"github.com/steveyegge/gastown/internal/pushguard"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
@@ -285,6 +286,10 @@ func runUp(cmd *cobra.Command, args []string) error {
 	}()
 
 	startupWg.Wait()
+
+	// Ensure the managed pre-push guard in every rig repo before agents start
+	// pushing (gt-pd1c.72). Idempotent; problems are warnings (gt doctor).
+	ensureRigPrePushGuards(townRoot, rigs)
 
 	// Ensure beads metadata points to the Dolt server
 	if !doltSkipped && doltOK {
@@ -1194,4 +1199,14 @@ func recoverOrphanedBeads(townRoot string, rigs []string, prefetchedRigs map[str
 	router.WaitPendingNotifications()
 
 	return services
+}
+
+// ensureRigPrePushGuards installs the Gas Town managed pre-push hook in every
+// rig's repositories. Failures and conflicts are reported, never fatal.
+func ensureRigPrePushGuards(townRoot string, rigNames []string) {
+	for _, name := range rigNames {
+		if _, err := pushguard.EnsureRig(filepath.Join(townRoot, name)); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: pre-push guard for rig %s: %v (run 'gt doctor')\n", name, err)
+		}
+	}
 }

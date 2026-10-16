@@ -480,13 +480,27 @@ the Refinery runs it only when `integration_branch_auto_land` is `true`.
 
 ### Layer 2: Pre-Push Hook
 
-The `.githooks/pre-push` hook detects when a push to the default branch
-introduces integration branch content. It uses ancestry-based detection:
-if any `origin/integration/*` branch tip becomes newly reachable from the
-pushed commits, the push is blocked unless `GT_INTEGRATION_LAND=1` is set.
+Gas Town installs a managed pre-push hook in every rig repository (shared
+`.repo.git`, `mayor/rig`, crew clones; see `docs/HOOKS.md`, "Rig pre-push
+guard"). It runs `gt hooks pre-push`, which detects when a push to the default
+branch or to `integration/*` introduces the content of another integration
+branch. It uses ancestry-based detection: if the tip of any `integration/*`
+branch on the push remote becomes newly reachable from the pushed commits, the
+push is a land.
 
-The default branch is detected dynamically via `refs/remotes/origin/HEAD`
-(fallback: `main`), so this works regardless of the rig's branch naming.
+- **Agents** (`GT_ROLE`, `BD_ACTOR`, `GT_POLECAT` or `GT_CREW` set) are refused
+  when `integration_branch_auto_land` is not `true`, even with
+  `GT_INTEGRATION_LAND=1`. With auto-land on they may land only through
+  `gt mq integration land`.
+- **Humans** are refused unless `GT_INTEGRATION_LAND=1` is set.
+
+The same hook enforces `merge_queue.allowed_paths` on every agent push to the
+default branch or `integration/*`. The Gas Town repository's own
+`.githooks/pre-push` delegates to the same command.
+
+The default branch is the rig's `default_branch`, falling back to
+`refs/remotes/origin/HEAD` (then `main`), so this works regardless of the rig's
+branch naming.
 
 This catches all merge styles: `--no-ff`, `--ff-only`, default merge, and
 rebase. Only cherry-picks (which produce new SHAs) are not detected.
@@ -496,17 +510,26 @@ default template). Custom templates that produce branches outside `integration/`
 are not covered by the hook — Layer 1 (formula language) is the guardrail for
 those cases.
 
-**Requires**: `core.hooksPath` must be configured for the hook to be active.
-New rigs get this automatically. Existing rigs: run `gt doctor --fix`.
+**Requires**: the managed hook installed and `gt` on `PATH` (without `gt` the
+hook refuses every push). `gt rig add`, `gt up`, polecat and crew creation
+install it; `gt doctor` (`rig-prepush-guard`) reports gaps and `gt doctor --fix`
+installs it. A project hook is chained, never overwritten; a project-owned
+`core.hooksPath` must call `gt hooks pre-push` itself (reported otherwise).
+
+**Limit**: a local hook can be skipped by the pusher (for example with
+`--no-verify` or by overriding `core.hooksPath`). For a real project, point the
+rig at a mirror and protect the real remote's branches
+(`docs/enh-masesas/runbook-real-project.md`, section 2).
 
 ### Layer 3: Authorized Code Path
 
 The `gt mq integration land` command uses `PushWithEnv()` to set
 `GT_INTEGRATION_LAND=1`, allowing the push through the hook. Raw `git push`
 from any agent or user does not set this variable and will be blocked.
-Manually setting the env var is possible but is not part of the supported
-workflow — the variable is a policy-based trust boundary, not a
-capability-based security mechanism.
+Manually setting the env var is possible for a human but is not part of the
+supported workflow — the variable is a policy-based trust boundary, not a
+capability-based security mechanism. For agents it is ignored while auto-land
+is off.
 
 When auto-land is disabled the command itself refuses agent callers (detected
 from the agent identity env vars), so an agent that ignores Layer 1 still
@@ -518,7 +541,7 @@ that clears its identity variables is not detected.
 | Layer | Type | Strength | Limitation |
 |-------|------|----------|------------|
 | Formula/Role | Soft | Covers all branch patterns | AI agents can ignore instructions |
-| Pre-push hook | Hard | Blocks all merge styles at git boundary | Only matches `integration/*` prefix; env var is policy-based |
+| Pre-push hook | Hard | Blocks all merge styles at git boundary; agents cannot land with auto-land off; enforces `allowed_paths` | Only matches `integration/*` prefix; local hook can be skipped; agent detection is env-based |
 | Code path | Hard | Land command sets bypass env var; refuses agents when auto-land is off | Requires hook to be active; agent detection is env-based |
 
 The layers complement each other. The formula covers custom templates; the hook

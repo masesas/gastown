@@ -1,11 +1,19 @@
 #!/bin/bash
-# Block PRs by preventing pushes to arbitrary feature branches.
-# Gas Town agents push to main (crew) or polecat/* branches (polecats).
-# PRs are for external contributors only.
+# Pre-push hook of the Gas Town repository itself (core.hooksPath=.githooks).
 #
-# Also enforces integration branch landing guardrails: pushes to the default
-# branch that introduce integration branch content are blocked unless
-# GT_INTEGRATION_LAND=1 is set (only gt mq integration land sets this).
+# 1. Block PRs by preventing pushes to arbitrary feature branches.
+#    Gas Town agents push to main (crew) or polecat/* branches (polecats).
+#    PRs are for external contributors only.
+# 2. Refuse pushing a branch you are not standing on (HEAD-mismatch guard).
+# 3. Integration landing + merge scope: delegated to `gt hooks pre-push`, the
+#    single source of truth shared with the managed hook Gas Town installs in
+#    rig repos (gt-pd1c.72). Agents (GT_ROLE/BD_ACTOR/GT_POLECAT/GT_CREW) may
+#    not land while merge_queue.integration_branch_auto_land is off, whatever
+#    GT_INTEGRATION_LAND says. The bash fallback below only runs when no gt
+#    with `hooks pre-push` is on PATH; it is stricter for agents (no land).
+#
+# Local hooks can be skipped by the pusher; protect the real remote with
+# branch protection (docs/HOOKS.md, "Rig pre-push guard").
 
 # Detect the rig's default branch dynamically.
 # Fallback chain matches Go implementation (git.RemoteDefaultBranch):
@@ -21,12 +29,26 @@ if [[ -z "$default_branch" ]]; then
   fi
 fi
 
+# Same identity variables as the Go guard (agentSessionEnvVars).
+is_agent=0
+for v in GT_ROLE BD_ACTOR GT_POLECAT GT_CREW; do
+  val="${!v}"
+  if [[ -n "${val//[[:space:]]/}" ]]; then
+    is_agent=1
+  fi
+done
+
+zero=0000000000000000000000000000000000000000
+input=$(cat)
+
 # Allowed patterns:
 #   <default_branch>, beads-sync  - Direct work branches
 #   polecat/*                     - Polecat working branches (Refinery merges these)
 #   integration/*                 - Integration branches (created by gt mq integration)
 
 while read local_ref local_sha remote_ref remote_sha; do
+  [[ -z "$remote_ref" ]] && continue
+
   # Skip tags - they're allowed for releases
   if [[ "$remote_ref" == refs/tags/* ]]; then
     continue
@@ -43,7 +65,7 @@ while read local_ref local_sha remote_ref remote_sha; do
   # Override for intentional cross-branch pushes: GT_ALLOW_OFFBRANCH_PUSH=1
   if [[ "${GT_ALLOW_OFFBRANCH_PUSH:-0}" != "1" \
         && "$local_ref" == refs/heads/* \
-        && "$local_sha" != "0000000000000000000000000000000000000000" ]]; then
+        && "$local_sha" != "$zero" ]]; then
     head_branch=$(git symbolic-ref --short -q HEAD || echo "")
     pushed_branch="${local_ref#refs/heads/}"
     if [[ -n "$head_branch" && "$head_branch" != "$pushed_branch" ]]; then
@@ -84,41 +106,62 @@ while read local_ref local_sha remote_ref remote_sha; do
       fi
       ;;
   esac
+done <<< "$input"
 
-  # Integration branch landing guardrail: when pushing to the default branch,
-  # check if any integration branch tip is newly reachable from this push.
-  # This catches merges (--no-ff, --ff-only, default) and rebases.
-  # Only cherry-picks (new SHAs) are not detected — Layer 1 covers those.
-  if [[ "$branch" == "$default_branch" ]] && [[ "$GT_INTEGRATION_LAND" != "1" ]]; then
-    # Skip for deletions or initial pushes
-    if [[ "$remote_sha" == "0000000000000000000000000000000000000000" ]] || \
-       [[ "$local_sha" == "0000000000000000000000000000000000000000" ]]; then
-      continue
+# Integration landing + merge scope: delegate to the Go guard when available.
+if command -v gt >/dev/null 2>&1 && gt hooks pre-push --help >/dev/null 2>&1; then
+  if [[ -n "$input" ]]; then
+    printf '%s\n' "$input" | gt hooks pre-push "$@" || exit 1
+  fi
+  exit 0
+fi
+
+# Fallback (no gt with `hooks pre-push` on PATH): integration landing guardrail.
+# When pushing to the default branch, check if any integration branch tip is
+# newly reachable from this push. This catches merges (--no-ff, --ff-only,
+# default) and rebases. Only cherry-picks (new SHAs) are not detected — Layer 1
+# covers those. GT_INTEGRATION_LAND=1 (set by gt mq integration land) skips the
+# check for humans only; agents cannot land through this fallback at all.
+while read local_ref local_sha remote_ref remote_sha; do
+  [[ -z "$remote_ref" ]] && continue
+  branch="${remote_ref#refs/heads/}"
+  [[ "$branch" == "$default_branch" ]] || continue
+  if [[ "$is_agent" == "0" && "$GT_INTEGRATION_LAND" == "1" ]]; then
+    continue
+  fi
+  # Skip for deletions or initial pushes
+  if [[ "$remote_sha" == "$zero" ]] || [[ "$local_sha" == "$zero" ]]; then
+    continue
+  fi
+  # Use ls-remote instead of for-each-ref to avoid false positives from stale
+  # local tracking refs that may linger after branch deletion.
+  # Fail closed: if ls-remote fails (network error), block the push rather than
+  # silently allowing unverified integration branch content through.
+  integration_refs=$(git ls-remote --quiet origin "refs/heads/integration/*" 2>&1) || {
+    echo "WARNING: Cannot verify integration branches (remote unreachable)."
+    echo "Push to $default_branch blocked. Retry when network is available."
+    if [[ "$is_agent" == "0" ]]; then
+      echo "For an intentional land, GT_INTEGRATION_LAND=1 skips this check."
     fi
-    # Check if any integration branch tip is newly reachable from this push.
-    # Use ls-remote instead of for-each-ref to avoid false positives from stale
-    # local tracking refs that may linger after branch deletion.
-    # Fail closed: if ls-remote fails (network error), block the push rather than
-    # silently allowing unverified integration branch content through.
-    integration_refs=$(git ls-remote --quiet origin "refs/heads/integration/*" 2>&1) || {
-      echo "WARNING: Cannot verify integration branches (remote unreachable)."
-      echo "Push to $default_branch blocked. Retry when network is available,"
-      echo "or set GT_INTEGRATION_LAND=1 if this is an intentional land operation."
-      exit 1
-    }
-    for ref in $(echo "$integration_refs" | awk '{print $1}'); do
-      if git merge-base --is-ancestor "$ref" "$local_sha" && \
-         ! git merge-base --is-ancestor "$ref" "$remote_sha"; then
-        echo "BLOCKED: Push to $default_branch introduces integration branch content."
-        echo ""
+    exit 1
+  }
+  for ref in $(echo "$integration_refs" | awk '{print $1}'); do
+    if git merge-base --is-ancestor "$ref" "$local_sha" 2>/dev/null && \
+       ! git merge-base --is-ancestor "$ref" "$remote_sha" 2>/dev/null; then
+      echo "BLOCKED: Push to $default_branch introduces integration branch content."
+      echo ""
+      if [[ "$is_agent" == "1" ]]; then
+        echo "Agents may not land integration branches from this hook."
+        echo "A human must run: gt mq integration land <epic-id>"
+      else
         echo "Integration branches must be landed via: gt mq integration land <epic-id>"
         echo ""
         echo "This guardrail prevents accidental landing of integration branches."
         echo "The gt mq integration land command sets GT_INTEGRATION_LAND=1 to bypass this check."
-        exit 1
       fi
-    done
-  fi
-done
+      exit 1
+    fi
+  done
+done <<< "$input"
 
 exit 0

@@ -201,6 +201,82 @@ Additional hooks exist in settings.json files but are not yet in the registry:
    (base -> override) produces deterministic order, and per-matcher merge
    ensures one entry per event type.
 
+## Rig pre-push guard
+
+Everything above manages Claude Code hooks. The rig pre-push guard is a
+**git** hook that Gas Town installs in every rig repository agents push from
+(gt-pd1c.72). It exists because instructions alone did not stop an agent: in a
+pilot the refinery merged nine MRs with a raw `git push origin temp-mr:<target>`
+and once landed an epic on `main` without approval. Project repos have no
+pre-push hook of their own, and the Gas Town repo's `.githooks/pre-push` only
+guards the Gas Town repo itself.
+
+### What is installed where
+
+The hook file is a short `/bin/sh` shim (marker `gastown-managed-pre-push`,
+code in `internal/pushguard`). It pipes git's pre-push input to
+`gt hooks pre-push <remote> <url>` and, if that passes, runs the project's own
+hook. If `gt` is not on `PATH` the push is refused.
+
+| Repository | Hook file |
+|---|---|
+| `<rig>/.repo.git` (shared bare repo) | `.repo.git/hooks/pre-push`, which also serves `refinery/rig` and every polecat worktree |
+| `<rig>/mayor/rig`, `<rig>/crew/<name>` (separate clones) | `<clone>/.git/hooks/pre-push` |
+
+It is installed (idempotently; an up-to-date hook is never rewritten) by
+`gt rig add`, `gt up` (all rigs, before agents start), polecat worktree
+creation/repair/reuse and `gt crew add`, and checked by `gt doctor`
+(`rig-prepush-guard`, fixable with `gt doctor --fix`). Installation problems are
+warnings, never fatal.
+
+**Project hooks are chained, never overwritten.**
+
+- `core.hooksPath` unset and a project `pre-push` already present: it is kept
+  as `pre-push.gt-chained` (hard link, so an existing chained file is never
+  clobbered) and runs after the Gas Town check with the same arguments and
+  stdin. A non-zero exit from either rejects the push. If both `pre-push`
+  (foreign) and `pre-push.gt-chained` exist, the repo is reported as a
+  conflict and left alone.
+- `core.hooksPath` set (a project-owned, usually tracked, directory such as
+  `.githooks`): Gas Town does not write there. The repo counts as guarded
+  ("delegated") when that `pre-push` contains `gt hooks pre-push` and feeds it
+  git's stdin, e.g. `printf '%s\n' "$input" | gt hooks pre-push "$@" || exit 1`;
+  otherwise `gt doctor` reports a conflict. The Gas Town repo's own
+  `.githooks/pre-push` delegates this way.
+
+### Rules (`gt hooks pre-push`)
+
+A caller is an **agent** when `GT_ROLE`, `BD_ACTOR`, `GT_POLECAT` or `GT_CREW`
+is set (the same helper as the `gt mq integration land` gate).
+
+| Push | Agent | Human |
+|---|---|---|
+| `polecat/*`, other branches, tags, deletions | allowed, nothing checked | allowed |
+| Default branch or `integration/*` that newly contains the tip of another `integration/*` branch on the push remote (a land) | refused when `merge_queue.integration_branch_auto_land` is not `true`, **even with `GT_INTEGRATION_LAND=1`**; with auto-land on, allowed only from `gt mq integration land` (`GT_INTEGRATION_LAND=1`) | refused unless `GT_INTEGRATION_LAND=1` (set by `gt mq integration land`) |
+| Default branch or `integration/*` | every changed path in `remote_sha..local_sha` (new branch: merge-base with the default branch `..local_sha`) must match `merge_queue.allowed_paths`, when set | not scope-checked |
+
+The default branch is the rig's `default_branch` (`<rig>/config.json`),
+falling back to `origin/HEAD`. The rig is derived from the directory
+(`<town>/<rig>/...`) and its settings are read straight from
+`<rig>/settings/config.json`. Fail closed: an unreadable settings file means
+auto-land off and an unknown scope (agent pushes to targets refused); a
+remote that cannot be listed, a remote tip missing locally, or a malformed
+input line refuses the push. Refusals never print the push URL, and messages
+to agents never suggest `GT_INTEGRATION_LAND`.
+
+Land detection compares against integration branches that exist on the push
+remote. Creating a branch (remote sha all zeros) is never a land; it is still
+scope-checked. Cherry-picked integration commits (new SHAs) are not detected.
+
+### Limits
+
+A local hook is advisory against a determined caller: `git push --no-verify`,
+`git -c core.hooksPath=/dev/null push`, deleting the hook, or clearing the
+agent variables skip it. The hard boundary for a real project is the remote:
+point the rig at a local mirror and protect the real origin's branches, with
+promotion through a human-reviewed PR (see
+`docs/enh-masesas/runbook-real-project.md`, section 2).
+
 ## Integration
 
 ### `gt rig add`

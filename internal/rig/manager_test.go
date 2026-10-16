@@ -14,6 +14,7 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/pushguard"
 )
 
 func setupTestTown(t *testing.T) (string, *config.RigsConfig) {
@@ -2007,6 +2008,21 @@ func TestAddRig_BranchFlag(t *testing.T) {
 		}
 		if cfg.DefaultBranch != "develop" {
 			t.Errorf("config.json DefaultBranch = %q, want %q", cfg.DefaultBranch, "develop")
+		}
+	})
+
+	t.Run("pre-push guard installed in every rig repo (gt-pd1c.72)", func(t *testing.T) {
+		sts, err := pushguard.InspectRig(rigPath)
+		if err != nil {
+			t.Fatalf("InspectRig: %v", err)
+		}
+		if len(sts) < 2 { // .repo.git (refinery shares it) + mayor/rig
+			t.Fatalf("want guard status for .repo.git and mayor/rig, got %+v", sts)
+		}
+		for _, st := range sts {
+			if st.State != pushguard.StateInstalled {
+				t.Errorf("%s: state %s, want installed", st.RepoPath, st.State)
+			}
 		}
 	})
 }
