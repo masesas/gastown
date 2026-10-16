@@ -63,8 +63,9 @@ to final land, without any manual branch targeting.
 
 9. **Land when complete.** When all children under the epic are closed, the
    integration branch is ready to land. If `integration_branch_auto_land` is
-   enabled, the Refinery does this automatically during patrol. Otherwise,
-   land manually:
+   enabled, the Refinery does this automatically during patrol. Otherwise a
+   **human** lands it (the Refinery only mails the mayor `READY_TO_LAND`, and
+   the command refuses agent callers):
    ```bash
    gt mq integration land gt-auth-epic
    ```
@@ -343,6 +344,25 @@ gt mq integration land <epic-id> [flags]
 | `--skip-tests` | Skip test run after merge | `false` |
 | `--dry-run` | Preview only, make no changes | `false` |
 
+**Who may run it:** when the rig has `integration_branch_auto_land` unset or
+`false`, only a human may land. A caller whose environment carries an agent
+identity (`GT_ROLE`, `BD_ACTOR`, `GT_POLECAT` or `GT_CREW`) is refused before
+any fetch or merge with `auto-land disabled for rig <rig>; a human must run gt
+mq integration land <epic-id>`. `--force` does not bypass this; `--dry-run` is
+still allowed for agents. With `integration_branch_auto_land: true` agents may
+land as before. If the rig settings file cannot be read, auto-land counts as off
+and the refusal includes the read error.
+
+Operators land from a plain shell: open a fresh terminal (outside any agent
+tmux session), or strip the agent variables for one command:
+
+```bash
+env -u GT_ROLE -u BD_ACTOR -u GT_POLECAT -u GT_CREW gt mq integration land <epic-id>
+```
+
+Note that `BD_ACTOR` exported in your own shell rc also identifies you as an
+agent and triggers the refusal.
+
 **What it does:**
 
 1. Verifies epic exists and has an integration branch
@@ -436,7 +456,9 @@ Both config gates must be true:
 - `integration_branch_refinery_enabled: true` (integration feature is on)
 - `integration_branch_auto_land: true` (auto-landing is on)
 
-If either is false, the patrol step exits early.
+If either is false, the patrol step does not land. With auto-land off the
+Refinery mails the mayor `READY_TO_LAND <epic-id>` once per ready epic (marking
+the epic `land-ready-notified`) so a human can land it.
 
 ### When to Enable
 
@@ -453,7 +475,8 @@ Integration branch landing is protected by a three-layer defense:
 ### Layer 1: Formula and Role Instructions
 
 The refinery formula and role template explicitly forbid landing integration
-branches via raw git commands. Only `gt mq integration land` is authorized.
+branches via raw git commands. Only `gt mq integration land` is authorized, and
+the Refinery runs it only when `integration_branch_auto_land` is `true`.
 
 ### Layer 2: Pre-Push Hook
 
@@ -485,13 +508,18 @@ Manually setting the env var is possible but is not part of the supported
 workflow — the variable is a policy-based trust boundary, not a
 capability-based security mechanism.
 
+When auto-land is disabled the command itself refuses agent callers (detected
+from the agent identity env vars), so an agent that ignores Layer 1 still
+cannot land through the authorized path. This is also policy-based: an agent
+that clears its identity variables is not detected.
+
 ### Why Three Layers?
 
 | Layer | Type | Strength | Limitation |
 |-------|------|----------|------------|
 | Formula/Role | Soft | Covers all branch patterns | AI agents can ignore instructions |
 | Pre-push hook | Hard | Blocks all merge styles at git boundary | Only matches `integration/*` prefix; env var is policy-based |
-| Code path | Hard | Land command sets bypass env var | Requires hook to be active |
+| Code path | Hard | Land command sets bypass env var; refuses agents when auto-land is off | Requires hook to be active; agent detection is env-based |
 
 The layers complement each other. The formula covers custom templates; the hook
 provides hard enforcement for default templates (catching merges, fast-forwards,
