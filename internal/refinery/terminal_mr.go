@@ -3,6 +3,7 @@ package refinery
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
@@ -14,6 +15,10 @@ type terminalMRCloseOptions struct {
 	AgentBeadHint string
 	MissingOK     bool
 	ExpectedMR    *MergeRequest
+	// Target and Out only matter for merged closes: Target is recorded in the
+	// source bead's close reason, Out receives its progress/warning lines.
+	Target string
+	Out    io.Writer
 }
 
 type terminalMRCloseResult struct {
@@ -24,6 +29,11 @@ type terminalMRCloseResult struct {
 	AlreadyTerminal       bool
 	AgentActiveMRCleared  bool
 	AgentActiveMRClearErr error
+
+	// SourceClose is the outcome of closing the source (work) bead; it is only
+	// meaningful when SourceCloseAttempted (the MR is merged-terminal).
+	SourceClose          mergedWorkBeadCloseResult
+	SourceCloseAttempted bool
 }
 
 func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (*terminalMRCloseResult, error) {
@@ -81,12 +91,45 @@ func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (
 		return result, nil
 	}
 
+	// One rule for merged MRs: the source bead is closed exactly when its MR is
+	// closed as merged, in this function, so no merge path (post-merge, engineer
+	// success, already-merged recheck, post-merge retry) can leave it behind.
+	// An already-terminal MR is only treated as merged when it recorded
+	// close_reason=merged, so a retry heals a source whose first close failed
+	// while a rejected MR never closes its source. The work bead is resolved
+	// before the agent's active_mr is cleared below.
+	if mergedMRClose(opts.Reason, status, fields) {
+		result.SourceCloseAttempted = true
+		result.SourceClose = closeMergedWorkBead(b, nil, opts.Out, mergedWorkBeadCloseRequest{
+			MRID:   mrID,
+			Target: firstNonEmpty(opts.Target, fields.Target),
+			SourceIssue: resolveMergedWorkBead(b.ForAgentBead(), mergedWorkBeadCloseRequest{
+				MRID:        mrID,
+				Branch:      fields.Branch,
+				SourceIssue: fields.SourceIssue,
+				AgentBead:   result.AgentBead,
+			}),
+			MergeCommit: firstNonEmpty(opts.MergeCommit, fields.MergeCommit),
+		})
+	}
+
 	if result.AgentBead != "" {
 		cleared, clearErr := b.ForAgentBead().ClearAgentActiveMRIfMatches(result.AgentBead, mrID)
 		result.AgentActiveMRCleared = cleared
 		result.AgentActiveMRClearErr = clearErr
 	}
 	return result, nil
+}
+
+// mergedMRClose reports whether this close leaves the MR terminal as merged.
+func mergedMRClose(reason string, prior beads.IssueStatus, fields *beads.MRFields) bool {
+	if normalizedMRCloseReason(reason) != string(CloseReasonMerged) {
+		return false
+	}
+	if prior == beads.StatusOpen {
+		return true
+	}
+	return prior.IsTerminal() && strings.EqualFold(strings.TrimSpace(fields.CloseReason), string(CloseReasonMerged))
 }
 
 func validateTerminalMRCloseSnapshot(mrID string, fields *beads.MRFields, expected *MergeRequest) error {

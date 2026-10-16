@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -30,6 +31,10 @@ type DispatchResult struct {
 // dispatchTaskDirect dispatches a single task to its rig.
 // In production, this delegates to gt sling. Tests override this variable
 // with a stub to avoid spawning real processes.
+// mergeQueueHeldFn lists beads that must not be dispatched because their MR is
+// pending or merged. Tests override it.
+var mergeQueueHeldFn = mergeQueueHeldIssues
+
 var dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
 	cmd := exec.Command("gt", convoyops.SlingArgs(beadID, rig, baseBranch)...)
 	cmd.Dir = townRoot
@@ -199,11 +204,14 @@ func dispatchWave1(convoyID string, dag *ConvoyDAG, waves []Wave, townRoot, base
 // readyUndispatchedTasks returns the slingable tasks of the DAG that still need
 // a worker: status open, no assignee, and every execution blocker closed. Beads
 // that are hooked, in progress, assigned, or finished are never returned, which
-// keeps re-launching an open convoy idempotent. Result is sorted by ID.
-func readyUndispatchedTasks(dag *ConvoyDAG) []string {
+// keeps re-launching an open convoy idempotent. held are beads whose work is
+// in or through a merge request (mergeQueueHeldIssues, the same predicate the
+// convoy feeder uses): a bead whose MR merged is finished even if its status
+// was never closed. Result is sorted by ID.
+func readyUndispatchedTasks(dag *ConvoyDAG, held map[string]bool) []string {
 	var ready []string
 	for id, node := range dag.Nodes {
-		if !isSlingableType(node.Type) || node.Status != "open" || node.Assignee != "" {
+		if !isSlingableType(node.Type) || node.Status != "open" || node.Assignee != "" || held[id] {
 			continue
 		}
 		blocked := false
@@ -224,8 +232,15 @@ func readyUndispatchedTasks(dag *ConvoyDAG) []string {
 // dispatchReadyTasks dispatches every ready, undispatched task of an already
 // open convoy. Individual failures do not abort the remaining dispatches.
 func dispatchReadyTasks(dag *ConvoyDAG, townRoot, baseBranch string) []DispatchResult {
+	held, err := mergeQueueHeldFn(townRoot)
+	if err != nil {
+		// Fail closed, as the feeder does: dispatching without knowing which
+		// beads already merged risks re-running finished work.
+		fmt.Fprintf(os.Stderr, "⚠ Warning: holding relaunch dispatch, cannot read merge queues: %v\n", err)
+		return nil
+	}
 	var results []DispatchResult
-	for _, taskID := range readyUndispatchedTasks(dag) {
+	for _, taskID := range readyUndispatchedTasks(dag, held) {
 		rig := dag.Nodes[taskID].Rig
 		err := dispatchTaskDirect(townRoot, taskID, rig, baseBranch)
 		skipped := err != nil && beadTakenByOther(taskID)

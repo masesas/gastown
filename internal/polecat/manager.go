@@ -2719,6 +2719,7 @@ func (m *Manager) ClearIssue(name string) error {
 
 // unassignWorkBeads finds all active work beads assigned to a polecat and resets them
 // to status=open with an empty assignee, so they can be picked up by another polecat.
+// Beads whose MR already merged are closed instead (beads.ReleaseWorkBead).
 // This must be called during polecat removal to prevent orphaned beads (gt-e4u1).
 // Agent beads are skipped (handled separately by ResetAgentBeadForReuse).
 // Errors are logged as warnings but do not block removal.
@@ -2731,12 +2732,8 @@ func (m *Manager) unassignWorkBeads(name string) {
 	}
 
 	for _, issue := range activeWorkBeadsForCleanup(issues) {
-		openStatus := "open"
-		empty := ""
-		if err := m.beads.Update(issue.ID, beads.UpdateOptions{
-			Status:   &openStatus,
-			Assignee: &empty,
-		}); err != nil {
+		// Merged work is closed, not reopened (ReleaseWorkBead).
+		if _, err := m.beads.ReleaseWorkBead(issue.ID); err != nil {
 			style.PrintWarning("could not unassign bead %s from %s: %v", issue.ID, name, err)
 		}
 	}

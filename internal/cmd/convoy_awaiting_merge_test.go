@@ -114,6 +114,27 @@ func TestFindStrandedConvoys_FeedsIssueAfterMRClosed(t *testing.T) {
 	}
 }
 
+// Pilot kp-4az.5: the MR merged and left the queue but the source bead was not
+// closed (still open/hooked). A merged MR means the work is done, so the
+// feeder must not sling it again.
+func TestFindStrandedConvoys_HoldsIssueWhoseMRMerged(t *testing.T) {
+	merged := `    printf '%s\n' '[{"id":"gt-wisp-mr1","title":"Merge: gt-work1","status":"closed","description":"branch: polecat/rust/gt-work1\ntarget: integration/gt-epic\nsource_issue: gt-work1\nclose_reason: merged\nmerge_commit: abc123\n","labels":["gt:merge-request"]}]'`
+	if s := strandedWithMRQuery(t, merged); s.ReadyCount != 0 {
+		t.Fatalf("ReadyCount = %d (%v), want 0: MR merged, issue is done", s.ReadyCount, s.ReadyIssues)
+	}
+	if s := strandedWithIssueAndMRQuery(t, "hooked", "gastown/polecats/rust", merged); s.ReadyCount != 0 {
+		t.Fatalf("hooked: ReadyCount = %d (%v), want 0: MR merged", s.ReadyCount, s.ReadyIssues)
+	}
+}
+
+// A rejected MR needs rework, so its issue stays feedable.
+func TestFindStrandedConvoys_FeedsIssueAfterMRRejected(t *testing.T) {
+	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"closed","description":"source_issue: gt-work1\nclose_reason: rejected\n","labels":["gt:merge-request"]}]'`)
+	if s.ReadyCount != 1 {
+		t.Fatalf("ReadyCount = %d, want 1 after MR rejected", s.ReadyCount)
+	}
+}
+
 // A pending MR for a different issue (prefix match only) must not hold it.
 func TestFindStrandedConvoys_IgnoresMRForOtherIssue(t *testing.T) {
 	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr2","status":"open","description":"source_issue: gt-work10\n","labels":["gt:merge-request"]}]'`)

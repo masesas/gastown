@@ -784,6 +784,8 @@ func (m *Manager) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResul
 		MergeCommit:   mr.MergeCommit,
 		AgentBeadHint: mr.AgentBead,
 		ExpectedMR:    mr,
+		Target:        mr.TargetBranch,
+		Out:           m.output,
 	})
 	if err != nil {
 		return result, fmt.Errorf("closing MR bead: %w", err)
@@ -812,19 +814,12 @@ func (m *Manager) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResul
 		return result, fmt.Errorf("closing MR bead: MR %s status is not open or terminal", mr.ID)
 	}
 
-	// Close the source issue with reason and --force to bypass dependency checks.
-	// The source issue may have an attached molecule whose open steps would
-	// block a normal close. Resolve before MR close clears active_mr, then close
-	// only from this post-merge success path.
-	sourceResult := closeMergedWorkBead(b, nil, m.output, mergedWorkBeadCloseRequest{
-		MRID:        mr.ID,
-		Target:      mr.TargetBranch,
-		SourceIssue: workBeadID,
-		MergeCommit: mr.MergeCommit,
-	})
-	result.SourceIssueID = sourceResult.WorkBeadID
-	result.SourceIssueClosed = sourceResult.Closed
-	result.SourceIssueNotFound = sourceResult.NotFound
+	// closeTerminalMR already closed the source issue with --force (an attached
+	// molecule's open steps would block a normal close) as part of the single
+	// merged-MR rule.
+	result.SourceIssueID = firstNonEmpty(closeResult.SourceClose.WorkBeadID, workBeadID)
+	result.SourceIssueClosed = closeResult.SourceClose.Closed
+	result.SourceIssueNotFound = closeResult.SourceClose.NotFound
 
 	return result, nil
 }

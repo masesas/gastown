@@ -1391,22 +1391,22 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) bool {
 		return false
 	}
 
-	// Update and close the MR bead
+	// 1. Close the MR bead as merged. closeTerminalMR also closes the source
+	// issue (the single merged-MR rule). Synthetic/bead-less MRs have no MR bead
+	// to close, so their source issue is closed directly.
 	if mr.ID != "" && !e.isSyntheticMergeMechanicsMR(mr) {
 		if err := e.closeMRWithReason(mr, string(CloseReasonMerged), result.MergeCommit); err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge cleanup failed for %s: %v\n", mr.ID, err)
 			return false
 		}
+	} else {
+		closeMergedWorkBead(e.beads, nil, e.output, mergedWorkBeadCloseRequest{
+			MRID:        mr.ID,
+			Target:      mr.Target,
+			SourceIssue: workBeadID,
+			MergeCommit: result.MergeCommit,
+		})
 	}
-
-	// 1. Close source issue with reference to MR. Resolve before MR close clears
-	// active_mr, then close after the real merge success has been recorded.
-	closeMergedWorkBead(e.beads, nil, e.output, mergedWorkBeadCloseRequest{
-		MRID:        mr.ID,
-		Target:      mr.Target,
-		SourceIssue: workBeadID,
-		MergeCommit: result.MergeCommit,
-	})
 
 	// 1.2. Close conflict-resolution tasks that this land has made moot (hq-jnap).
 	// Conflict beads otherwise outlive the successful re-land of their content
@@ -1722,6 +1722,8 @@ func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit
 		AgentBeadHint: mr.AgentBead,
 		MissingOK:     true,
 		ExpectedMR:    expected,
+		Target:        mr.Target,
+		Out:           e.output,
 	})
 	if err != nil {
 		return err

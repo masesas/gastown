@@ -119,6 +119,94 @@ func (b *Beads) ListPendingMergeRequests() ([]*Issue, error) {
 	return pending, nil
 }
 
+// ListMergedMergeRequests returns merge-request wisps the refinery closed as
+// merged (close_reason: merged). Like ListPendingMergeRequests it surfaces query
+// errors instead of swallowing them, so callers deciding whether work may be
+// dispatched or reopened can fail closed when the queue cannot be read.
+func (b *Beads) ListMergedMergeRequests() ([]*Issue, error) {
+	out, err := b.run("sql", "--json",
+		"SELECT w.id, w.status, w.description FROM wisps w "+
+			"JOIN wisp_labels l ON w.id = l.issue_id "+
+			"WHERE l.label = 'gt:merge-request' AND w.status = 'closed' "+
+			"AND w.description LIKE '%merged%'")
+	if err != nil {
+		return nil, fmt.Errorf("querying merged merge requests: %w", err)
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil, nil
+	}
+	var rows []*Issue
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, fmt.Errorf("parsing merged merge requests: %w", err)
+	}
+	var merged []*Issue
+	for _, row := range rows {
+		if IsMergedMergeRequest(row) {
+			merged = append(merged, row)
+		}
+	}
+	return merged, nil
+}
+
+// IsMergedMergeRequest reports whether an MR bead is terminal with
+// close_reason=merged, i.e. its work landed on the target branch.
+func IsMergedMergeRequest(mr *Issue) bool {
+	if mr == nil || !IssueStatus(strings.TrimSpace(mr.Status)).IsTerminal() {
+		return false
+	}
+	fields := ParseMRFields(mr)
+	return fields != nil && strings.EqualFold(strings.TrimSpace(fields.CloseReason), "merged")
+}
+
+// MergedSourceIssues maps source issue ID -> merged MR ID for the given MR
+// beads. It is the one definition of "this bead's work already landed via a
+// merge request", shared by the convoy feeder, convoy launch and the
+// release/unhook paths.
+func MergedSourceIssues(mrs []*Issue) map[string]string {
+	merged := make(map[string]string)
+	for _, mr := range mrs {
+		if !IsMergedMergeRequest(mr) {
+			continue
+		}
+		if fields := ParseMRFields(mr); fields != nil && fields.SourceIssue != "" {
+			merged[fields.SourceIssue] = mr.ID
+		}
+	}
+	return merged
+}
+
+// MergedMergeRequestFor returns the ID of a merged MR whose source issue is
+// issueID, or "" when none exists.
+func (b *Beads) MergedMergeRequestFor(issueID string) (string, error) {
+	mrs, err := b.ListMergedMergeRequests()
+	if err != nil {
+		return "", err
+	}
+	return MergedSourceIssues(mrs)[strings.TrimSpace(issueID)], nil
+}
+
+// ReleaseWorkBead hands a work bead back after its worker went away (polecat
+// removal, unsling, stale hook cleanup). One rule: a bead whose MR already
+// merged is finished work and is closed; any other bead returns to open with
+// no assignee. Reopening merged work makes the convoy feeder dispatch it
+// again. If the merge queue cannot be read the bead is reopened (the worker
+// must be released) and the lookup error is returned alongside.
+func (b *Beads) ReleaseWorkBead(issueID string) (closed bool, err error) {
+	mrID, lookupErr := b.MergedMergeRequestFor(issueID)
+	if mrID != "" {
+		if err := b.ForceCloseWithReason("Merged in "+mrID, issueID); err != nil {
+			return false, fmt.Errorf("closing merged work bead %s: %w", issueID, err)
+		}
+		return true, nil
+	}
+	openStatus := "open"
+	empty := ""
+	if err := b.Update(issueID, UpdateOptions{Status: &openStatus, Assignee: &empty}); err != nil {
+		return false, err
+	}
+	return false, lookupErr
+}
+
 // FindOpenMRsForIssue returns all open merge-request beads whose source_issue
 // matches the given issue ID. Used to find prior attempts when re-dispatching
 // an issue and to supersede old MRs when a new one is created.
