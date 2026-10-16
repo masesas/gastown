@@ -94,8 +94,19 @@ func (g *Git) IsRepo() bool {
 	return err == nil
 }
 
-// run executes a git command and returns stdout.
+// run executes a git command and returns stdout with surrounding whitespace
+// trimmed.
 func (g *Git) run(args ...string) (string, error) {
+	out, err := g.runRaw(args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// runRaw executes a git command and returns stdout byte-exact. Use it for
+// machine-readable output (e.g. -z) where trimming would corrupt the data.
+func (g *Git) runRaw(args ...string) (string, error) {
 	if err := g.guardUnsafeTownRootMutation(args); err != nil {
 		return "", err
 	}
@@ -120,7 +131,7 @@ func (g *Git) run(args ...string) (string, error) {
 		return "", g.wrapError(err, stdout.String(), stderr.String(), args)
 	}
 
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }
 
 // pushTimeout is the maximum time a git push is allowed to run before being
@@ -1174,17 +1185,36 @@ func (g *Git) RmCached(paths ...string) error {
 	return err
 }
 
-// DiffNameOnly returns filenames changed between two refs.
-// Equivalent to: git diff --name-only <base>...<head>
+// DiffNameOnly returns the paths changed on head since its merge-base with
+// base (git diff <base>...<head>), or nil when nothing changed.
+//
+// Paths are byte-exact (-z: no C-quoting, no whitespace trimming) and renames
+// are reported as a removal plus an addition (--no-renames), so both the old
+// and the new path are listed. The merge-scope gate depends on this: a move
+// out of (or into) a directory must expose both sides.
 func (g *Git) DiffNameOnly(base, head string) ([]string, error) {
-	out, err := g.run("diff", "--name-only", base+"..."+head)
+	return g.diffNames(base + "..." + head)
+}
+
+// DiffNameOnlyRange returns the paths that differ between the trees of from
+// and to (git diff <from>..<to>, no merge-base), with the same byte-exact,
+// rename-safe output as DiffNameOnly. Used for pre-push style old..new checks.
+func (g *Git) DiffNameOnlyRange(from, to string) ([]string, error) {
+	return g.diffNames(from + ".." + to)
+}
+
+func (g *Git) diffNames(revRange string) ([]string, error) {
+	out, err := g.runRaw("diff", "--name-only", "--no-renames", "-z", revRange, "--")
 	if err != nil {
 		return nil, err
 	}
-	if out == "" {
-		return nil, nil
+	var paths []string
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
 	}
-	return strings.Split(strings.TrimSpace(out), "\n"), nil
+	return paths, nil
 }
 
 // GitStatus represents the status of the working directory.

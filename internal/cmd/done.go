@@ -1235,6 +1235,15 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			convoyInfo = &ConvoyInfo{ID: convoyInfo.ID, Owned: convoyInfo.Owned, MergeStrategy: convoyMergeMR}
 		}
 
+		// Merge-scope gate (gt-pd1c.68): before anything is pushed, refuse work
+		// that changes paths outside merge_queue.allowed_paths. contaminationBase
+		// was fetched above and is the clean base of the landing target.
+		if landingStrategy != convoyMergeLocal {
+			if err := enforceMergeScope(filepath.Join(townRoot, rigName), g, contaminationBase, "HEAD"); err != nil {
+				return err
+			}
+		}
+
 		switch landingStrategy {
 		case convoyMergeLocal:
 			fmt.Printf("%s Local merge strategy: skipping push and merge queue\n", style.Bold.Render("→"))

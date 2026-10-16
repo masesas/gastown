@@ -550,7 +550,27 @@ needs = ["quality-review"]
 description = """
 **VERIFICATION GATE**: This step enforces the Beads Promise.
 
-If all checks and tests PASSED: This step auto-completes. Proceed to merge.
+**0. MERGE-SCOPE GATE (ALWAYS runs, even when run_tests = "false"):**
+
+```bash
+SCOPE_OUT=$(gt mq check-scope <rig> <mr-bead-id> 2>&1); SCOPE_EXIT=$?
+CHECKED_SHA=$(printf '%s\n' "$SCOPE_OUT" | sed -n 's/^Checked-SHA: //p')
+```
+
+It fetches origin, pins the tip of `origin/<polecat-branch>` and checks that
+`origin/<merge-target>...<tip>` only touches paths allowed by the rig's
+`merge_queue.allowed_paths` (a rig without `allowed_paths` always passes and
+prints no `Checked-SHA`). A non-zero `SCOPE_EXIT` — a scope violation listing
+the offending paths, or a check that could not complete — is a FAILED gate
+caused by the branch: follow step 2 below with `Failure-Type: scope` and
+`$SCOPE_OUT` as `Error`. Never merge, never "note and proceed", and never
+classify a scope failure as pre-existing.
+
+On success, record the `Checked-SHA` value (shell variables do not survive
+between commands — track it like the MR id): merge-push sets `CHECKED_SHA` to it
+and lands exactly that commit, never a newer tip pushed after the check.
+
+If all checks and tests PASSED (including the merge-scope gate): This step auto-completes. Proceed to merge.
 
 If any check or test FAILED:
 1. Diagnose: Is this a branch regression or pre-existing on the target branch?
@@ -565,7 +585,7 @@ If any check or test FAILED:
      Rig: <rig>
      Target: <target-branch>
      Failed-At: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-     Failure-Type: <tests|build|lint|typecheck>
+     Failure-Type: <scope|tests|build|lint|typecheck>
      Error: <failure description/output>
      MR-Bead-ID: <mr-bead-id>
      Attempt-Number: <N>
@@ -633,8 +653,11 @@ Determine `<merge-target>` using the **Target Resolution Rule** above.
 **If merge_strategy = "direct" (default):**
 
 ```bash
+CHECKED_SHA=<Checked-SHA recorded in handle-failures; empty only if check-scope printed none>
 git checkout <merge-target>
-git merge --no-ff -m "Merge <polecat-branch> into <merge-target>" origin/<polecat-branch>
+# Merge the commit the merge-scope gate checked; only an unscoped rig
+# (no Checked-SHA) merges the branch ref.
+git merge --no-ff -m "Merge <polecat-branch> into <merge-target>" "${CHECKED_SHA:-origin/<polecat-branch>}"
 git push origin <merge-target>
 ```
 
@@ -688,6 +711,21 @@ Continue to Step 2.
 Create a GitHub PR for the submitted branch instead of direct merge. Do not
 force-push or rebase the polecat branch; post-merge proof depends on the
 submitted head remaining stable.
+
+A PR merges the branch tip, so first confirm it is still the commit the
+merge-scope gate checked (skip when `CHECKED_SHA` is empty — unscoped rig):
+
+```bash
+CHECKED_SHA=<Checked-SHA recorded in handle-failures; empty only if check-scope printed none>
+if [ -n "$CHECKED_SHA" ]; then
+  git fetch origin
+  [ "$(git rev-parse origin/<polecat-branch>)" = "$CHECKED_SHA" ] || echo "SCOPE_STALE"
+fi
+```
+
+If `SCOPE_STALE`: do NOT create or merge the PR. The branch moved after the
+check — go back to handle-failures, re-run `gt mq check-scope`, and continue
+only with the new `CHECKED_SHA`.
 
 ```bash
 # Create the PR using bead metadata for title/description
