@@ -23,6 +23,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	convoyops "github.com/steveyegge/gastown/internal/convoy"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -1669,9 +1670,16 @@ func findStrandedConvoys(townBeads string) ([]strandedConvoyInfo, error) {
 			trackedIDs = append(trackedIDs, t.ID)
 		}
 		heldSet := areScheduled(trackedIDs)
-		for _, id := range trackedIDs {
-			if pendingErr != nil || pendingMerge[id] {
-				heldSet[id] = true
+		for _, t := range tracked {
+			if pendingErr != nil {
+				heldSet[t.ID] = true
+				continue
+			}
+			if st := strings.TrimSpace(t.Status); st == "closed" || st == "tombstone" {
+				continue // already done; no need to prove anything
+			}
+			if pendingMerge(t.ID) {
+				heldSet[t.ID] = true
 			}
 		}
 
@@ -1783,25 +1791,35 @@ func isReadyIssue(t trackedIssueInfo, heldSet map[string]bool) bool {
 	return false // Session exists = worker is active
 }
 
-// mergeQueueHeldIssues returns the IDs of issues the convoy feeder and
-// `gt convoy launch` must not dispatch because their work is already in, or
-// through, a merge request, in any rig's beads DB (MRs are created in the
-// polecat's rig DB, so every rig is scanned, as for sling contexts):
-//   - pending MR (Beads.ListPendingMergeRequests): the refinery owns the work
-//     until it is merged or rejected;
-//   - merged MR (Beads.ListMergedMergeRequests): the work landed, so the issue
-//     is done even if closing the source bead failed. Re-dispatching it would
-//     verify and re-merge finished work. A rejected MR is not held: the issue
-//     needs rework.
+// mergeProverResolver builds the per-rig git prover; tests override it.
+var mergeProverResolver = mergeproof.Resolver
+
+// mergeQueueHeld reports whether an issue must not be dispatched because its
+// work is in, or through, a merge request.
+type mergeQueueHeld func(issueID string) bool
+
+// mergeQueueHeldIssues reads every rig's merge requests (MRs are created in the
+// polecat's rig DB, so every rig is scanned, as for sling contexts) and returns
+// the shared "held" predicate used by the convoy feeder and `gt convoy launch`:
+//   - a pending MR holds its source: the refinery owns the work until it is
+//     merged or rejected;
+//   - an MR whose work landed on its target branch (beads.MRWorkLanded: the
+//     recorded commit is reachable from origin/<target>, or close_reason is
+//     merged) holds its source: the issue is done even if closing the source
+//     bead never happened. The refinery agent sometimes closes the MR with a
+//     bare `bd close`, so git, not close_reason, is the proof. Re-dispatching
+//     would verify and re-merge finished work;
+//   - a rejected MR that never landed does not hold: the issue needs rework.
 //
+// Landing is proven lazily and memoized, only for issues actually asked about.
 // Any unreadable DB is an error: the caller holds dispatch rather than risk a
 // duplicate polecat.
-func mergeQueueHeldIssues(townRoot string) (map[string]bool, error) {
+func mergeQueueHeldIssues(townRoot string) (mergeQueueHeld, error) {
 	dirs, err := beadsSearchDirs(townRoot)
 	if err != nil {
 		return nil, err
 	}
-	held := make(map[string]bool)
+	bySource := make(map[string][]*beads.Issue)
 	seen := make(map[string]bool)
 	for _, dir := range dirs {
 		beadsDir := beads.ResolveBeadsDir(dir)
@@ -1809,25 +1827,39 @@ func mergeQueueHeldIssues(townRoot string) (map[string]bool, error) {
 			continue
 		}
 		seen[beadsDir] = true
-		b := beads.NewWithBeadsDir(dir, beadsDir)
-		pending, err := b.ListPendingMergeRequests()
+		found, err := beads.NewWithBeadsDir(dir, beadsDir).MergeRequestsBySource()
 		if err != nil {
 			return nil, fmt.Errorf("listing merge requests in %s: %w", beadsDir, err)
 		}
-		for _, mr := range pending {
-			if fields := beads.ParseMRFields(mr); fields != nil && fields.SourceIssue != "" {
-				held[fields.SourceIssue] = true
-			}
-		}
-		merged, err := b.ListMergedMergeRequests()
-		if err != nil {
-			return nil, fmt.Errorf("listing merged merge requests in %s: %w", beadsDir, err)
-		}
-		for source := range beads.MergedSourceIssues(merged) {
-			held[source] = true
+		for source, mrs := range found {
+			bySource[source] = append(bySource[source], mrs...)
 		}
 	}
-	return held, nil
+	resolve := mergeProverResolver(townRoot)
+	memo := make(map[string]bool)
+	return func(issueID string) bool {
+		if held, ok := memo[issueID]; ok {
+			return held
+		}
+		mrs := bySource[issueID]
+		held := false
+		for _, mr := range mrs {
+			if !beads.IssueStatus(strings.TrimSpace(mr.Status)).IsTerminal() {
+				held = true
+				break
+			}
+		}
+		if !held {
+			if mrID := beads.LandedMergeRequest(mrs, resolve); mrID != "" {
+				held = true
+				// Escape hatch for deliberate rework: a bead whose MR already
+				// landed is done. Rework needs a new bead.
+				fmt.Fprintf(os.Stderr, "note: %s not dispatched: its MR %s already landed on the target (create a new bead for rework)\n", issueID, mrID)
+			}
+		}
+		memo[issueID] = held
+		return held
+	}, nil
 }
 
 // isSlingableBead reports whether a bead can be dispatched via gt sling.

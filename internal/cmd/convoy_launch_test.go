@@ -860,7 +860,9 @@ func TestRunConvoyLaunch_OpenConvoySkipsBeadWhoseMRMerged(t *testing.T) {
 		Task("hq-fresh", "Fresh", withRig("gastown")).TrackedBy("hq-cv-m").Setup(t)
 
 	origH := mergeQueueHeldFn
-	mergeQueueHeldFn = func(string) (map[string]bool, error) { return map[string]bool{"hq-merged": true}, nil }
+	mergeQueueHeldFn = func(string) (mergeQueueHeld, error) {
+		return func(id string) bool { return id == "hq-merged" }, nil
+	}
 	var dispatched []string
 	origD := dispatchTaskDirect
 	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
@@ -887,14 +889,14 @@ func TestRunConvoyLaunch_OpenConvoyHoldsWhenMergeQueueUnreadable(t *testing.T) {
 		Task("hq-u1", "U1", withRig("gastown")).TrackedBy("hq-cv-u").Setup(t)
 
 	origH := mergeQueueHeldFn
-	mergeQueueHeldFn = func(string) (map[string]bool, error) { return nil, fmt.Errorf("dolt down") }
+	mergeQueueHeldFn = func(string) (mergeQueueHeld, error) { return nil, fmt.Errorf("dolt down") }
 	attempted := 0
 	origD := dispatchTaskDirect
 	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error { attempted++; return nil }
 	t.Cleanup(func() { mergeQueueHeldFn, dispatchTaskDirect = origH, origD })
 
-	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-u"}); err != nil {
-		t.Fatalf("runConvoyLaunch: %v", err)
+	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-u"}); err == nil || !strings.Contains(err.Error(), "cannot read merge queues") {
+		t.Fatalf("expected a visible merge-queue error, got %v", err)
 	}
 	if attempted != 0 {
 		t.Fatalf("dispatched %d beads while merge queue unreadable, want 0", attempted)

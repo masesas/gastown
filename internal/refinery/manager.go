@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"io"
 	"log"
 	"os"
@@ -786,6 +787,7 @@ func (m *Manager) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResul
 		ExpectedMR:    mr,
 		Target:        mr.TargetBranch,
 		Out:           m.output,
+		Prover:        mergeproof.ForRigPath(m.rig.Path),
 	})
 	if err != nil {
 		return result, fmt.Errorf("closing MR bead: %w", err)
@@ -799,7 +801,9 @@ func (m *Manager) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResul
 	if closeResult.AlreadyTerminal {
 		_, _ = fmt.Fprintf(m.output, "  %s MR already closed\n", style.Dim.Render("—"))
 		result.MRClosed = true
-		if mr.CloseReason != CloseReasonMerged {
+		// A hand-closed MR (bare bd close) whose commit is on the target is
+		// proven merged by git; closeTerminalMR already closed its source.
+		if mr.CloseReason != CloseReasonMerged && !closeResult.SourceCloseAttempted {
 			if mr.CloseReason == "" {
 				return result, fmt.Errorf("post-merge retry for already-closed MR %s requires close_reason=%s", mr.ID, CloseReasonMerged)
 			}

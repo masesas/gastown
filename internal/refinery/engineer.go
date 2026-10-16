@@ -1704,6 +1704,15 @@ func (e *Engineer) closeIneligibleMR(mr *MRInfo, reason string) error {
 	return e.closeMRWithReason(mr, "rejected: "+reason)
 }
 
+// mergeProver returns the engineer's git as a merge prover, or nil (never a
+// typed-nil interface) when it has none.
+func (e *Engineer) mergeProver() beads.MergeProver {
+	if e.git == nil {
+		return nil
+	}
+	return e.git
+}
+
 func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit ...string) error {
 	if mr == nil || strings.TrimSpace(mr.ID) == "" {
 		return nil
@@ -1724,6 +1733,7 @@ func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit
 		ExpectedMR:    expected,
 		Target:        mr.Target,
 		Out:           e.output,
+		Prover:        e.mergeProver(),
 	})
 	if err != nil {
 		return err

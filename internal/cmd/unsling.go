@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"path/filepath"
 	"strings"
 
@@ -222,7 +223,7 @@ func runUnslingWith(cmd *cobra.Command, args []string, dryRun, force bool) error
 	// in "hooked" status forever. Now we update the bead to match the documented
 	// behavior: "The bead's status changes from 'hooked' back to 'open'."
 	if hookedBead.Status == beads.StatusHooked {
-		if _, err := hookedB.ReleaseWorkBead(hookedBeadID); err != nil {
+		if _, err := hookedB.ReleaseWorkBead(hookedBeadID, mergeproof.Resolver(townRoot)); err != nil {
 			// Non-fatal: warn but don't fail the unsling. The hook slot is already
 			// cleared, so the agent is unblocked. The bead status is a bookkeeping
 			// issue that can be fixed manually.
@@ -335,7 +336,7 @@ func cleanStaleHookedBeads(cmd *cobra.Command, b *beads.Beads, agentID, targetBe
 			staleB = beads.New(stalePath)
 		}
 
-		closed, err := staleB.ReleaseWorkBead(sb.ID)
+		closed, err := staleB.ReleaseWorkBead(sb.ID, mergeproof.Resolver(townRoot))
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't clean up stale bead %s: %v\n", sb.ID, err)
 			continue

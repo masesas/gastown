@@ -2,6 +2,7 @@ package refinery
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -148,5 +149,36 @@ func TestCloseTerminalMR_MergedRequestOnRejectedMRDoesNotCloseSource(t *testing.
 	}
 	if res.SourceCloseAttempted || sourceWasClosed(t, logPath) {
 		t.Fatalf("source closed for a rejected MR (result %+v)", res)
+	}
+}
+
+type fakeLanded bool
+
+func (f fakeLanded) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	if f {
+		return nil
+	}
+	return fmt.Errorf("commit %s not on %s/%s", commit, remote, branch)
+}
+
+// Pilot kp-4az.5: the MR was closed by a bare `bd close` (no close_reason) and
+// its commit is on the target. Running post-merge (closeTerminalMR) heals the
+// source; if the commit is not on the target the source stays open.
+func TestCloseTerminalMR_BareClosedMRWithLandedCommitClosesSource(t *testing.T) {
+	fields := "commit_sha: abc123\\n"
+	logPath := installTerminalMRBDStub(t, terminalMRIssues("closed", fields))
+	res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{
+		Reason: string(CloseReasonMerged), Prover: fakeLanded(true),
+	})
+	if err != nil || !res.SourceClose.Closed || !sourceWasClosed(t, logPath) {
+		t.Fatalf("result = %+v, err = %v; want source closed", res, err)
+	}
+
+	logPath = installTerminalMRBDStub(t, terminalMRIssues("closed", fields))
+	res, err = closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{
+		Reason: string(CloseReasonMerged), Prover: fakeLanded(false),
+	})
+	if err != nil || res.SourceCloseAttempted || sourceWasClosed(t, logPath) {
+		t.Fatalf("result = %+v, err = %v; source must stay open when commit is not on target", res, err)
 	}
 }

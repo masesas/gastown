@@ -19,6 +19,10 @@ type terminalMRCloseOptions struct {
 	// source bead's close reason, Out receives its progress/warning lines.
 	Target string
 	Out    io.Writer
+	// Prover proves from git that the MR's commit is on its target branch. It
+	// lets an MR closed by hand (bare `bd close`, close_reason not "merged")
+	// still close its source bead. Optional.
+	Prover beads.MergeProver
 }
 
 type terminalMRCloseResult struct {
@@ -98,7 +102,7 @@ func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (
 	// close_reason=merged, so a retry heals a source whose first close failed
 	// while a rejected MR never closes its source. The work bead is resolved
 	// before the agent's active_mr is cleared below.
-	if mergedMRClose(opts.Reason, status, fields) {
+	if mergedMRClose(opts.Reason, status, fields, opts.Prover) {
 		result.SourceCloseAttempted = true
 		result.SourceClose = closeMergedWorkBead(b, nil, opts.Out, mergedWorkBeadCloseRequest{
 			MRID:   mrID,
@@ -121,15 +125,18 @@ func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (
 	return result, nil
 }
 
-// mergedMRClose reports whether this close leaves the MR terminal as merged.
-func mergedMRClose(reason string, prior beads.IssueStatus, fields *beads.MRFields) bool {
-	if normalizedMRCloseReason(reason) != string(CloseReasonMerged) {
-		return false
-	}
-	if prior == beads.StatusOpen {
+// mergedMRClose reports whether this close leaves the MR terminal as merged,
+// or the MR is already terminal and its work provably landed on the target
+// (git is the proof, not the close reason: the refinery agent may have closed
+// it with a bare `bd close`).
+func mergedMRClose(reason string, prior beads.IssueStatus, fields *beads.MRFields, prover beads.MergeProver) bool {
+	if normalizedMRCloseReason(reason) == string(CloseReasonMerged) && prior == beads.StatusOpen {
 		return true
 	}
-	return prior.IsTerminal() && strings.EqualFold(strings.TrimSpace(fields.CloseReason), string(CloseReasonMerged))
+	if !prior.IsTerminal() {
+		return false
+	}
+	return beads.MRFieldsLanded(prior, fields, prover)
 }
 
 func validateTerminalMRCloseSnapshot(mrID string, fields *beads.MRFields, expected *MergeRequest) error {

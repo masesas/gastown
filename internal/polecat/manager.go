@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -2733,7 +2734,7 @@ func (m *Manager) unassignWorkBeads(name string) {
 
 	for _, issue := range activeWorkBeadsForCleanup(issues) {
 		// Merged work is closed, not reopened (ReleaseWorkBead).
-		if _, err := m.beads.ReleaseWorkBead(issue.ID); err != nil {
+		if _, err := m.beads.ReleaseWorkBead(issue.ID, mergeproof.ForRig(m.rig.Path)); err != nil {
 			style.PrintWarning("could not unassign bead %s from %s: %v", issue.ID, name, err)
 		}
 	}

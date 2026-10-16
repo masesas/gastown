@@ -857,6 +857,15 @@ bd list --type=merge-request --status=open | grep <polecat-name>
 
 Verify the command output shows all steps succeeded (✓ for each).
 
+**MR close is `gt mq post-merge` ONLY.** After pushing to the target branch the MR
+bead MUST be closed through `gt mq post-merge <rig> <mr-bead-id>`, which also closes
+the source issue. FORBIDDEN: `bd close` (or `bd update --status`) on the MR bead or
+on the source issue, and any raw `git push` + `bd close` sequence in place of it.
+A hand-closed MR leaves the source bead open and the convoy feeder re-dispatches
+finished work. If you already pushed and closed the MR by hand, run
+`gt mq post-merge <rig> <mr-bead-id>` now: it detects from git that the MR commit
+is on the target and closes the source.
+
 **Note**: In PR mode, run post-merge cleanup only after `gh pr merge` succeeds.
 The branch is deleted by `gt mq post-merge` after merge proof passes, not by
 `gh pr merge`. The `--skip-branch-delete` flag (gas-fk4) prevents branch deletion

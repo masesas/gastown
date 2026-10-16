@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+	"github.com/steveyegge/gastown/internal/beads"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -125,6 +127,41 @@ func TestFindStrandedConvoys_HoldsIssueWhoseMRMerged(t *testing.T) {
 	if s := strandedWithIssueAndMRQuery(t, "hooked", "gastown/polecats/rust", merged); s.ReadyCount != 0 {
 		t.Fatalf("hooked: ReadyCount = %d (%v), want 0: MR merged", s.ReadyCount, s.ReadyIssues)
 	}
+}
+
+// Pilot kp-4az.5 exactly: the refinery agent pushed to the target and ran a
+// bare `bd close` on the MR (no close_reason: merged, no gt mq post-merge).
+// Git is the proof: the MR's commit is on origin/<target>, so the issue is done.
+func TestFindStrandedConvoys_HoldsIssueWhoseMRWasBareClosedButLanded(t *testing.T) {
+	bare := `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"closed","description":"branch: polecat/rust/gt-work1\ntarget: integration/gt-epic\nsource_issue: gt-work1\nrig: gastown\ncommit_sha: abc123\n","labels":["gt:merge-request"]}]'`
+	orig := mergeProverResolver
+	t.Cleanup(func() { mergeProverResolver = orig })
+
+	mergeProverResolver = func(string) beads.ProverResolver {
+		return func(string) beads.MergeProver { return stubProver{landed: true} }
+	}
+	if s := strandedWithMRQuery(t, bare); s.ReadyCount != 0 {
+		t.Fatalf("ReadyCount = %d (%v), want 0: commit is on the target", s.ReadyCount, s.ReadyIssues)
+	}
+	if s := strandedWithIssueAndMRQuery(t, "hooked", "gastown/polecats/rust", bare); s.ReadyCount != 0 {
+		t.Fatalf("hooked: ReadyCount = %d (%v), want 0", s.ReadyCount, s.ReadyIssues)
+	}
+
+	mergeProverResolver = func(string) beads.ProverResolver {
+		return func(string) beads.MergeProver { return stubProver{landed: false} }
+	}
+	if s := strandedWithMRQuery(t, bare); s.ReadyCount != 1 {
+		t.Fatalf("ReadyCount = %d, want 1: closed MR whose commit is not on the target needs rework", s.ReadyCount)
+	}
+}
+
+type stubProver struct{ landed bool }
+
+func (p stubProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	if p.landed {
+		return nil
+	}
+	return fmt.Errorf("commit %s not on %s/%s", commit, remote, branch)
 }
 
 // A rejected MR needs rework, so its issue stays feedable.

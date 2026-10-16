@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2743,7 +2744,11 @@ func getBeadStatus(bd *BdCli, workDir, beadID string) (string, bool) {
 // mergedMRForBead returns the merged MR whose source issue is beadID, or "".
 // Tests override it.
 var mergedMRForBead = func(workDir, beadID string) (string, error) {
-	return beads.New(workDir).MergedMergeRequestFor(beadID)
+	townRoot, err := workspace.Find(workDir)
+	if err != nil || townRoot == "" {
+		townRoot = workDir
+	}
+	return beads.New(workDir).MergedMergeRequestFor(beadID, mergeproof.Resolver(townRoot))
 }
 
 // resetAbandonedBead resets a dead polecat's hooked bead so it can be re-dispatched.
@@ -2789,9 +2794,15 @@ func resetAbandonedBead(bd *BdCli, workDir, rigName, hookBead, polecatName strin
 	// Guard: a merged MR means the work landed on its target (which may be an
 	// integration branch, not main). Close the bead; reopening it would make
 	// the convoy feeder dispatch finished work again.
-	if mrID, err := mergedMRForBead(workDir, hookBead); err == nil && mrID != "" {
+	mrID, mrErr := mergedMRForBead(workDir, hookBead)
+	if mrErr != nil {
+		// Fail open (the polecat must be recovered) but loudly: resetting here
+		// may re-dispatch merged work if the merge queue was unreadable.
+		fmt.Fprintf(os.Stderr, "witness: WARNING cannot check merged MRs for %s, resetting without merge proof: %v\n", hookBead, mrErr)
+	} else if mrID != "" {
 		reason := fmt.Sprintf("Merged in %s (verified by witness, polecat %s)", mrID, polecatName)
-		if err := bd.Run(workDir, "close", hookBead, "-r", reason); err != nil {
+		// --force: a bead with an attached molecule has open steps that block a plain close.
+		if err := bd.Run(workDir, "close", hookBead, "--force", "-r", reason); err != nil {
 			fmt.Fprintf(os.Stderr, "witness: failed to close bead %s (MR %s merged): %v\n", hookBead, mrID, err)
 		}
 		return false
