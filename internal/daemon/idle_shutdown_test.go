@@ -192,7 +192,28 @@ func TestIsActiveWorkBead(t *testing.T) {
 		{"title merely mentions patrol", &beads.Issue{Title: "Investigate mol-deacon-patrol bug"}, true},
 	}
 	for _, c := range cases {
-		if got := isActiveWorkBead(c.issue); got != c.want {
+		if got := isActiveWorkBead(c.issue, nil); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestIsActiveWorkBead_MoleculeRoot(t *testing.T) {
+	step := &beads.Issue{Title: "Compact expired wisps", Status: "in_progress"}
+	cases := []struct {
+		name string
+		root *beads.Issue
+		want bool
+	}{
+		{"no root", nil, true},
+		{"deacon patrol root", &beads.Issue{Title: constants.MolDeaconPatrol}, false},
+		{"witness patrol root", &beads.Issue{Title: constants.MolWitnessPatrol + ": rig"}, false},
+		{"dog compactor root", &beads.Issue{Title: constants.MolDogCompactor}, false},
+		{"polecat work root", &beads.Issue{Title: "mol-polecat-work"}, true},
+		{"human-titled root", &beads.Issue{Title: "Reap wisps"}, true},
+	}
+	for _, c := range cases {
+		if got := isActiveWorkBead(step, c.root); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -202,12 +223,29 @@ type activityStore struct {
 	beadsdk.Storage
 	active []*beadsdk.Issue
 	mrs    []*beadsdk.Issue
+	all    []*beadsdk.Issue // lookup table for IDs queries (parents)
 	err    error
+	// failIDs makes ID lookups fail (parent unreadable).
+	failIDs bool
 }
 
 func (s *activityStore) SearchIssues(_ context.Context, _ string, f beadsdk.IssueFilter) ([]*beadsdk.Issue, error) {
 	if s.err != nil {
 		return nil, s.err
+	}
+	if len(f.IDs) > 0 {
+		if s.failIDs {
+			return nil, errors.New("lookup failed")
+		}
+		var out []*beadsdk.Issue
+		for _, i := range s.all {
+			for _, id := range f.IDs {
+				if i.ID == id {
+					out = append(out, i)
+				}
+			}
+		}
+		return out, nil
 	}
 	if len(f.Labels) > 0 {
 		return s.mrs, nil
@@ -237,6 +275,57 @@ func TestCountStoreActivity(t *testing.T) {
 	stores["rig"] = &activityStore{err: errors.New("dolt down")}
 	if _, _, err := countStoreActivity(context.Background(), stores); err == nil {
 		t.Fatal("store error must be reported (fail-safe)")
+	}
+}
+
+func childOf(id, title, parent string) *beadsdk.Issue {
+	return &beadsdk.Issue{ID: id, Title: title, Status: "in_progress", Dependencies: []*beadsdk.Dependency{
+		{IssueID: id, DependsOnID: parent, Type: beadsdk.DepParentChild},
+	}}
+}
+
+func TestCountStoreActivity_MoleculeSteps(t *testing.T) {
+	root := func(id, title string) *beadsdk.Issue { return &beadsdk.Issue{ID: id, Title: title, Status: "hooked"} }
+	cases := []struct {
+		name    string
+		active  []*beadsdk.Issue
+		all     []*beadsdk.Issue
+		failIDs bool
+		want    []string
+	}{
+		{"deacon patrol step ignored",
+			[]*beadsdk.Issue{childOf("s1", "Compact expired wisps", "r1")},
+			[]*beadsdk.Issue{root("r1", constants.MolDeaconPatrol)}, false, nil},
+		{"dog molecule step ignored",
+			[]*beadsdk.Issue{childOf("s1", "step", "r1")},
+			[]*beadsdk.Issue{root("r1", constants.MolDogReaper+": run")}, false, nil},
+		{"polecat work step counts",
+			[]*beadsdk.Issue{childOf("s1", "Implement", "r1")},
+			[]*beadsdk.Issue{root("r1", "mol-polecat-work")}, false, []string{"s1"}},
+		{"nested step reaches ignored root",
+			[]*beadsdk.Issue{childOf("s1", "leaf", "m1")},
+			[]*beadsdk.Issue{childOf("m1", "mid", "r1"), root("r1", constants.MolRefineryPatrol)}, false, nil},
+		{"parent unreadable is active",
+			[]*beadsdk.Issue{childOf("s1", "step", "r1")},
+			[]*beadsdk.Issue{root("r1", constants.MolDeaconPatrol)}, true, []string{"s1"}},
+		{"parent missing is active",
+			[]*beadsdk.Issue{childOf("s1", "step", "gone")}, nil, false, []string{"s1"}},
+		{"no parent, ordinary task counts",
+			[]*beadsdk.Issue{{ID: "t1", Title: "Fix", Status: "in_progress"}}, nil, false, []string{"t1"}},
+		{"depth limit stops walk (fail-safe active)",
+			[]*beadsdk.Issue{childOf("a", "a", "b")},
+			[]*beadsdk.Issue{childOf("b", "b", "c"), childOf("c", "c", "d"), childOf("d", "d", "e"),
+				childOf("e", "e", "f"), childOf("f", "f", "g"), root("g", constants.MolDeaconPatrol)}, false, []string{"a"}},
+	}
+	for _, c := range cases {
+		stores := map[string]beadsdk.Storage{"hq": &activityStore{active: c.active, all: c.all, failIDs: c.failIDs}}
+		work, _, err := countStoreActivity(context.Background(), stores)
+		if err != nil {
+			t.Errorf("%s: unexpected err %v", c.name, err)
+		}
+		if strings.Join(work, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%s: work=%v, want %v", c.name, work, c.want)
+		}
 	}
 }
 

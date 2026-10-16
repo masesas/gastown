@@ -274,20 +274,99 @@ var idleIgnoredFormulas = []string{
 	constants.MolDogCheckpoint, constants.MolDogDoctor, constants.MolDogBackup,
 }
 
+// isIgnoredFormulaTitle reports whether title names an infra patrol/dog formula.
+func isIgnoredFormulaTitle(title string) bool {
+	for _, mol := range idleIgnoredFormulas {
+		if strings.HasPrefix(title, mol) {
+			return true
+		}
+	}
+	return false
+}
+
 // isActiveWorkBead reports whether a hooked/in_progress bead represents real
 // work in flight. Patrol wisps (deacon/witness/refinery) are intentionally kept
 // hooked by their agents, and agent beads are identity records; neither is work.
 // Work for dogs, polecats, crew and mayor has an ordinary title and counts.
-func isActiveWorkBead(issue *beads.Issue) bool {
+//
+// root is the topmost molecule ancestor of issue (nil when the bead has no
+// parent, or when the parent chain could not be read). A step wisp of an
+// ignored infra molecule is ignored with its root; an unresolved root is
+// treated as real work (fail-safe).
+func isActiveWorkBead(issue, root *beads.Issue) bool {
 	if issue == nil || beads.IsAgentBead(issue) {
 		return false
 	}
-	for _, mol := range idleIgnoredFormulas {
-		if strings.HasPrefix(issue.Title, mol) {
-			return false
+	if isIgnoredFormulaTitle(issue.Title) {
+		return false
+	}
+	return root == nil || !isIgnoredFormulaTitle(root.Title)
+}
+
+// maxMoleculeDepth bounds how far up the parent chain a step is followed.
+const maxMoleculeDepth = 5
+
+// moleculeResolver finds the molecule root of a bead within one store. Parent
+// links come from the parent-child dependency hydrated on SearchIssues
+// results; ancestors are fetched in one ID query per level and cached for the
+// lifetime of the resolver (one snapshot).
+type moleculeResolver struct {
+	ctx   context.Context
+	store beadsdk.Storage
+	nodes map[string]*beadsdk.Issue // nil value = looked up, not found
+}
+
+func newMoleculeResolver(ctx context.Context, store beadsdk.Storage) *moleculeResolver {
+	return &moleculeResolver{ctx: ctx, store: store, nodes: map[string]*beadsdk.Issue{}}
+}
+
+func parentIDOf(i *beadsdk.Issue) string {
+	for _, dep := range i.Dependencies {
+		if dep != nil && dep.Type == beadsdk.DepParentChild && dep.IssueID == i.ID {
+			return dep.DependsOnID
 		}
 	}
-	return true
+	return ""
+}
+
+// root returns the topmost ancestor reached from issue, or nil when issue has
+// no parent or the chain cannot be read (missing parent, query error, depth
+// limit exceeded). nil makes the caller treat the bead as real work.
+func (r *moleculeResolver) root(issue *beadsdk.Issue) *beads.Issue {
+	cur := issue
+	for depth := 0; depth < maxMoleculeDepth; depth++ {
+		pid := parentIDOf(cur)
+		if pid == "" {
+			if cur == issue {
+				return nil // no parent: not a step
+			}
+			return sdkIssueToBead(cur)
+		}
+		parent, ok := r.fetch(pid)
+		if !ok {
+			return nil
+		}
+		cur = parent
+	}
+	return nil // chain deeper than the bound: cannot prove membership
+}
+
+func (r *moleculeResolver) fetch(id string) (*beadsdk.Issue, bool) {
+	if n, seen := r.nodes[id]; seen {
+		return n, n != nil
+	}
+	found, err := r.store.SearchIssues(r.ctx, "", beadsdk.IssueFilter{IDs: []string{id}, IncludeDependencies: true})
+	if err != nil {
+		return nil, false // not cached: a transient failure may recover
+	}
+	r.nodes[id] = nil
+	for _, i := range found {
+		if i.ID == id {
+			r.nodes[id] = i
+		}
+	}
+	n := r.nodes[id]
+	return n, n != nil
 }
 
 // sdkIssueToBead projects the fields isActiveWorkBead needs.
@@ -303,13 +382,15 @@ func countStoreActivity(ctx context.Context, stores map[string]beadsdk.Storage) 
 	var errs []error
 	for name, store := range stores {
 		active, e := store.SearchIssues(ctx, "", beadsdk.IssueFilter{
-			Statuses: []beadsdk.Status{beadsdk.Status("hooked"), beadsdk.Status("in_progress")},
+			Statuses:            []beadsdk.Status{beadsdk.Status("hooked"), beadsdk.Status("in_progress")},
+			IncludeDependencies: true, // parent links, to attribute steps to their molecule
 		})
 		if e != nil {
 			errs = append(errs, fmt.Errorf("active beads (%s): %w", name, e))
 		}
+		resolver := newMoleculeResolver(ctx, store)
 		for _, i := range active {
-			if isActiveWorkBead(sdkIssueToBead(i)) {
+			if isActiveWorkBead(sdkIssueToBead(i), resolver.root(i)) {
 				work = append(work, i.ID)
 			}
 		}
