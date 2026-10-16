@@ -550,7 +550,21 @@ needs = ["quality-review"]
 description = """
 **VERIFICATION GATE**: This step enforces the Beads Promise.
 
-If all checks and tests PASSED: This step auto-completes. Proceed to merge.
+**0. MERGE-SCOPE GATE (ALWAYS runs, even when run_tests = "false"):**
+
+```bash
+gt mq check-scope <rig> <mr-bead-id>
+```
+
+It fetches origin and checks that `origin/<merge-target>...origin/<polecat-branch>`
+only touches paths allowed by the rig's `merge_queue.allowed_paths` (a rig without
+`allowed_paths` always passes). A non-zero exit — a scope violation listing the
+offending paths, or a check that could not complete — is a FAILED gate caused
+by the branch: follow step 2 below with `Failure-Type: scope` and the command
+output as `Error`. Never merge, never "note and proceed", and never classify a
+scope failure as pre-existing.
+
+If all checks and tests PASSED (including the merge-scope gate): This step auto-completes. Proceed to merge.
 
 If any check or test FAILED:
 1. Diagnose: Is this a branch regression or pre-existing on the target branch?
@@ -565,7 +579,7 @@ If any check or test FAILED:
      Rig: <rig>
      Target: <target-branch>
      Failed-At: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-     Failure-Type: <tests|build|lint|typecheck>
+     Failure-Type: <scope|tests|build|lint|typecheck>
      Error: <failure description/output>
      MR-Bead-ID: <mr-bead-id>
      Attempt-Number: <N>

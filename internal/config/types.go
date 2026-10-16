@@ -1414,6 +1414,17 @@ type MergeQueueConfig struct {
 	// is enabled. Valid values: "quick", "standard", "deep".
 	// Nil defaults to "standard".
 	ReviewDepth string `json:"review_depth,omitempty"`
+
+	// AllowedPaths limits which repository paths an MR on this rig may change
+	// (gt-pd1c.68). Each entry is a slash-separated glob relative to the repo
+	// root: path.Match syntax per segment, plus "**" as a whole segment for
+	// zero or more segments, e.g. ["apps/**", "contracts/openapi.yaml"].
+	// Every path touched by the MR diff (merge-base(target)..head, renames
+	// counted on both sides) must match at least one entry; otherwise
+	// `gt done` / `gt mq submit` refuse to submit and `gt mq check-scope`
+	// fails, so the refinery does not merge. Nil/empty = unrestricted
+	// (the behaviour before this key existed).
+	AllowedPaths []string `json:"allowed_paths,omitempty"`
 }
 
 // OnConflict strategy constants.

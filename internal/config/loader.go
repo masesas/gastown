@@ -279,6 +279,10 @@ func validateMergeQueueConfig(c *MergeQueueConfig) error {
 		return fmt.Errorf("%w: max_concurrent must be non-negative", ErrMissingField)
 	}
 
+	if err := ValidateAllowedPaths(c.AllowedPaths); err != nil {
+		return err
+	}
+
 	return nil
 }
 

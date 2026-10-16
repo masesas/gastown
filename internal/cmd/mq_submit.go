@@ -202,6 +202,12 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Merge-scope gate (gt-pd1c.68): refuse before any MR bead exists, so an
+	// out-of-scope branch never enters the queue.
+	if err := enforceSubmitMergeScope(filepath.Join(townRoot, rigName), g, defaultBranch, target, branch, commitSHA); err != nil {
+		return err
+	}
+
 	// Check if MR bead already exists for this branch+SHA (idempotency)
 	var mrIssue *beads.Issue
 	var existingMR *beads.Issue
@@ -304,6 +310,30 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 
 func resolveMQSubmitCommitSHA(g *git.Git, branch string) (string, error) {
 	return g.Rev(fmt.Sprintf("refs/heads/%s^{commit}", branch))
+}
+
+// enforceSubmitMergeScope runs the merge-scope gate for gt mq submit: the
+// submitted branch tip (commitSHA, or the branch when unresolved) against the
+// clean base of the MR target. The base remote is fetched first only when the
+// rig has a scope; a fetch failure is a warning because a stale base can only
+// widen the diff (more paths checked), never hide branch changes.
+func enforceSubmitMergeScope(rigPath string, g *git.Git, defaultBranch, target, branch, commitSHA string) error {
+	allowed, err := loadMergeScope(rigPath)
+	if err != nil || len(allowed) == 0 {
+		return err
+	}
+	base := g.CleanBaseRef("origin", defaultBranch, target)
+	if remote := git.RemoteForRef(base); remote != "" {
+		if fetchErr := g.Fetch(remote); fetchErr != nil {
+			style.PrintWarning("could not fetch %s before merge-scope check: %v (using local refs)", remote, fetchErr)
+		}
+	}
+	head := commitSHA
+	if head == "" {
+		head = "refs/heads/" + branch
+	}
+	_, err = checkMergeScope(g, allowed, base, head)
+	return err
 }
 
 func verifyMQSubmitPushedBranch(g *git.Git, branch, commitSHA string) error {

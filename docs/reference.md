@@ -149,6 +149,7 @@ Town-level role defaults live in `mayor/config.json` under:
 | `integration_branch_refinery_enabled` | `*bool` | `true` | `gt done` / `gt mq submit` auto-target integration branches |
 | `integration_branch_template` | `string` | `"integration/{title}"` | Branch name template (`{title}`, `{epic}`, `{prefix}`, `{user}`) |
 | `integration_branch_auto_land` | `*bool` | `false` | Refinery patrol auto-lands when all children closed |
+| `allowed_paths` | `[]string` | unset (unrestricted) | Repo paths an MR may change, as slash-separated globs (`*`, `?`, `[...]` per segment; `**` = zero or more segments), e.g. `["apps/**", "contracts/openapi.yaml"]`. Every path in the MR diff (merge-base of target..head, renames count on both sides) must match one entry: `gt done` / `gt mq submit` refuse to submit otherwise, and the refinery runs `gt mq check-scope` before merge-push and sends FIX_NEEDED on a violation. Invalid patterns fail settings load. |
 
 See [Integration Branches](concepts/integration-branches.md) for integration branch details.
 
@@ -657,6 +658,7 @@ gt mq submit                 # Submit current branch to merge queue
 gt mq status <id>            # Show detailed merge request status
 gt mq retry <id>             # Retry a failed merge request
 gt mq reject <id>            # Reject a merge request
+gt mq check-scope <rig> <mr-id>  # Verify the MR only changes merge_queue.allowed_paths
 ```
 
 #### Integration Branch Commands
