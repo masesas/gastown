@@ -32,7 +32,12 @@ func runMailSend(cmd *cobra.Command, args []string) error {
 
 	var to string
 
-	if mailSendSelf {
+	if mailSendHuman {
+		var err error
+		if to, err = humanRecipient(mailTo, args); err != nil {
+			return err
+		}
+	} else if mailSendSelf {
 		// Auto-detect identity from cwd
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -62,7 +67,7 @@ func runMailSend(cmd *cobra.Command, args []string) error {
 	} else if len(args) > 0 {
 		to = args[0]
 	} else {
-		return fmt.Errorf("address required (use positional arg, --to, or --self)")
+		return fmt.Errorf("address required (use positional arg, --to, --self, or --human)")
 	}
 
 	// All mail uses town beads (two-level architecture)
@@ -273,6 +278,15 @@ func normalizeReplySubject(subject string) string {
 		s = strings.TrimSpace(s[3:])
 	}
 	return strings.ToLower(s)
+}
+
+// humanRecipient resolves `gt mail send --human`: the human overseer. It
+// refuses an explicit address as well, since the two would disagree.
+func humanRecipient(toFlag string, args []string) (string, error) {
+	if toFlag != "" || len(args) > 0 {
+		return "", fmt.Errorf("--human cannot be combined with an address")
+	}
+	return "overseer", nil
 }
 
 // normalizeAddress lowercases an address and trims a trailing slash so that
