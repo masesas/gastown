@@ -278,6 +278,7 @@ func newDoctorForCommand(rig string) *doctor.Doctor {
 	d.Register(doctor.NewDeprecatedMergeQueueKeysCheck())
 	d.Register(doctor.NewLandWorktreeGitignoreCheck())
 	d.Register(doctor.NewHooksPathAllRigsCheck())
+	d.Register(doctor.NewRigPrePushGuardCheck())
 
 	// Sparse checkout migration (runs across all rigs, not just --rig mode)
 	d.Register(doctor.NewSparseCheckoutCheck())

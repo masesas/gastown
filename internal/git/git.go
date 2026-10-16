@@ -1816,13 +1816,32 @@ type RemoteRef struct {
 // ListRemoteRefsWithHashes returns remote refs matching a prefix using ls-remote.
 // The prefix filters refs (e.g., "refs/heads/polecat/" for all polecat branches).
 // Returns full ref names like "refs/heads/polecat/furiosa-abc123".
+// A remote starting with "-" is rejected so it cannot be read as an option.
 func (g *Git) ListRemoteRefsWithHashes(remote, prefix string) ([]RemoteRef, error) {
-	out, err := g.run("ls-remote", "--refs", remote, prefix+"*")
+	if strings.HasPrefix(remote, "-") {
+		return nil, fmt.Errorf("invalid remote %q", remote)
+	}
+	out, err := g.run("ls-remote", "--refs", "--", remote, prefix+"*")
 	if err != nil {
 		return nil, err
 	}
+	return parseRefsWithHashes(out), nil
+}
+
+// ListLocalRefsWithHashes returns local refs under prefix (e.g.
+// "refs/remotes/origin/integration/") with their object names.
+func (g *Git) ListLocalRefsWithHashes(prefix string) ([]RemoteRef, error) {
+	out, err := g.run("for-each-ref", "--format=%(objectname) %(refname)", "--", prefix)
+	if err != nil {
+		return nil, err
+	}
+	return parseRefsWithHashes(out), nil
+}
+
+// parseRefsWithHashes parses "<sha><space-or-tab><refname>" lines.
+func parseRefsWithHashes(out string) []RemoteRef {
 	if out == "" {
-		return nil, nil
+		return nil
 	}
 	var refs []RemoteRef
 	for _, line := range strings.Split(out, "\n") {
@@ -1836,7 +1855,7 @@ func (g *Git) ListRemoteRefsWithHashes(remote, prefix string) ([]RemoteRef, erro
 			refs = append(refs, RemoteRef{Hash: parts[0], Name: parts[1]})
 		}
 	}
-	return refs, nil
+	return refs
 }
 
 // ListRemoteRefs returns remote ref names matching a prefix using ls-remote.
@@ -2279,6 +2298,11 @@ func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// MergeBase returns the best common ancestor of a and b (git merge-base).
+func (g *Git) MergeBase(a, b string) (string, error) {
+	return g.run("merge-base", a, b)
 }
 
 // Cherry runs `git cherry <upstream> <head>` to list commits on head that are

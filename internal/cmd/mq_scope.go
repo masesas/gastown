@@ -25,8 +25,10 @@ import (
 //     Checked-SHA. This catches a branch re-pushed after submit only when the
 //     refinery follows the formula; an agent that pushes directly (e.g.
 //     `git push origin temp:<target>`) bypasses it;
-//   - push time (planned, gt-pd1c.72): a pre-push hook calling
-//     `gt mq check-scope --range <old> <new>`.
+//   - push time (gt-pd1c.72): the Gas Town managed pre-push hook runs
+//     `gt hooks pre-push`, which refuses an agent push to the default branch
+//     or integration/* whose remote..local range leaves the scope
+//     (hooks_prepush.go). `gt mq check-scope --range` remains for manual use.
 // All share checkMergeScopeWith (byte-exact paths, renames on both sides).
 
 // mqCheckScopeSHAPrefix starts the machine-readable line of a passing

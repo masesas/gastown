@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/pushguard"
 	"github.com/steveyegge/gastown/internal/rig"
 )
 
@@ -77,6 +78,12 @@ func TestManagerAddAndGet(t *testing.T) {
 	stateFile := filepath.Join(crewDir, "state.json")
 	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
 		t.Error("state.json was not created")
+	}
+
+	// The crew clone has its own hooks dir: the managed pre-push guard must be
+	// installed there (gt-pd1c.72).
+	if st, err := pushguard.Inspect(crewDir); err != nil || st.State != pushguard.StateInstalled {
+		t.Errorf("pre-push guard: state=%v err=%v, want installed", st.State, err)
 	}
 
 	// Test Get

@@ -79,6 +79,9 @@ assert_block() {
   fi
 }
 
+# Run as a human: agent identity variables change the landing rules.
+unset GT_ROLE BD_ACTOR GT_POLECAT GT_CREW GT_INTEGRATION_LAND 2>/dev/null || true
+
 echo "=== Pre-push hook test suite ==="
 echo ""
 
@@ -246,6 +249,40 @@ git checkout -b session/z >/dev/null 2>&1
 default_sha=$(get_sha "$DEFAULT_BRANCH")
 unset GT_ALLOW_OFFBRANCH_PUSH 2>/dev/null || true
 assert_pass "Off-branch deletion not blocked by HEAD guard" run_hook "refs/heads/$DEFAULT_BRANCH" "0000000000000000000000000000000000000000" "refs/heads/$DEFAULT_BRANCH" "$default_sha"
+cleanup
+
+# Test 14: Agent landing with GT_INTEGRATION_LAND=1 — BLOCKED (gt-pd1c.72).
+# GT_INTEGRATION_LAND is not a bypass for agents; outside a rig auto-land is
+# off, so neither the Go guard nor the bash fallback lets an agent land.
+echo "Test 14: Agent integration merge with GT_INTEGRATION_LAND=1"
+setup_repos
+cd "$TMPDIR/local"
+git checkout -b integration/epic-5 >/dev/null 2>&1
+echo "epic work" >> file.txt
+git add file.txt && git commit -m "epic work" >/dev/null 2>&1
+git push origin integration/epic-5 >/dev/null 2>&1
+git checkout "$DEFAULT_BRANCH" >/dev/null 2>&1
+remote_sha=$(get_sha HEAD)
+git merge --no-ff integration/epic-5 -m "land integration" >/dev/null 2>&1
+local_sha=$(get_sha HEAD)
+GT_ROLE=refinery GT_INTEGRATION_LAND=1 assert_block "Agent land blocked despite GT_INTEGRATION_LAND=1" run_hook "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha"
+agent_out=$(GT_ROLE=refinery run_hook "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha" || true)
+if [[ "$agent_out" == *GT_INTEGRATION_LAND* ]]; then
+  echo "  FAIL: agent refusal must not suggest GT_INTEGRATION_LAND"
+  FAIL=$((FAIL + 1))
+else
+  echo "  PASS: agent refusal does not suggest GT_INTEGRATION_LAND"
+  PASS=$((PASS + 1))
+fi
+# Agent deleting an integration branch that has not landed — BLOCKED.
+GT_ROLE=refinery assert_block "Agent delete of unlanded integration branch blocked" run_hook "(delete)" "0000000000000000000000000000000000000000" "refs/heads/integration/epic-5" "$(get_sha integration/epic-5)"
+# Agent rewinding the integration branch to the default branch tip — BLOCKED (B1).
+GT_ROLE=refinery assert_block "Agent rewind of integration branch blocked" run_hook "refs/heads/$DEFAULT_BRANCH" "$remote_sha" "refs/heads/integration/epic-5" "$(get_sha integration/epic-5)"
+# Agent normal push still allowed.
+git checkout -b polecat/nux >/dev/null 2>&1
+echo "polecat" >> file.txt
+git add file.txt && git commit -m "polecat" >/dev/null 2>&1
+GT_ROLE=polecat assert_pass "Agent polecat push allowed" run_hook "refs/heads/polecat/nux" "$(get_sha HEAD)" "refs/heads/polecat/nux" "0000000000000000000000000000000000000000"
 cleanup
 
 echo ""

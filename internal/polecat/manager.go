@@ -23,6 +23,7 @@ import (
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mergeproof"
+	"github.com/steveyegge/gastown/internal/pushguard"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
@@ -880,6 +881,11 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 	if err := rig.EnsureLocalExcludePatterns(clonePath); err != nil {
 		style.PrintWarning("could not update local git excludes: %v", err)
 	}
+	// The shared repo's managed pre-push guard serves this worktree; ensure it
+	// (idempotent, a no-op once installed). Non-fatal: gt doctor reports it.
+	if _, err := pushguard.Install(clonePath); err != nil {
+		style.PrintWarning("pre-push guard not installed: %v (run 'gt doctor')", err)
+	}
 
 	townRoot := filepath.Dir(m.rig.Path)
 	runtimeConfig := config.ResolveRoleAgentConfig("polecat", townRoot, m.rig.Path)
@@ -1099,6 +1105,11 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (_ *Polecat, retE
 	// Keep worktree runtime ignores local so the tracked tree stays clean.
 	if err := rig.EnsureLocalExcludePatterns(clonePath); err != nil {
 		style.PrintWarning("could not update local git excludes: %v", err)
+	}
+	// The shared repo's managed pre-push guard serves this worktree; ensure it
+	// (idempotent, a no-op once installed). Non-fatal: gt doctor reports it.
+	if _, err := pushguard.Install(clonePath); err != nil {
+		style.PrintWarning("pre-push guard not installed: %v (run 'gt doctor')", err)
 	}
 
 	// Install runtime settings in the shared polecats parent directory.
@@ -1750,6 +1761,11 @@ func (m *Manager) RepairWorktreeWithOptions(name string, force bool, opts AddOpt
 	// Keep worktree runtime ignores local so the tracked tree stays clean.
 	if err := rig.EnsureLocalExcludePatterns(newClonePath); err != nil {
 		style.PrintWarning("could not update local git excludes: %v", err)
+	}
+	// The shared repo's managed pre-push guard serves this worktree; ensure it
+	// (idempotent, a no-op once installed). Non-fatal: gt doctor reports it.
+	if _, err := pushguard.Install(newClonePath); err != nil {
+		style.PrintWarning("pre-push guard not installed: %v (run 'gt doctor')", err)
 	}
 
 	// NOTE: Slash commands inherited from town level - no per-workspace copies needed.

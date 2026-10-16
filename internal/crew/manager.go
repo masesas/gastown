@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/nudge"
+	"github.com/steveyegge/gastown/internal/pushguard"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
@@ -297,6 +298,12 @@ func (m *Manager) addLocked(name string, createBranch bool) (*CrewWorker, error)
 	if err := rig.RunSetupHooks(m.rig.Path, crewPath); err != nil {
 		// Non-fatal - log warning but continue
 		style.PrintWarning("could not run setup hooks: %v", err)
+	}
+
+	// Install the managed pre-push guard: a crew clone has its own hooks dir
+	// (gt-pd1c.72). Non-fatal; gt doctor reports and fixes it.
+	if _, err := pushguard.Install(crewPath); err != nil {
+		style.PrintWarning("pre-push guard not installed: %v (run 'gt doctor')", err)
 	}
 
 	// Ensure .gitignore has required Gas Town patterns
