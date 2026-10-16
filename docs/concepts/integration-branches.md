@@ -494,7 +494,10 @@ push is a land.
   `GT_INTEGRATION_LAND=1` (set by `gt mq integration land`) passes; the
   variable is a policy marker, not proof of origin.
 - Agents may not delete the default branch, nor an `integration/*` branch
-  that has not landed yet (delete-then-merge would hide the land). Local
+  that has not landed yet (delete-then-merge would hide the land).
+- Agent updates of the default branch or `integration/*` must be
+  fast-forwards: rewinding `integration/x` onto the default branch would hide
+  its old tip (no gt flow force-pushes these branches). Local
   `integration/*` branches and `refs/remotes/<remote>/integration/*` tips
   also count for land detection.
 - Squash merges, cherry-picks and rebases create new SHAs and are not detected

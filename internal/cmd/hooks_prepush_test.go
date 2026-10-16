@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	gitpkg "github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/pushguard"
 )
 
 const testZeroSHA = "0000000000000000000000000000000000000000"
@@ -103,6 +104,7 @@ func TestPrePushGuard(t *testing.T) {
 		update    prePushUpdate
 		wantErr   string // substring; "" = allowed
 		forbidden string // substring that must not appear in the error
+		unmanaged bool   // repository does not run the managed hook
 	}{
 		{name: "agent land auto_land=false rejected", rig: plain, env: agent,
 			update: prePushUpd("refs/heads/main", f.land, f.mainSHA), wantErr: "integration_branch_auto_land", forbidden: "GT_INTEGRATION_LAND"},
@@ -154,7 +156,21 @@ func TestPrePushGuard(t *testing.T) {
 		{name: "agent unreadable scope fails closed", rig: broken, env: agent,
 			update: prePushUpd("refs/heads/main", f.good, f.mainSHA), wantErr: "parsing settings"},
 		{name: "agent outside a rig: target push refused (H2)", rig: nil, env: agent,
-			update: prePushUpd("refs/heads/main", f.good, f.mainSHA), wantErr: "no Gas Town rig detected"},
+			update: prePushUpd("refs/heads/main", f.good, f.mainSHA), wantErr: "no rig was detected"},
+		{name: "agent in unmanaged non-rig repo: plain target push allowed (N1)", rig: nil, env: agent, unmanaged: true,
+			update: prePushUpd("refs/heads/main", f.good, f.mainSHA)},
+		{name: "agent in unmanaged non-rig repo: land still refused (N1)", rig: nil, env: agent, unmanaged: true,
+			update: prePushUpd("refs/heads/main", f.land, f.mainSHA), wantErr: "auto-land treated as off"},
+		{name: "agent in unmanaged non-rig repo: non-fast-forward refused (N1)", rig: nil, env: agent, unmanaged: true,
+			update: prePushUpd("refs/heads/main", f.good, f.bad), wantErr: "not a fast-forward"},
+		{name: "agent non-fast-forward to main refused (B1)", rig: plain, env: agent,
+			update: prePushUpd("refs/heads/main", f.good, f.bad), wantErr: "not a fast-forward"},
+		{name: "agent rewind of integration branch refused (B1)", rig: plain, env: agent,
+			update: prePushUpd("refs/heads/integration/epic-a", f.mainSHA, f.epicSHA), wantErr: "not a fast-forward"},
+		{name: "human non-fast-forward to main not refused by the guard", rig: plain,
+			update: prePushUpd("refs/heads/main", f.good, f.bad)},
+		{name: "agent non-fast-forward to polecat branch allowed", rig: plain, env: agent,
+			update: prePushUpd("refs/heads/polecat/nux", f.good, f.bad)},
 		{name: "agent outside a rig: polecat push allowed", rig: nil, env: agent,
 			update: prePushUpd("refs/heads/polecat/a", f.good, testZeroSHA)},
 		{name: "agent unreachable remote fails closed", rig: plain, env: agent, url: filepath.Join(t.TempDir(), "missing.git"),
@@ -179,6 +195,9 @@ func TestPrePushGuard(t *testing.T) {
 				getenv:  prePushEnv(tt.env...),
 				git:     gitpkg.NewGit(f.repo),
 				loadRig: func() (*prePushRig, error) { return rig, nil },
+			}
+			if tt.unmanaged {
+				g.isManaged = func() bool { return false }
 			}
 			err := g.check([]prePushUpdate{tt.update})
 			if tt.wantErr == "" {
@@ -423,11 +442,20 @@ func TestRunHooksPrePushSymlinkCwd(t *testing.T) {
 		t.Fatalf("in-scope push through symlink should pass: %v", err)
 	}
 
-	// Outside any town: agent push to main is refused, polecat push allowed.
+	// Outside any town, unmanaged repo (e.g. the Gas Town source repo):
+	// a plain agent push to main passes; a land would still be refused.
 	t.Chdir(f.repo)
+	if err := run("refs/heads/main " + f.good + " refs/heads/main " + f.mainSHA + "\n"); err != nil {
+		t.Fatalf("agent push from an unmanaged non-rig repo: %v", err)
+	}
+	// Same repo with the managed hook installed (a rig repo whose rig cannot
+	// be detected): refused.
+	if _, err := pushguard.Install(f.repo); err != nil {
+		t.Fatal(err)
+	}
 	if err := run("refs/heads/main " + f.good + " refs/heads/main " + f.mainSHA + "\n"); err == nil ||
-		!strings.Contains(err.Error(), "no Gas Town rig detected") {
-		t.Fatalf("agent push outside a rig must be refused, got %v", err)
+		!strings.Contains(err.Error(), "no rig was detected") {
+		t.Fatalf("agent push from a managed repo without rig must be refused, got %v", err)
 	}
 	if err := run("refs/heads/polecat/x " + f.good + " refs/heads/polecat/x " + testZeroSHA + "\n"); err != nil {
 		t.Fatalf("polecat push outside a rig: %v", err)

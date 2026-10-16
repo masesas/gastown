@@ -132,6 +132,16 @@ while read local_ref local_sha remote_ref remote_sha; do
     echo "BLOCKED: agents may not delete $branch (no gt with 'hooks pre-push' on PATH)."
     exit 1
   fi
+  # Agents may not rewrite or rewind merge targets: rewinding integration/x
+  # onto the default branch would hide its old tip from the land check.
+  if [[ "$is_agent" == "1" && "$local_sha" != "$zero" && "$remote_sha" != "$zero" && \
+        ( "$branch" == "$default_branch" || "$branch" == integration/* ) ]]; then
+    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      echo "BLOCKED: push to $branch is not a fast-forward (or the remote tip is unknown locally; fetch first)."
+      echo "Agents may not rewrite or rewind merge target branches."
+      exit 1
+    fi
+  fi
   [[ "$branch" == "$default_branch" ]] || continue
   if [[ "$is_agent" == "0" && "$GT_INTEGRATION_LAND" == "1" ]]; then
     continue

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/pushguard"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
@@ -27,9 +28,15 @@ import (
 //     I/O beyond reading stdin, so normal polecat work is not slowed down.
 //   - Rig detection: from the real (symlink-resolved) git common dir, then the
 //     real working directory. An agent push to a target from a repository
-//     whose rig cannot be detected is refused (fail closed). When the rig's
+//     that runs the managed hook but whose rig cannot be detected is refused
+//     (fail closed); other repositories (the Gas Town source repo delegating
+//     from .githooks, the town repo) get the rules without rig settings
+//     (auto-land off, no scope). When the rig's
 //     default_branch is unknown, agents treat main, master and origin/HEAD
 //     as default branches.
+//   - Rewrites (agents): an update of a target must be a fast-forward
+//     (remote_sha ancestor of local_sha, both known locally). Otherwise
+//     rewinding integration/x onto the default branch would hide its old tip.
 //   - Deletions (agents): the default branch may never be deleted; an
 //     integration/* branch only once its tip is already on the remote default
 //     branch (landed), as gt mq integration land cleanup does. Otherwise a
@@ -65,8 +72,10 @@ pre-push hook runs this with git's arguments and pipes git's pre-push input
 
 Rules (agent = GT_ROLE, BD_ACTOR, GT_POLECAT or GT_CREW is set):
   - polecat/*, other branches, tags: allowed, not checked.
-  - Agent push to the default branch or integration/* from a repository whose
-    rig cannot be detected: refused.
+  - Agent push to the default branch or integration/* from a repository that
+    runs the managed hook but whose rig cannot be detected: refused.
+  - Agent update of the default branch or integration/* that is not a
+    fast-forward: refused.
   - Agent deletion of the default branch: refused; of integration/*: refused
     unless the branch has already landed on the default branch.
   - Push to the rig default branch or integration/* that lands another
@@ -110,6 +119,13 @@ func runHooksPrePush(cmd *cobra.Command, args []string) error {
 		git:    git.NewGit(cwd),
 		loadRig: func() (*prePushRig, error) {
 			return detectPrePushRig(prePushLocations(cwd))
+		},
+		isManaged: func() bool {
+			st, err := pushguard.Inspect(cwd)
+			if err != nil {
+				return true // cannot tell: fail closed
+			}
+			return st.State == pushguard.StateInstalled || st.State == pushguard.StateOutdated
 		},
 	}
 	return g.check(updates)
@@ -239,6 +255,11 @@ type prePushGuard struct {
 	getenv  func(string) string
 	git     prePushGit
 	loadRig func() (*prePushRig, error)
+	// isManaged reports whether the repository runs the managed hook (nil =
+	// assume yes). Agents pushing to a target from a managed repo whose rig
+	// cannot be detected are refused; other repos (e.g. the Gas Town source
+	// repo delegating from .githooks) run the rules without rig settings.
+	isManaged func() bool
 
 	rigLoaded  bool
 	rig        *prePushRig
@@ -282,12 +303,17 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 	if !containsString(defaults, branch) && !strings.HasPrefix(branch, integrationBranchPrefix) {
 		return nil
 	}
-	if agentVar != "" && r == nil {
-		return fmt.Errorf("BLOCKED: push to %s: no Gas Town rig detected for this repository; "+
-			"refusing agent push to a merge target (fail closed)", branch)
+	if agentVar != "" && r == nil && g.managedRepo() {
+		return fmt.Errorf("BLOCKED: push to %s: this repository runs the Gas Town managed pre-push hook "+
+			"but no rig was detected for it; refusing agent push to a merge target (fail closed)", branch)
 	}
 	if deletion {
 		return g.checkAgentDelete(u, branch, defaults)
+	}
+	if agentVar != "" {
+		if err := g.checkFastForward(u, branch); err != nil {
+			return err
+		}
 	}
 	if err := g.checkLand(u, branch, r, agentVar); err != nil {
 		return err
@@ -296,6 +322,38 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 		return nil
 	}
 	return g.checkScope(u, branch, defaults[0], r)
+}
+
+// managedRepo reports whether the pushing repository runs the Gas Town
+// managed hook. Unknown (no probe) counts as managed: fail closed.
+func (g *prePushGuard) managedRepo() bool {
+	if g.isManaged == nil {
+		return true
+	}
+	return g.isManaged()
+}
+
+// checkFastForward refuses an agent update of a merge target that is not a
+// fast-forward. Rewinding integration/x to a commit already on the default
+// branch would otherwise hide its old tip from the land guard (B1); no gt
+// flow force-pushes the default branch or integration/*.
+func (g *prePushGuard) checkFastForward(u prePushUpdate, branch string) error {
+	if u.RemoteSHA == prePushZeroSHA {
+		return nil // branch creation
+	}
+	if _, err := g.git.Rev(u.RemoteSHA + "^{commit}"); err != nil {
+		return fmt.Errorf("BLOCKED: push to %s: the remote branch tip is not in this repository; "+
+			"fetch first, then push again (fail closed)", branch)
+	}
+	ff, err := g.git.IsAncestor(u.RemoteSHA, u.LocalSHA)
+	if err != nil {
+		return fmt.Errorf("BLOCKED: push to %s: cannot verify fast-forward: %s (fail closed)", branch, firstLine(err.Error()))
+	}
+	if !ff {
+		return fmt.Errorf("BLOCKED: push to %s is not a fast-forward; agents may not rewrite or rewind "+
+			"merge target branches (default branch, integration/*)", branch)
+	}
+	return nil
 }
 
 func (g *prePushGuard) loadRigOnce() (*prePushRig, error) {
@@ -550,8 +608,11 @@ func verifyError(branch, reason, agentVar string) error {
 }
 
 // checkScope enforces merge_queue.allowed_paths on an agent push to an MR
-// target branch (r is non-nil: agents without a rig are refused earlier).
+// target branch.
 func (g *prePushGuard) checkScope(u prePushUpdate, branch, defaultBranch string, r *prePushRig) error {
+	if r == nil {
+		return nil // unmanaged repo outside a rig: no scope declared
+	}
 	if r.allowedErr != nil {
 		return fmt.Errorf("BLOCKED: push to %s: %v (refusing agent push while the merge scope is unknown)", branch, r.allowedErr)
 	}

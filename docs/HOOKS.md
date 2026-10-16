@@ -252,7 +252,9 @@ is set (the same helper as the `gt mq integration land` gate).
 | Push | Agent | Human |
 |---|---|---|
 | `polecat/*`, other branches, tags | allowed, nothing checked | allowed |
-| Default branch or `integration/*` from a repository whose rig cannot be detected | refused (fail closed) | checked as below, without rig settings |
+| Default branch or `integration/*` from a repository that runs the managed hook but whose rig cannot be detected | refused (fail closed) | checked as below, without rig settings |
+| Default branch or `integration/*` from a repository without the managed hook and outside any rig (e.g. the Gas Town source repo, whose `.githooks/pre-push` delegates) | checked as below without rig settings: auto-land off, no scope | same |
+| Update of the default branch or `integration/*` that is not a fast-forward (`remote_sha` not an ancestor of `local_sha`, or unknown locally) | refused: rewinding `integration/x` onto the default branch would hide its old tip from the land check. No gt flow force-pushes these branches | not checked (git itself needs `-f`) |
 | Delete the default branch | refused | allowed |
 | Delete `integration/*` | allowed only when its tip is already contained in the default branch on the push remote (what `gt mq integration land` cleanup does); otherwise refused, so delete-then-merge cannot hide a land | allowed |
 | Default branch or `integration/*` that newly contains the tip of another `integration/*` branch (a land) | refused when `merge_queue.integration_branch_auto_land` is not `true`, **even with `GT_INTEGRATION_LAND=1`**; with auto-land on, allowed with `GT_INTEGRATION_LAND=1` (set by `gt mq integration land`) | refused unless `GT_INTEGRATION_LAND=1` |
