@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/gastown/internal/tmux"
 
@@ -114,5 +115,34 @@ func TestStoresConcurrentWithReopenAndStop(t *testing.T) {
 	}
 	if opens != 1 {
 		t.Fatalf("opener called %d times, want 1", opens)
+	}
+}
+
+func TestStoresDoesNotBlockDuringLazyOpen(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	m := NewConvoyManager("", func(string, ...interface{}) {}, "gt", 0, nil, func() map[string]beadsdk.Storage {
+		close(entered)
+		<-release
+		return map[string]beadsdk.Storage{"hq": &searchStorage{}}
+	}, nil)
+	done := make(chan struct{})
+	go func() { defer close(done); _ = m.ensureStoresSnapshot() }()
+	<-entered
+
+	got := make(chan int, 1)
+	go func() { got <- len(m.Stores()) }()
+	select {
+	case n := <-got:
+		if n != 0 {
+			t.Fatalf("Stores() during open = %d, want 0", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stores() blocked while openStores was running")
+	}
+	close(release)
+	<-done
+	if len(m.Stores()) != 1 {
+		t.Fatal("Stores() should see store after open completes")
 	}
 }

@@ -203,7 +203,14 @@ func (m *ConvoyManager) ensureStoresSnapshot() map[string]beadsdk.Storage {
 // so a copy taken before Stop may be closed afterwards; callers should bound
 // use with the daemon context, which is cancelled before shutdown.
 func (m *ConvoyManager) Stores() map[string]beadsdk.Storage {
-	m.storesMu.Lock()
+	// ensureStoresSnapshot holds storesMu while openStores() runs, which can
+	// block on a slow/unreachable Dolt until timeout. Callers (heartbeat via
+	// liveBeadsStores) must not stall behind it, so use TryLock: if a lazy open
+	// is in progress, report no stores. That is fail-safe for consumers
+	// (idle_shutdown: "unavailable" => active; hasActiveWork: true).
+	if !m.storesMu.TryLock() {
+		return map[string]beadsdk.Storage{}
+	}
 	defer m.storesMu.Unlock()
 	out := make(map[string]beadsdk.Storage, len(m.stores))
 	for k, v := range m.stores {
