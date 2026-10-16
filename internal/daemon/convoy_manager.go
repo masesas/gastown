@@ -180,6 +180,45 @@ func (m *ConvoyManager) Stop() {
 	}
 }
 
+// ensureStoresSnapshot lazily opens stores via openStores when none are open
+// yet (e.g. Dolt was not ready at startup) and returns a copy of the current
+// set. The copy lets the caller poll without holding storesMu across slow
+// network/Dolt calls. Stores opened here are visible to Stores().
+func (m *ConvoyManager) ensureStoresSnapshot() map[string]beadsdk.Storage {
+	m.storesMu.Lock()
+	defer m.storesMu.Unlock()
+	if len(m.stores) == 0 && m.openStores != nil {
+		m.stores = m.openStores()
+	}
+	snapshot := make(map[string]beadsdk.Storage, len(m.stores))
+	for k, v := range m.stores {
+		snapshot[k] = v
+	}
+	return snapshot
+}
+
+// Stores returns a copy of the currently open beads stores (empty if none are
+// open yet or the manager was stopped). The manager remains the sole owner:
+// callers must not close the returned stores. Stores are only closed by Stop,
+// so a copy taken before Stop may be closed afterwards; callers should bound
+// use with the daemon context, which is cancelled before shutdown.
+func (m *ConvoyManager) Stores() map[string]beadsdk.Storage {
+	// ensureStoresSnapshot holds storesMu while openStores() runs, which can
+	// block on a slow/unreachable Dolt until timeout. Callers (heartbeat via
+	// liveBeadsStores) must not stall behind it, so use TryLock: if a lazy open
+	// is in progress, report no stores. That is fail-safe for consumers
+	// (idle_shutdown: "unavailable" => active; hasActiveWork: true).
+	if !m.storesMu.TryLock() {
+		return map[string]beadsdk.Storage{}
+	}
+	defer m.storesMu.Unlock()
+	out := make(map[string]beadsdk.Storage, len(m.stores))
+	for k, v := range m.stores {
+		out[k] = v
+	}
+	return out
+}
+
 // runEventPoll polls GetAllEventsSince every 5s and processes close events.
 // If stores aren't available at startup (e.g., Dolt not ready), retries
 // lazily via the openStores callback until stores become available.
@@ -205,24 +244,10 @@ func (m *ConvoyManager) runEventPoll() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			m.storesMu.Lock()
-			// Lazy store initialization: retry if stores not yet available
-			if len(m.stores) == 0 {
-				if m.openStores != nil {
-					m.stores = m.openStores()
-				}
-				if len(m.stores) == 0 {
-					m.storesMu.Unlock()
-					continue // still not ready, try next tick
-				}
+			snapshot := m.ensureStoresSnapshot()
+			if len(snapshot) == 0 {
+				continue // still not ready, try next tick
 			}
-			// Take a snapshot of stores for this tick to avoid holding the
-			// lock across potentially slow network/Dolt calls.
-			snapshot := make(map[string]beadsdk.Storage, len(m.stores))
-			for k, v := range m.stores {
-				snapshot[k] = v
-			}
-			m.storesMu.Unlock()
 
 			hadError := m.pollStoresSnapshot(snapshot)
 			// Exponential backoff on consecutive errors to avoid hammering
