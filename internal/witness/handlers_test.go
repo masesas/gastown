@@ -1618,16 +1618,54 @@ func TestResetAbandonedBead_ClosesWhenWorkOnMain(t *testing.T) {
 	}
 }
 
+func TestResetAbandonedBead_ClosesWhenMRMerged(t *testing.T) {
+	// Not parallel: overrides package-level hooks.
+	// Pilot kp-4az.5: the MR merged into an integration branch (not main), the
+	// polecat session ended with the bead still hooked. The witness must close
+	// it, not reset it to open (which made the convoy feeder re-dispatch it).
+	oldVerify, oldMR := verifyCommitOnMain, mergedMRForBead
+	verifyCommitOnMain = func(workDir, rigName, polecatName string) (bool, error) { return false, nil }
+	mergedMRForBead = func(workDir, beadID string) (string, error) { return "kp-wisp-a2i1", nil }
+	t.Cleanup(func() { verifyCommitOnMain, mergedMRForBead = oldVerify, oldMR })
+
+	bd, mock := mockBd(
+		func(args []string) (string, error) {
+			if len(args) >= 1 && args[0] == "show" {
+				return `[{"status":"hooked"}]`, nil
+			}
+			return "", nil
+		},
+		func(args []string) error { return nil },
+	)
+
+	if resetAbandonedBead(bd, t.TempDir(), "testrig", "gt-work123", "alpha", nil) {
+		t.Error("resetAbandonedBead should return false when the MR merged (closed, not re-dispatched)")
+	}
+	var foundClose bool
+	for _, call := range mock.calls {
+		if strings.Contains(call, "close gt-work123") {
+			foundClose = true
+		}
+		if strings.Contains(call, "--status=open") {
+			t.Errorf("merged work must not be reopened, call: %s", call)
+		}
+	}
+	if !foundClose {
+		t.Errorf("expected bd close, got calls: %v", mock.calls)
+	}
+}
+
 func TestResetAbandonedBead_ResetsWhenWorkNotOnMain(t *testing.T) {
 	// Not parallel: overrides package-level verifyCommitOnMain.
 	// When verifyCommitOnMain returns false, resetAbandonedBead should reset
 	// the bead for re-dispatch (existing behavior).
 
-	oldVerify := verifyCommitOnMain
+	oldVerify, oldMR := verifyCommitOnMain, mergedMRForBead
 	verifyCommitOnMain = func(workDir, rigName, polecatName string) (bool, error) {
 		return false, nil // work NOT on main
 	}
-	t.Cleanup(func() { verifyCommitOnMain = oldVerify })
+	mergedMRForBead = func(workDir, beadID string) (string, error) { return "", nil }
+	t.Cleanup(func() { verifyCommitOnMain, mergedMRForBead = oldVerify, oldMR })
 
 	bd, mock := mockBd(
 		func(args []string) (string, error) {

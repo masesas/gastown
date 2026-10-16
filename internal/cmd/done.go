@@ -1608,12 +1608,23 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			fmt.Printf("%s MR already exists (idempotent)\n", style.Bold.Render("✓"))
 			fmt.Printf("  MR ID: %s\n", style.Bold.Render(mrID))
 		} else {
+			doneBaseSHA := submitBaseSHA(g, target)
+			if err := checkSubmitHasNewWork(g, commitSHA, doneBaseSHA, target); err != nil {
+				mrFailed = true
+				doneErrors = append(doneErrors, err.Error())
+				style.PrintWarning("%v\nNo MR created. Witness will be notified.", err)
+				goto notifyWitness
+			}
+
 			// Build MR bead title and description
 			title := fmt.Sprintf("Merge: %s", issueID)
 			description := fmt.Sprintf("branch: %s\ntarget: %s\nsource_issue: %s\nrig: %s",
 				branch, target, issueID, rigName)
 			if commitSHA != "" {
 				description += fmt.Sprintf("\ncommit_sha: %s", commitSHA)
+			}
+			if doneBaseSHA != "" {
+				description += fmt.Sprintf("\nbase_sha: %s", doneBaseSHA)
 			}
 			if doneSkipVerify {
 				description += "\nskip_verify: true"

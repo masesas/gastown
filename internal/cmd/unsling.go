@@ -9,6 +9,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/events"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -222,12 +223,7 @@ func runUnslingWith(cmd *cobra.Command, args []string, dryRun, force bool) error
 	// in "hooked" status forever. Now we update the bead to match the documented
 	// behavior: "The bead's status changes from 'hooked' back to 'open'."
 	if hookedBead.Status == beads.StatusHooked {
-		openStatus := "open"
-		emptyAssignee := ""
-		if err := hookedB.Update(hookedBeadID, beads.UpdateOptions{
-			Status:   &openStatus,
-			Assignee: &emptyAssignee,
-		}); err != nil {
+		if _, err := hookedB.ReleaseWorkBead(hookedBeadID, mergeproof.Resolver(townRoot)); err != nil {
 			// Non-fatal: warn but don't fail the unsling. The hook slot is already
 			// cleared, so the agent is unblocked. The bead status is a bookkeeping
 			// issue that can be fixed manually.
@@ -340,13 +336,13 @@ func cleanStaleHookedBeads(cmd *cobra.Command, b *beads.Beads, agentID, targetBe
 			staleB = beads.New(stalePath)
 		}
 
-		openStatus := "open"
-		emptyAssignee := ""
-		if err := staleB.Update(sb.ID, beads.UpdateOptions{
-			Status:   &openStatus,
-			Assignee: &emptyAssignee,
-		}); err != nil {
+		closed, err := staleB.ReleaseWorkBead(sb.ID, mergeproof.Resolver(townRoot))
+		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't clean up stale bead %s: %v\n", sb.ID, err)
+			continue
+		}
+		if closed {
+			fmt.Printf("%s Cleaned up stale bead %s (was hooked, MR already merged, now closed)\n", style.Bold.Render("✓"), sb.ID)
 			continue
 		}
 		fmt.Printf("%s Cleaned up stale bead %s (was hooked, now open)\n", style.Bold.Render("✓"), sb.ID)

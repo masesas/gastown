@@ -22,6 +22,7 @@ import (
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/mayor"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
@@ -2740,10 +2741,21 @@ func getBeadStatus(bd *BdCli, workDir, beadID string) (string, bool) {
 	return issues[0].Status, true
 }
 
+// mergedMRForBead returns the merged MR whose source issue is beadID, or "".
+// Tests override it.
+var mergedMRForBead = func(workDir, beadID string) (string, error) {
+	townRoot, err := workspace.Find(workDir)
+	if err != nil || townRoot == "" {
+		townRoot = workDir
+	}
+	return beads.New(workDir).MergedMergeRequestFor(beadID, mergeproof.Resolver(townRoot))
+}
+
 // resetAbandonedBead resets a dead polecat's hooked bead so it can be re-dispatched.
 // If the bead is in "hooked" or "in_progress" status, it:
-//  0. Checks if the polecat's work is already on main — if so, closes
-//     the bead instead of resetting (prevents re-dispatch of completed work)
+//  0. Checks if the polecat's work is already on main, or its MR already
+//     merged (any target, e.g. an integration branch) — if so, closes the bead
+//     instead of resetting (prevents re-dispatch of completed work)
 //  1. Reads the respawn count from the spawn-count ledger (recorded by sling
 //     when a dispatch actually started a session, so one death = one count)
 //  2. Resets status to open
@@ -2775,6 +2787,23 @@ func resetAbandonedBead(bd *BdCli, workDir, rigName, hookBead, polecatName strin
 		reason := fmt.Sprintf("Work already on main (verified by witness, polecat %s)", polecatName)
 		if err := bd.Run(workDir, "close", hookBead, "-r", reason); err != nil {
 			fmt.Fprintf(os.Stderr, "witness: failed to close bead %s (work already on main): %v\n", hookBead, err)
+		}
+		return false
+	}
+
+	// Guard: a merged MR means the work landed on its target (which may be an
+	// integration branch, not main). Close the bead; reopening it would make
+	// the convoy feeder dispatch finished work again.
+	mrID, mrErr := mergedMRForBead(workDir, hookBead)
+	if mrErr != nil {
+		// Fail open (the polecat must be recovered) but loudly: resetting here
+		// may re-dispatch merged work if the merge queue was unreadable.
+		fmt.Fprintf(os.Stderr, "witness: WARNING cannot check merged MRs for %s, resetting without merge proof: %v\n", hookBead, mrErr)
+	} else if mrID != "" {
+		reason := fmt.Sprintf("Merged in %s (verified by witness, polecat %s)", mrID, polecatName)
+		// --force: a bead with an attached molecule has open steps that block a plain close.
+		if err := bd.Run(workDir, "close", hookBead, "--force", "-r", reason); err != nil {
+			fmt.Fprintf(os.Stderr, "witness: failed to close bead %s (MR %s merged): %v\n", hookBead, mrID, err)
 		}
 		return false
 	}

@@ -848,6 +848,61 @@ esac
 	}
 }
 
+// Pilot kp-4az.5: a bead whose MR merged but whose status stayed open must not
+// be relaunched (same predicate as the daemon feeder: mergeQueueHeldIssues).
+func TestRunConvoyLaunch_OpenConvoySkipsBeadWhoseMRMerged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).
+		Convoy("hq-cv-m", "M").WithStatus("open").
+		Task("hq-merged", "Merged", withRig("gastown")).TrackedBy("hq-cv-m").
+		Task("hq-fresh", "Fresh", withRig("gastown")).TrackedBy("hq-cv-m").Setup(t)
+
+	origH := mergeQueueHeldFn
+	mergeQueueHeldFn = func(string) (mergeQueueHeld, error) {
+		return func(id string) bool { return id == "hq-merged" }, nil
+	}
+	var dispatched []string
+	origD := dispatchTaskDirect
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error {
+		dispatched = append(dispatched, beadID)
+		return nil
+	}
+	t.Cleanup(func() { mergeQueueHeldFn, dispatchTaskDirect = origH, origD })
+
+	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-m"}); err != nil {
+		t.Fatalf("runConvoyLaunch: %v", err)
+	}
+	if len(dispatched) != 1 || dispatched[0] != "hq-fresh" {
+		t.Fatalf("dispatched = %v, want only [hq-fresh]", dispatched)
+	}
+}
+
+// If the merge queues cannot be read the relaunch holds everything.
+func TestRunConvoyLaunch_OpenConvoyHoldsWhenMergeQueueUnreadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	newTestDAG(t).
+		Convoy("hq-cv-u", "U").WithStatus("open").
+		Task("hq-u1", "U1", withRig("gastown")).TrackedBy("hq-cv-u").Setup(t)
+
+	origH := mergeQueueHeldFn
+	mergeQueueHeldFn = func(string) (mergeQueueHeld, error) { return nil, fmt.Errorf("dolt down") }
+	attempted := 0
+	origD := dispatchTaskDirect
+	dispatchTaskDirect = func(townRoot, beadID, rig, baseBranch string) error { attempted++; return nil }
+	t.Cleanup(func() { mergeQueueHeldFn, dispatchTaskDirect = origH, origD })
+
+	if err := runConvoyLaunch(convoyLaunchCmd, []string{"hq-cv-u"}); err == nil || !strings.Contains(err.Error(), "cannot read merge queues") {
+		t.Fatalf("expected a visible merge-queue error, got %v", err)
+	}
+	if attempted != 0 {
+		t.Fatalf("dispatched %d beads while merge queue unreadable, want 0", attempted)
+	}
+}
+
 // Relaunch must keep beads on the convoy's base branch (e.g. integration/<epic>),
 // using the same sling arguments as the daemon feed.
 func TestRunConvoyLaunch_OpenConvoyPassesBaseBranch(t *testing.T) {

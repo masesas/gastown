@@ -27,6 +27,10 @@ type DispatchResult struct {
 	Error   error
 }
 
+// mergeQueueHeldFn lists beads that must not be dispatched because their MR is
+// pending or merged. Tests override it.
+var mergeQueueHeldFn = mergeQueueHeldIssues
+
 // dispatchTaskDirect dispatches a single task to its rig.
 // In production, this delegates to gt sling. Tests override this variable
 // with a stub to avoid spawning real processes.
@@ -199,11 +203,14 @@ func dispatchWave1(convoyID string, dag *ConvoyDAG, waves []Wave, townRoot, base
 // readyUndispatchedTasks returns the slingable tasks of the DAG that still need
 // a worker: status open, no assignee, and every execution blocker closed. Beads
 // that are hooked, in progress, assigned, or finished are never returned, which
-// keeps re-launching an open convoy idempotent. Result is sorted by ID.
-func readyUndispatchedTasks(dag *ConvoyDAG) []string {
+// keeps re-launching an open convoy idempotent. held are beads whose work is
+// in or through a merge request (mergeQueueHeldIssues, the same predicate the
+// convoy feeder uses): a bead whose MR merged is finished even if its status
+// was never closed. Result is sorted by ID.
+func readyUndispatchedTasks(dag *ConvoyDAG, held mergeQueueHeld) []string {
 	var ready []string
 	for id, node := range dag.Nodes {
-		if !isSlingableType(node.Type) || node.Status != "open" || node.Assignee != "" {
+		if !isSlingableType(node.Type) || node.Status != "open" || node.Assignee != "" || held(id) {
 			continue
 		}
 		blocked := false
@@ -223,15 +230,22 @@ func readyUndispatchedTasks(dag *ConvoyDAG) []string {
 
 // dispatchReadyTasks dispatches every ready, undispatched task of an already
 // open convoy. Individual failures do not abort the remaining dispatches.
-func dispatchReadyTasks(dag *ConvoyDAG, townRoot, baseBranch string) []DispatchResult {
+func dispatchReadyTasks(dag *ConvoyDAG, townRoot, baseBranch string) ([]DispatchResult, error) {
+	held, err := mergeQueueHeldFn(townRoot)
+	if err != nil {
+		// Fail closed, as the feeder does: dispatching without knowing which
+		// beads already merged risks re-running finished work. Surfaced as an
+		// error so the launch does not look like a successful no-op.
+		return nil, fmt.Errorf("holding relaunch dispatch, cannot read merge queues: %w", err)
+	}
 	var results []DispatchResult
-	for _, taskID := range readyUndispatchedTasks(dag) {
+	for _, taskID := range readyUndispatchedTasks(dag, held) {
 		rig := dag.Nodes[taskID].Rig
 		err := dispatchTaskDirect(townRoot, taskID, rig, baseBranch)
 		skipped := err != nil && beadTakenByOther(taskID)
 		results = append(results, DispatchResult{BeadID: taskID, Rig: rig, Success: err == nil, Skipped: skipped, Error: err})
 	}
-	return results
+	return results, nil
 }
 
 // wakeRigFn boots a rig and nudges its witness. Tests override it.
@@ -443,7 +457,10 @@ func runConvoyLaunch(cmd *cobra.Command, args []string) error {
 			if alreadyOpen {
 				// Recovery: convoy was launched before; only (re)dispatch ready
 				// beads that have no worker yet.
-				results := dispatchReadyTasks(dag, townRoot, baseBranch)
+				results, err := dispatchReadyTasks(dag, townRoot, baseBranch)
+				if err != nil {
+					return fmt.Errorf("relaunch %s: %w", convoyID, err)
+				}
 				wakeDispatchedRigs(results)
 				fmt.Print(renderRelaunchOutput(convoyID, results, dag))
 				if failed := relaunchFailures(results); len(failed) > 0 {
