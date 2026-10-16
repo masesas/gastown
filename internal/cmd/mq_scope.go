@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -22,6 +21,10 @@ import (
 //     submit cannot slip through.
 // Both use checkMergeScope, which diffs merge-base(base)..head with
 // git.DiffNameOnly (byte-exact, renames counted on both sides).
+
+// mqCheckScopeSHAPrefix starts the machine-readable line of a passing
+// `gt mq check-scope`; the refinery merges exactly this commit.
+const mqCheckScopeSHAPrefix = "Checked-SHA: "
 
 // mergeScopeMaxListed caps how many offending paths an error lists.
 const mergeScopeMaxListed = 20
@@ -53,22 +56,16 @@ type mergeScopeDiffer interface {
 	DiffNameOnly(base, head string) ([]string, error)
 }
 
-// loadMergeScope returns the rig's merge_queue.allowed_paths. A missing
-// settings file or missing merge_queue section means unrestricted (nil). A
-// settings file that exists but cannot be read, parsed or validated fails
-// closed: the scope it may declare is unknown.
+// loadMergeScope returns the rig's merge_queue.allowed_paths (nil =
+// unrestricted). Only that key is read, so unrelated invalid settings never
+// block submission; an unparseable file or invalid pattern fails closed. See
+// config.LoadMergeQueueAllowedPaths.
 func loadMergeScope(rigPath string) ([]string, error) {
-	settings, err := config.LoadRigSettings(config.RigSettingsPath(rigPath))
+	allowed, err := config.LoadMergeQueueAllowedPaths(config.RigSettingsPath(rigPath))
 	if err != nil {
-		if errors.Is(err, config.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("merge scope: cannot load rig settings: %w", err)
+		return nil, fmt.Errorf("merge scope: %w", err)
 	}
-	if !settings.MergeQueue.HasPathScope() {
-		return nil, nil
-	}
-	return settings.MergeQueue.AllowedPaths, nil
+	return allowed, nil
 }
 
 // checkMergeScope diffs base...head and returns the number of changed paths
@@ -106,9 +103,10 @@ var mqCheckScopeCmd = &cobra.Command{
 	Long: `Check that a merge request changes only paths allowed by the rig's
 merge_queue.allowed_paths (settings/config.json).
 
-The command fetches origin, then diffs origin/<target>...origin/<branch> -
-exactly the branch tip the refinery is about to merge, so a branch re-pushed
-after submit is checked again. Exit status is non-zero when any changed path
+The command fetches origin, resolves the tip of origin/<branch> once and diffs
+origin/<target>...<tip>, so a branch re-pushed after submit is checked again.
+On success the last line is "Checked-SHA: <tip>": the refinery merges exactly
+that commit, so a push landing after the check is never merged unchecked. Exit status is non-zero when any changed path
 is outside allowed_paths (the offending paths are listed), or when the check
 cannot be completed (fail closed). A rig without allowed_paths is unrestricted
 and always passes.
@@ -136,6 +134,7 @@ type mqCheckScopeManager interface {
 type mqCheckScopeGit interface {
 	mergeScopeDiffer
 	Fetch(remote string) error
+	Rev(ref string) (string, error)
 }
 
 func runMQCheckScope(_ *cobra.Command, args []string) error {
@@ -163,6 +162,7 @@ func runMQCheckScopeFor(mgr mqCheckScopeManager, rigPath string, g mqCheckScopeG
 		return "", err
 	}
 	if len(allowed) == 0 {
+		// Unrestricted: no Checked-SHA; the refinery merges origin/<branch> as before.
 		return fmt.Sprintf("%s merge scope unrestricted (no merge_queue.allowed_paths)", style.Dim.Render("○")), nil
 	}
 	mr, err := mgr.FindMRForPostMerge(idOrBranch)
@@ -182,11 +182,19 @@ func runMQCheckScopeFor(mgr mqCheckScopeManager, rigPath string, g mqCheckScopeG
 	if err := g.Fetch("origin"); err != nil {
 		return "", fmt.Errorf("merge scope: fetch origin: %w", err)
 	}
-	base, head := "origin/"+target, "origin/"+branch
-	n, err := checkMergeScope(g, allowed, base, head)
+	// Pin the tip once: the diff and the reported Checked-SHA are the same
+	// commit, and the refinery merges exactly that commit (merge-push), so a
+	// push landing after this check cannot be merged unchecked.
+	base := "origin/" + target
+	sha, err := g.Rev("refs/remotes/origin/" + branch + "^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("merge scope: resolve origin/%s: %w", branch, err)
+	}
+	sha = strings.TrimSpace(sha)
+	n, err := checkMergeScope(g, allowed, base, sha)
 	if err != nil {
 		return "", fmt.Errorf("MR %s: %w", mr.ID, err)
 	}
-	return fmt.Sprintf("%s MR %s: %d changed path(s) within allowed_paths (%s...%s)",
-		style.Bold.Render("✓"), mr.ID, n, base, head), nil
+	return fmt.Sprintf("%s MR %s: %d changed path(s) within allowed_paths (%s...origin/%s)\n%s%s",
+		style.Bold.Render("✓"), mr.ID, n, base, branch, mqCheckScopeSHAPrefix, sha), nil
 }

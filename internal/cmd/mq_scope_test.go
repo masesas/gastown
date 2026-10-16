@@ -218,6 +218,31 @@ func TestRunMQCheckScopeFor(t *testing.T) {
 		if !strings.Contains(out, "within allowed_paths") {
 			t.Fatalf("output %q missing pass summary", out)
 		}
+		tip := runGitForMQSubmitTest(t, repo, "rev-parse", "origin/polecat/nux/gt-1")
+		if !strings.Contains(out, "\nChecked-SHA: "+tip) {
+			t.Fatalf("output %q missing machine-readable Checked-SHA: %s line", out, tip)
+		}
+	})
+
+	t.Run("Checked-SHA is the freshly fetched tip that was diffed", func(t *testing.T) {
+		repo := initMQScopeRepo(t, "apps/mobile/main.dart")
+		stale := runGitForMQSubmitTest(t, repo, "rev-parse", "origin/polecat/nux/gt-1")
+		writeMQScopeFile(t, repo, "apps/mobile/more.dart", "more\n")
+		runGitForMQSubmitTest(t, repo, "add", "-A")
+		runGitForMQSubmitTest(t, repo, "commit", "-m", "more")
+		runGitForMQSubmitTest(t, repo, "push", "origin", "polecat/nux/gt-1")
+		fresh := runGitForMQSubmitTest(t, repo, "rev-parse", "HEAD")
+		runGitForMQSubmitTest(t, repo, "update-ref", "refs/remotes/origin/polecat/nux/gt-1", stale)
+
+		rig := t.TempDir()
+		writeMQScopeRigSettings(t, rig, map[string]any{"allowed_paths": allowed})
+		out, err := runMQCheckScopeFor(fakeMQScopeManager{mr: mr}, rig, gitpkg.NewGit(repo), "gt-mr-1")
+		if err != nil {
+			t.Fatalf("runMQCheckScopeFor() = %v", err)
+		}
+		if !strings.Contains(out, "Checked-SHA: "+fresh) || strings.Contains(out, stale) {
+			t.Fatalf("output %q: want Checked-SHA %s (fresh), not stale %s", out, fresh, stale)
+		}
 	})
 
 	t.Run("branch re-pushed out of scope after submit is rejected", func(t *testing.T) {
@@ -340,4 +365,15 @@ func TestEnforceMergeScope(t *testing.T) {
 			t.Fatalf("enforceSubmitMergeScope() = %v, want nil", err)
 		}
 	})
+}
+
+// Regression (PR #38 review, HIGH): a rig without allowed_paths whose
+// settings carry an unrelated invalid field must not block gt done / submit.
+func TestLoadMergeScopeIgnoresUnrelatedInvalidSettings(t *testing.T) {
+	rig := t.TempDir()
+	writeMQScopeRigSettings(t, rig, map[string]any{"poll_interval": "bogus"})
+	got, err := loadMergeScope(rig)
+	if err != nil || got != nil {
+		t.Fatalf("loadMergeScope() = %q, %v; want nil, nil (unrestricted)", got, err)
+	}
 }

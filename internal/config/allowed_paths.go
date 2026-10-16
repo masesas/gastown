@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 )
@@ -55,6 +57,41 @@ func validateAllowedPath(p string) error {
 		}
 	}
 	return nil
+}
+
+// LoadMergeQueueAllowedPaths reads only merge_queue.allowed_paths from the
+// rig settings file at settingsPath, independently of the rest of the file.
+//
+// It deliberately does not go through LoadRigSettings: an unrelated invalid
+// field (newer version, bad poll_interval, ...) must not turn an unscoped rig
+// into a blocked one, nor hide a declared scope. Results:
+//   - file missing, no merge_queue, key absent or empty list: nil, nil
+//     (unrestricted);
+//   - file unreadable, not valid JSON, allowed_paths of the wrong type, or an
+//     invalid pattern: error (fail closed, the declared scope is unknown).
+func LoadMergeQueueAllowedPaths(settingsPath string) ([]string, error) {
+	data, err := os.ReadFile(settingsPath) //nolint:gosec // G304: path is constructed internally
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", settingsPath, err)
+	}
+	var raw struct {
+		MergeQueue *struct {
+			AllowedPaths []string `json:"allowed_paths"`
+		} `json:"merge_queue"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing merge_queue.allowed_paths in %s: %w", settingsPath, err)
+	}
+	if raw.MergeQueue == nil || len(raw.MergeQueue.AllowedPaths) == 0 {
+		return nil, nil
+	}
+	if err := ValidateAllowedPaths(raw.MergeQueue.AllowedPaths); err != nil {
+		return nil, err
+	}
+	return raw.MergeQueue.AllowedPaths, nil
 }
 
 // MatchAllowedPath reports whether the repository-relative, slash-separated

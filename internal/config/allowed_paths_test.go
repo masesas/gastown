@@ -176,3 +176,54 @@ func TestAllowedPathsFailClosedAndEmptyEdges(t *testing.T) {
 		t.Errorf("PathsOutsideAllowed(no changes) = %q, want nil", got)
 	}
 }
+
+func TestLoadMergeQueueAllowedPaths(t *testing.T) {
+	dir := t.TempDir()
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		path := filepath.Join(dir, "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	tests := []struct {
+		name    string
+		body    string
+		want    []string
+		wantErr bool
+	}{
+		// Regression (PR #38 review): an unrelated invalid field must not turn
+		// an unscoped rig into a blocked one.
+		{"invalid poll_interval without allowed_paths is unrestricted",
+			`{"type":"rig-settings","version":1,"merge_queue":{"poll_interval":"bogus"}}`, nil, false},
+		{"newer version and bad on_conflict without allowed_paths is unrestricted",
+			`{"type":"rig-settings","version":99,"merge_queue":{"on_conflict":"nope","run_tests":"x"}}`, nil, false},
+		{"allowed_paths still read when another field is invalid",
+			`{"merge_queue":{"poll_interval":"bogus","allowed_paths":["apps/**"]}}`, []string{"apps/**"}, false},
+		{"empty list is unrestricted", `{"merge_queue":{"allowed_paths":[]}}`, nil, false},
+		{"no merge_queue is unrestricted", `{"type":"rig-settings"}`, nil, false},
+		{"unparseable JSON fails closed", `{not json`, nil, true},
+		{"allowed_paths of wrong type fails closed", `{"merge_queue":{"allowed_paths":"apps/**"}}`, nil, true},
+		{"invalid pattern fails closed", `{"merge_queue":{"allowed_paths":["/apps/**"]}}`, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := LoadMergeQueueAllowedPaths(write(t, tt.body))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("missing file is unrestricted", func(t *testing.T) {
+		got, err := LoadMergeQueueAllowedPaths(filepath.Join(t.TempDir(), "absent.json"))
+		if err != nil || got != nil {
+			t.Fatalf("got %q, %v; want nil, nil", got, err)
+		}
+	})
+}

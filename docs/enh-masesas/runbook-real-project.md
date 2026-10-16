@@ -32,7 +32,7 @@ Syarat minimum sebelum Gas Town dipakai di repo sungguhan, diturunkan dari pilot
 - Uji negatif sekali sebelum epic pertama: rusak satu query di branch percobaan, lalu pastikan gate gagal.
 - `pre_verified` tidak pernah menggantikan gate refinery (PR #20, #27). Periksa log refinery: gate jalan untuk setiap MR.
 - Container dev milik proyek lain jangan dipakai untuk gate.
-- Batasi path yang boleh diubah MR dengan `merge_queue.allowed_paths` di `<rig>/settings/config.json`, mis. `"allowed_paths": ["apps/**", "contracts/openapi.yaml"]`: `gt done`/`gt mq submit` menolak branch yang menyentuh path lain (mis. `.brief-reviews/...` dari leg review, kejadian 16 Okt) dan refinery menjalankan `gt mq check-scope <rig> <mr-id>` sebelum merge lalu mengirim FIX_NEEDED bila ada pelanggaran; tanpa kunci ini rig tidak dibatasi.
+- Batasi path yang boleh diubah MR dengan `merge_queue.allowed_paths` di `<rig>/settings/config.json`, mis. `"allowed_paths": ["apps/**", "contracts/openapi.yaml"]`: `gt done`/`gt mq submit` menolak branch yang menyentuh path lain (mis. `.brief-reviews/...` dari leg review, kejadian 16 Okt) dan refinery menjalankan `gt mq check-scope <rig> <mr-id>` sebelum merge lalu mengirim FIX_NEEDED bila ada pelanggaran (merge memakai persis `Checked-SHA` yang diperiksa); kunci tidak ada atau `[]` berarti rig tidak dibatasi. Penilaian memakai path di tree git: symlink di dalam path yang diizinkan yang menunjuk keluar tetap lolos (batas desain).
 
 ## 4. Identitas commit
 
