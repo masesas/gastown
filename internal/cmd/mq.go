@@ -304,6 +304,11 @@ Options:
   --skip-tests  Skip test run
   --dry-run     Preview only, make no changes
 
+Human-only when auto-land is off: if the rig's
+merge_queue.integration_branch_auto_land is not true, a caller with an agent
+identity (GT_ROLE, BD_ACTOR, GT_POLECAT or GT_CREW set) is refused. --force
+does not bypass this; --dry-run is still allowed.
+
 Examples:
   gt mq integration land gt-auth-epic
   gt mq integration land gt-auth-epic --dry-run

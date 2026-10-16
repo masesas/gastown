@@ -469,6 +469,17 @@ func runMqIntegrationLand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Human-only gate (gt-pd1c.71): with auto-land disabled an agent may
+	// preview (--dry-run) but never land. Checked before any fetch or merge.
+	autoLand := integrationAutoLandEnabled(r.Path)
+	if err := checkIntegrationLandAllowed(r.Name, epicID, autoLand, mqIntegrationLandDryRun, os.Getenv); err != nil {
+		return err
+	}
+	if !autoLand && agentSessionEnvVar(os.Getenv) != "" {
+		fmt.Printf("%s auto-land disabled for rig %s; only a human can perform the real land\n\n",
+			style.Bold.Render("⚠"), r.Name)
+	}
+
 	// Initialize beads and git for the rig
 	// Use getRigGit for early ref-only checks (branch exists, fetch).
 	// Work-tree operations (checkout, merge, push) use a temporary worktree created later.
@@ -967,13 +978,8 @@ func runMqIntegrationStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check if auto-land is enabled in settings
-	settingsPath := filepath.Join(r.Path, "settings", "config.json")
-	settings, _ := config.LoadRigSettings(settingsPath) // Ignore error, use defaults
-	autoLandEnabled := false
-	if settings != nil && settings.MergeQueue != nil {
-		autoLandEnabled = settings.MergeQueue.IsIntegrationBranchAutoLandEnabled()
-	}
+	// Check if auto-land is enabled in settings (missing/unreadable → false)
+	autoLandEnabled := integrationAutoLandEnabled(r.Path)
 
 	// Query children of the epic to determine if ready to land
 	// Use status "all" to include both open and closed children
