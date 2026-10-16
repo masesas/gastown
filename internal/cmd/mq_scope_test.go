@@ -377,3 +377,72 @@ func TestLoadMergeScopeIgnoresUnrelatedInvalidSettings(t *testing.T) {
 		t.Fatalf("loadMergeScope() = %q, %v; want nil, nil (unrestricted)", got, err)
 	}
 }
+
+func TestRunMQCheckScopeRange(t *testing.T) {
+	allowed := []string{"apps/**", "contracts/openapi.yaml"}
+	setup := func(t *testing.T, paths ...string) (repo, rig, old, head string) {
+		t.Helper()
+		repo = initMQScopeRepo(t, "apps/mobile/main.dart")
+		old = runGitForMQSubmitTest(t, repo, "rev-parse", "HEAD")
+		for _, p := range paths {
+			writeMQScopeFile(t, repo, p, "pushed\n")
+		}
+		runGitForMQSubmitTest(t, repo, "add", "-A")
+		runGitForMQSubmitTest(t, repo, "commit", "-m", "pushed")
+		head = runGitForMQSubmitTest(t, repo, "rev-parse", "HEAD")
+		rig = t.TempDir()
+		writeMQScopeRigSettings(t, rig, map[string]any{"allowed_paths": allowed})
+		return repo, rig, old, head
+	}
+
+	t.Run("in-scope push passes", func(t *testing.T) {
+		repo, rig, old, head := setup(t, "contracts/openapi.yaml")
+		out, err := runMQCheckScopeRange(rig, gitpkg.NewGit(repo), old, head)
+		if err != nil {
+			t.Fatalf("runMQCheckScopeRange() = %v", err)
+		}
+		if !strings.Contains(out, "1 changed path(s) within allowed_paths") || !strings.Contains(out, old+".."+head) {
+			t.Fatalf("output %q missing range summary", out)
+		}
+	})
+
+	t.Run("out-of-scope push is rejected with two-dot range", func(t *testing.T) {
+		repo, rig, old, head := setup(t, ".brief-reviews/kp-4az-r1/mobile-consumer.md")
+		_, err := runMQCheckScopeRange(rig, gitpkg.NewGit(repo), old, head)
+		var scopeErr *MergeScopeError
+		if !errors.As(err, &scopeErr) || !reflect.DeepEqual(scopeErr.Paths, []string{".brief-reviews/kp-4az-r1/mobile-consumer.md"}) {
+			t.Fatalf("runMQCheckScopeRange() = %v, want violation", err)
+		}
+		if !strings.Contains(err.Error(), old+".."+head) || strings.Contains(err.Error(), old+"..."+head) {
+			t.Fatalf("error %q should name the two-dot range", err)
+		}
+	})
+
+	t.Run("unrestricted rig passes without git", func(t *testing.T) {
+		out, err := runMQCheckScopeRange(t.TempDir(), gitpkg.NewGit(t.TempDir()), "a", "b")
+		if err != nil || !strings.Contains(out, "unrestricted") {
+			t.Fatalf("runMQCheckScopeRange() = %q, %v; want unrestricted pass", out, err)
+		}
+	})
+
+	t.Run("fail closed", func(t *testing.T) {
+		repo, rig, _, head := setup(t, "apps/x.dart")
+		g := gitpkg.NewGit(repo)
+		for name, rng := range map[string][2]string{
+			"zero old sha (new branch)": {"0000000000000000000000000000000000000000", head},
+			"unknown ref":               {"no-such-ref", head},
+			"empty old":                 {"", head},
+			"option-looking ref":        {"--output=/tmp/x", head},
+			"option-looking new":        {head, "-x"},
+		} {
+			if _, err := runMQCheckScopeRange(rig, g, rng[0], rng[1]); err == nil {
+				t.Errorf("%s: runMQCheckScopeRange(%q, %q) = nil, want error", name, rng[0], rng[1])
+			}
+		}
+		bad := t.TempDir()
+		writeMQScopeRigSettings(t, bad, map[string]any{"allowed_paths": []string{"/abs/**"}})
+		if _, err := runMQCheckScopeRange(bad, g, head, head); err == nil {
+			t.Error("invalid pattern: want fail-closed error")
+		}
+	})
+}

@@ -1193,7 +1193,18 @@ func (g *Git) RmCached(paths ...string) error {
 // and the new path are listed. The merge-scope gate depends on this: a move
 // out of (or into) a directory must expose both sides.
 func (g *Git) DiffNameOnly(base, head string) ([]string, error) {
-	out, err := g.runRaw("diff", "--name-only", "--no-renames", "-z", base+"..."+head, "--")
+	return g.diffNames(base + "..." + head)
+}
+
+// DiffNameOnlyRange returns the paths that differ between the trees of from
+// and to (git diff <from>..<to>, no merge-base), with the same byte-exact,
+// rename-safe output as DiffNameOnly. Used for pre-push style old..new checks.
+func (g *Git) DiffNameOnlyRange(from, to string) ([]string, error) {
+	return g.diffNames(from + ".." + to)
+}
+
+func (g *Git) diffNames(revRange string) ([]string, error) {
+	out, err := g.runRaw("diff", "--name-only", "--no-renames", "-z", revRange, "--")
 	if err != nil {
 		return nil, err
 	}

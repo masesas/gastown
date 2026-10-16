@@ -2,25 +2,32 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 // Merge-scope gate (gt-pd1c.68).
 //
 // merge_queue.allowed_paths in <rig>/settings/config.json limits which repo
-// paths an MR may change. The gate runs at both convergence points:
-//   - submit time: gt done and gt mq submit refuse an out-of-scope branch
-//     before any MR bead exists (enforceMergeScope);
-//   - merge time: the refinery patrol runs `gt mq check-scope` on the freshly
-//     fetched branch right before merge-push, so a branch re-pushed after
-//     submit cannot slip through.
-// Both use checkMergeScope, which diffs merge-base(base)..head with
-// git.DiffNameOnly (byte-exact, renames counted on both sides).
+// paths an MR may change. Enforcement layers:
+//   - submit time (hard, in code): gt done and gt mq submit refuse an
+//     out-of-scope branch before any MR bead exists (enforceMergeScope);
+//   - merge time (formula instruction only): the refinery patrol is told to
+//     run `gt mq check-scope` right before merge-push and to merge exactly the
+//     Checked-SHA. This catches a branch re-pushed after submit only when the
+//     refinery follows the formula; an agent that pushes directly (e.g.
+//     `git push origin temp:<target>`) bypasses it;
+//   - push time (planned, gt-pd1c.72): a pre-push hook calling
+//     `gt mq check-scope --range <old> <new>`.
+// All share checkMergeScopeWith (byte-exact paths, renames on both sides).
 
 // mqCheckScopeSHAPrefix starts the machine-readable line of a passing
 // `gt mq check-scope`; the refinery merges exactly this commit.
@@ -34,12 +41,17 @@ type MergeScopeError struct {
 	Paths []string // offending paths, in diff order
 	Base  string   // base ref of the diff
 	Head  string   // head ref/commit of the diff
+	Range string   // "..." (merge-base diff, default) or ".." (two-dot)
 }
 
 func (e *MergeScopeError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "merge scope violation: %d path(s) changed in %s...%s are outside merge_queue.allowed_paths:",
-		len(e.Paths), e.Base, e.Head)
+	sep := e.Range
+	if sep == "" {
+		sep = "..."
+	}
+	fmt.Fprintf(&b, "merge scope violation: %d path(s) changed in %s%s%s are outside merge_queue.allowed_paths:",
+		len(e.Paths), e.Base, sep, e.Head)
 	for i, p := range e.Paths {
 		if i == mergeScopeMaxListed {
 			fmt.Fprintf(&b, "\n  ... and %d more", len(e.Paths)-mergeScopeMaxListed)
@@ -73,15 +85,21 @@ func loadMergeScope(rigPath string) ([]string, error) {
 // allowed list is unrestricted and does not run git. A diff failure is
 // returned as an error (fail closed).
 func checkMergeScope(g mergeScopeDiffer, allowed []string, base, head string) (int, error) {
+	return checkMergeScopeWith(allowed, base, "...", head, g.DiffNameOnly)
+}
+
+// checkMergeScopeWith is the single scope check: list changed paths with diff
+// (base<sep>head) and report those outside allowed. Empty allowed = no git.
+func checkMergeScopeWith(allowed []string, base, sep, head string, diff func(base, head string) ([]string, error)) (int, error) {
 	if len(allowed) == 0 {
 		return 0, nil
 	}
-	changed, err := g.DiffNameOnly(base, head)
+	changed, err := diff(base, head)
 	if err != nil {
-		return 0, fmt.Errorf("merge scope: diff %s...%s: %w", base, head, err)
+		return 0, fmt.Errorf("merge scope: diff %s%s%s: %w", base, sep, head, err)
 	}
 	if outside := config.PathsOutsideAllowed(allowed, changed); len(outside) > 0 {
-		return len(changed), &MergeScopeError{Paths: outside, Base: base, Head: head}
+		return len(changed), &MergeScopeError{Paths: outside, Base: base, Head: head, Range: sep}
 	}
 	return len(changed), nil
 }
@@ -97,31 +115,47 @@ func enforceMergeScope(rigPath string, g mergeScopeDiffer, base, head string) er
 	return err
 }
 
+// check-scope --range flags (layer 2, pre-push).
+var (
+	mqCheckScopeRange bool
+	mqCheckScopeRig   string
+)
+
 var mqCheckScopeCmd = &cobra.Command{
-	Use:   "check-scope <rig> <mr-id-or-branch>",
+	Use:   "check-scope <rig> <mr-id-or-branch> | --range <old-sha> <new-sha> [--rig <rig>]",
 	Short: "Verify an MR only changes paths allowed by merge_queue.allowed_paths",
 	Long: `Check that a merge request changes only paths allowed by the rig's
 merge_queue.allowed_paths (settings/config.json).
 
 The command fetches origin, resolves the tip of origin/<branch> once and diffs
 origin/<target>...<tip>, so a branch re-pushed after submit is checked again.
-On success the last line is "Checked-SHA: <tip>": the refinery merges exactly
-that commit, so a push landing after the check is never merged unchecked. Exit status is non-zero when any changed path
+On success the last line is "Checked-SHA: <tip>"; the refinery formula merges
+exactly that commit, so a later push is not merged unchecked as long as the
+refinery follows the formula. Exit status is non-zero when any changed path
 is outside allowed_paths (the offending paths are listed), or when the check
 cannot be completed (fail closed). A rig without allowed_paths is unrestricted
 and always passes.
 
 Designed for the refinery patrol: run it before merge-push and treat a failure
-like a failed gate (FIX_NEEDED, do not merge).
+like a failed gate (FIX_NEEDED, do not merge). This merge-time check is a formula
+instruction; the hard gate is gt done / gt mq submit.
+
+With --range, no MR or fetch is involved: the command checks the two-dot diff
+<old-sha>..<new-sha> in the current repository against the rig's allowed_paths
+(rig from --rig, else from the current directory). Intended for a pre-push hook.
+Both refs are required; a zero SHA (new branch) fails - pass a base ref instead.
 
 Examples:
   gt mq check-scope gastown gt-mr-abc123
-  gt mq check-scope gastown polecat/nux/gt-xyz`,
+  gt mq check-scope gastown polecat/nux/gt-xyz
+  gt mq check-scope --range 1a2b3c 4d5e6f --rig gastown`,
 	Args: cobra.ExactArgs(2),
 	RunE: runMQCheckScope,
 }
 
 func init() {
+	mqCheckScopeCmd.Flags().BoolVar(&mqCheckScopeRange, "range", false, "Check the two-dot diff <old-sha>..<new-sha> in the current repo (pre-push)")
+	mqCheckScopeCmd.Flags().StringVar(&mqCheckScopeRig, "rig", "", "Rig whose allowed_paths apply (with --range; default: current rig)")
 	mqCmd.AddCommand(mqCheckScopeCmd)
 }
 
@@ -138,6 +172,12 @@ type mqCheckScopeGit interface {
 }
 
 func runMQCheckScope(_ *cobra.Command, args []string) error {
+	if mqCheckScopeRange {
+		return runMQCheckScopeRangeCmd(args[0], args[1])
+	}
+	if mqCheckScopeRig != "" {
+		return fmt.Errorf("--rig is only valid with --range")
+	}
 	mgr, r, _, err := getRefineryManager(args[0])
 	if err != nil {
 		return err
@@ -197,4 +237,56 @@ func runMQCheckScopeFor(mgr mqCheckScopeManager, rigPath string, g mqCheckScopeG
 	}
 	return fmt.Sprintf("%s MR %s: %d changed path(s) within allowed_paths (%s...origin/%s)\n%s%s",
 		style.Bold.Render("✓"), mr.ID, n, base, branch, mqCheckScopeSHAPrefix, sha), nil
+}
+
+func runMQCheckScopeRangeCmd(oldRev, newRev string) error {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	rigName := mqCheckScopeRig
+	if rigName == "" {
+		if rigName, _, err = findCurrentRig(townRoot); err != nil {
+			return err
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting current directory: %w", err)
+	}
+	out, err := runMQCheckScopeRange(filepath.Join(townRoot, rigName), git.NewGit(cwd), oldRev, newRev)
+	if err != nil {
+		return err
+	}
+	fmt.Println(out)
+	return nil
+}
+
+// mqScopeRangeDiffer is the git surface --range needs.
+type mqScopeRangeDiffer interface {
+	DiffNameOnlyRange(from, to string) ([]string, error)
+}
+
+// runMQCheckScopeRange checks the two-dot diff oldRev..newRev against the
+// rig scope. Empty or option-looking revisions fail closed; unknown revisions
+// (including the all-zero SHA of a new branch) fail in git and are returned.
+func runMQCheckScopeRange(rigPath string, g mqScopeRangeDiffer, oldRev, newRev string) (string, error) {
+	allowed, err := loadMergeScope(rigPath)
+	if err != nil {
+		return "", err
+	}
+	if len(allowed) == 0 {
+		return fmt.Sprintf("%s merge scope unrestricted (no merge_queue.allowed_paths)", style.Dim.Render("○")), nil
+	}
+	for _, rev := range []string{oldRev, newRev} {
+		if strings.TrimSpace(rev) == "" || strings.HasPrefix(rev, "-") {
+			return "", fmt.Errorf("merge scope: invalid revision %q for --range", rev)
+		}
+	}
+	n, err := checkMergeScopeWith(allowed, oldRev, "..", newRev, g.DiffNameOnlyRange)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s %d changed path(s) within allowed_paths (%s..%s)",
+		style.Bold.Render("✓"), n, oldRev, newRev), nil
 }

@@ -62,3 +62,40 @@ func TestDiffNameOnlyIsExactAndRenameSafe(t *testing.T) {
 		t.Fatalf("DiffNameOnly(no changes) = %q, %v; want nil, nil", empty, err)
 	}
 }
+
+// TestDiffNameOnlyRangeIsTwoDot pins the pre-push contract: old..new lists
+// exactly what differs between the two commits' trees (no merge-base), with
+// the same byte-exact, rename-safe output as DiffNameOnly.
+func TestDiffNameOnlyRangeIsTwoDot(t *testing.T) {
+	dir := initTestRepo(t)
+	runDiffTestGit(t, dir, "branch", "old")
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runDiffTestGit(t, dir, "mv", "README.md", "MOVED.md")
+	runDiffTestGit(t, dir, "add", "-A")
+	runDiffTestGit(t, dir, "commit", "-m", "change")
+
+	// Advance "old" independently: with two dots its own change must show up
+	// too (as a difference between the trees), unlike old...HEAD.
+	runDiffTestGit(t, dir, "checkout", "-q", "old")
+	if err := os.WriteFile(filepath.Join(dir, "only-old.txt"), []byte("o\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runDiffTestGit(t, dir, "add", "-A")
+	runDiffTestGit(t, dir, "commit", "-m", "old side")
+	runDiffTestGit(t, dir, "checkout", "-q", "-")
+
+	got, err := NewGit(dir).DiffNameOnlyRange("old", "HEAD")
+	if err != nil {
+		t.Fatalf("DiffNameOnlyRange: %v", err)
+	}
+	sort.Strings(got)
+	want := []string{"MOVED.md", "README.md", "new.txt", "only-old.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DiffNameOnlyRange() = %q, want %q", got, want)
+	}
+	if _, err := NewGit(dir).DiffNameOnlyRange("0000000000000000000000000000000000000000", "HEAD"); err == nil {
+		t.Fatal("DiffNameOnlyRange(zero sha) = nil error, want failure")
+	}
+}
