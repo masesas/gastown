@@ -191,13 +191,18 @@ func isRoleCommand(cmd *cobra.Command) bool {
 	return false
 }
 
+// isDoneCommand reports whether cmd is the top-level `gt done` command: a
+// command named "done" that is a direct child of the root (or a parentless
+// "done" command, as constructed in tests). Subcommands that merely share the
+// name, such as `gt dog done`, `gt mol step done` or `gt wl done`, are not
+// `gt done` and must not trigger the polecat ownership guard (gt-pd1c.60).
+// doneCmd has no subcommands, so no ancestor walk is needed.
 func isDoneCommand(cmd *cobra.Command) bool {
-	for c := cmd; c != nil; c = c.Parent() {
-		if c.Name() == "done" {
-			return true
-		}
+	if cmd == nil || cmd.Name() != "done" {
+		return false
 	}
-	return false
+	parent := cmd.Parent()
+	return parent == nil || !parent.HasParent()
 }
 
 // initCLITheme initializes the CLI color theme based on settings and environment.
@@ -387,6 +392,8 @@ func silenceUsageOnRuntimeErrors(root *cobra.Command) {
 	walk(root)
 }
 
+// isDoneInvocation reports whether args resolve to top-level `gt done`.
+// Execute uses it to skip telemetry init for gt done only.
 func isDoneInvocation(args []string) bool {
 	cmd, _, err := rootCmd.Find(args)
 	return err == nil && isDoneCommand(cmd)
