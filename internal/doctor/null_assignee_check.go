@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/doltserver"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 )
 
 // NullAssigneeCheck detects in_progress beads with a NULL or empty assignee.
@@ -19,7 +21,10 @@ import (
 //
 // Detection uses bd sql --csv (raw SQL passthrough, not affected by bd's ORM).
 // Fix resets status to open + clears assignee so the step can be re-dispatched,
-// then issues a Dolt commit to record the repair in history.
+// then issues a Dolt commit to record the repair in history. Beads held by the
+// merge queue (gt done parks a submitted MR's source as in_progress with no
+// assignee, gt-pd1c.59) are excluded; with the merge queue unreadable nothing
+// is fixed.
 type NullAssigneeCheck struct {
 	FixableCheck
 	affected []nullAssigneeRow
@@ -47,7 +52,8 @@ func NewNullAssigneeCheck() *NullAssigneeCheck {
 
 const nullAssigneeSelectQuery = `SELECT id, title, updated_at FROM issues WHERE status = 'in_progress' AND (assignee IS NULL OR assignee = '') ORDER BY updated_at ASC`
 
-const nullAssigneeFixQuery = `UPDATE issues SET status = 'open', assignee = '' WHERE status = 'in_progress' AND (assignee IS NULL OR assignee = '')`
+// nullAssigneeMergeQueueFn reads the town's merge queue; tests override it.
+var nullAssigneeMergeQueueFn = beads.TownMergeQueueIndex
 
 // Run queries each rig database for in_progress beads with NULL/empty assignee.
 func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
@@ -63,40 +69,64 @@ func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	var rows []nullAssigneeRow
 	for _, db := range databases {
 		rigDir := filepath.Join(ctx.TownRoot, db)
-		rows, err := queryNullAssigneeBeads(rigDir)
+		found, err := queryNullAssigneeBeads(rigDir)
 		if err != nil {
 			// Non-fatal: Dolt might not be running or rig may not be bd-managed.
 			continue
 		}
-		for _, row := range rows {
+		for _, row := range found {
 			row.RigDB = db
-			c.affected = append(c.affected, row)
+			rows = append(rows, row)
 		}
 	}
+	return c.classify(ctx, rows, nullAssigneeMergeQueueFn)
+}
 
-	if len(c.affected) == 0 {
+// classify drops beads held by the merge queue (gt-pd1c.59: gt done parks the
+// source of a submitted MR as in_progress with no assignee until the refinery
+// closes or releases it) and reports the rest as fixable. An unreadable merge
+// queue makes nothing fixable (fail closed: resetting a parked bead to open
+// would dispatch work that is waiting for its merge).
+func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, readQueue func(string) (beads.MergeQueueIndex, error)) *CheckResult {
+	c.affected = nil
+	if len(rows) == 0 {
+		return c.okResult()
+	}
+	idx, err := readQueue(ctx.TownRoot)
+	if err != nil {
 		return &CheckResult{
 			Name:     c.Name(),
-			Status:   StatusOK,
-			Message:  "No in_progress beads with NULL assignee found",
+			Status:   StatusWarning,
+			Message:  fmt.Sprintf("%d in_progress bead(s) with NULL assignee, but the merge queue is unreadable: cannot tell broken beads from beads awaiting merge", len(rows)),
+			Details:  []string{err.Error()},
+			FixHint:  "Restore the beads/Dolt server, then rerun 'gt doctor'",
 			Category: c.Category(),
 		}
 	}
+	kept, held := splitMergeQueueHeld(rows, idx, mergeproof.Resolver(ctx.TownRoot))
+	c.affected = kept
+	if len(kept) == 0 {
+		return c.okResult()
+	}
 
-	details := make([]string, 0, len(c.affected))
-	for _, row := range c.affected {
+	details := make([]string, 0, len(kept)+1)
+	for _, row := range kept {
 		details = append(details, fmt.Sprintf("[%s] %s — %s (updated: %s)",
 			row.RigDB, row.ID, shortenTitle(row.Title, 60), row.UpdatedAt))
 	}
+	if len(held) > 0 {
+		details = append(details, fmt.Sprintf("%d more held by the merge queue (awaiting merge) — not touched", len(held)))
+	}
 
 	return &CheckResult{
-		Name: c.Name(),
+		Name:   c.Name(),
 		Status: StatusWarning,
 		Message: fmt.Sprintf(
 			"%d in_progress bead(s) with NULL assignee — invisible to bd, blocking molecule progress",
-			len(c.affected),
+			len(kept),
 		),
 		Details:  details,
 		FixHint:  "Run 'gt doctor --fix' to reset to open for re-dispatch",
@@ -104,25 +134,58 @@ func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
-// Fix resets all affected beads to open (clears assignee) via direct SQL,
-// then commits the repair to Dolt history.
+func (c *NullAssigneeCheck) okResult() *CheckResult {
+	return &CheckResult{
+		Name:     c.Name(),
+		Status:   StatusOK,
+		Message:  "No in_progress beads with NULL assignee found",
+		Category: c.Category(),
+	}
+}
+
+// splitMergeQueueHeld separates rows the merge queue holds (beads.MergeQueueHold)
+// from the rest.
+func splitMergeQueueHeld(rows []nullAssigneeRow, idx beads.MergeQueueIndex, resolve beads.ProverResolver) (kept, held []nullAssigneeRow) {
+	for _, row := range rows {
+		if idx.Held(row.ID, resolve) {
+			held = append(held, row)
+			continue
+		}
+		kept = append(kept, row)
+	}
+	return kept, held
+}
+
+// nullAssigneeFixQueryFor resets exactly the given beads (still in_progress
+// with no assignee) to open.
+func nullAssigneeFixQueryFor(ids []string) string {
+	quoted := make([]string, 0, len(ids))
+	for _, id := range ids {
+		quoted = append(quoted, "'"+strings.ReplaceAll(id, "'", "''")+"'")
+	}
+	return "UPDATE issues SET status = 'open', assignee = '' WHERE id IN (" + strings.Join(quoted, ", ") +
+		") AND status = 'in_progress' AND (assignee IS NULL OR assignee = '')"
+}
+
+// Fix resets the affected beads (not held by the merge queue) to open (clears
+// assignee) via direct SQL, then commits the repair to Dolt history.
 func (c *NullAssigneeCheck) Fix(ctx *CheckContext) error {
 	if len(c.affected) == 0 {
 		return nil
 	}
 
-	// Collect unique databases that have affected beads.
-	affected := make(map[string]bool)
+	// Group affected bead IDs by database.
+	affected := make(map[string][]string)
 	for _, row := range c.affected {
-		affected[row.RigDB] = true
+		affected[row.RigDB] = append(affected[row.RigDB], row.ID)
 	}
 
 	var errs []string
-	for db := range affected {
+	for db, ids := range affected {
 		rigDir := filepath.Join(ctx.TownRoot, db)
 
 		// Reset beads via direct SQL (bypasses bd ORM which fails on NULL assignee).
-		if err := execBdSQLWrite(rigDir, nullAssigneeFixQuery); err != nil {
+		if err := execBdSQLWrite(rigDir, nullAssigneeFixQueryFor(ids)); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: update failed: %v", db, err))
 			continue
 		}

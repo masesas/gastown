@@ -188,3 +188,21 @@ func TestFindStrandedConvoys_HoldsWhenMRLookupFails(t *testing.T) {
 		t.Fatalf("ReadyCount = %d, want 0 when MR lookup fails (fail closed)", s.ReadyCount)
 	}
 }
+
+// gt-pd1c.59: gt done parks the source of a submitted MR (in_progress, no
+// assignee). The feeder must hold it while the MR is pending and feed it again
+// once the MR was rejected (the refinery reopens it; a parked bead whose MR
+// was closed by hand is fed as well).
+func TestFindStrandedConvoys_ParkedSourceFollowsTheMergeQueue(t *testing.T) {
+	pending := `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"open","description":"source_issue: gt-work1\n"}]'`
+	if s := strandedWithIssueAndMRQuery(t, "in_progress", "", pending); s.ReadyCount != 0 {
+		t.Fatalf("ReadyCount = %d (%v), want 0: parked source with a pending MR", s.ReadyCount, s.ReadyIssues)
+	}
+	rejected := `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"closed","description":"source_issue: gt-work1\nclose_reason: rejected\n"}]'`
+	if s := strandedWithIssueAndMRQuery(t, "in_progress", "", rejected); s.ReadyCount != 1 {
+		t.Fatalf("ReadyCount = %d, want 1: rejected MR, parked source needs rework", s.ReadyCount)
+	}
+	if s := strandedWithIssueAndMRQuery(t, "open", "", rejected); s.ReadyCount != 1 {
+		t.Fatalf("ReadyCount = %d, want 1: rejected MR, released source", s.ReadyCount)
+	}
+}

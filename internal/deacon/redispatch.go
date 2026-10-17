@@ -302,11 +302,19 @@ func Redispatch(townRoot, beadID, sourceRig string, maxAttempts int, cooldown ti
 		return result
 	}
 
+	// Work held by the merge queue (an MR is pending, or already landed) is
+	// owned by the refinery, even if something reopened the bead (gt-pd1c.59).
+	if reason := redispatchMergeQueueHold(townRoot, beadID); reason != "" {
+		result.Action = "skipped"
+		result.Message = reason
+		return result
+	}
+
 	// Determine agent override from model escalation config (if any).
 	escalationAgent := resolveAgentForRedispatch(townRoot, targetRig, beadState)
 
 	// Re-dispatch via gt sling
-	err = slingBead(townRoot, beadID, targetRig, escalationAgent)
+	err = slingBeadFn(townRoot, beadID, targetRig, escalationAgent)
 	if err != nil {
 		result.Action = "error"
 		result.Error = fmt.Errorf("slinging bead to %s: %w", targetRig, err)

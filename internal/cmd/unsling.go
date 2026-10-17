@@ -336,16 +336,19 @@ func cleanStaleHookedBeads(cmd *cobra.Command, b *beads.Beads, agentID, targetBe
 			staleB = beads.New(stalePath)
 		}
 
-		closed, err := staleB.ReleaseWorkBead(sb.ID, mergeproof.Resolver(townRoot))
+		outcome, err := staleB.ReleaseWorkBead(sb.ID, mergeproof.Resolver(townRoot))
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't clean up stale bead %s: %v\n", sb.ID, err)
 			continue
 		}
-		if closed {
+		switch outcome {
+		case beads.ReleaseClosed:
 			fmt.Printf("%s Cleaned up stale bead %s (was hooked, MR already merged, now closed)\n", style.Bold.Render("✓"), sb.ID)
-			continue
+		case beads.ReleaseParked:
+			fmt.Printf("%s Cleaned up stale bead %s (was hooked, MR in merge queue, parked for the refinery)\n", style.Bold.Render("✓"), sb.ID)
+		default:
+			fmt.Printf("%s Cleaned up stale bead %s (was hooked, now open)\n", style.Bold.Render("✓"), sb.ID)
 		}
-		fmt.Printf("%s Cleaned up stale bead %s (was hooked, now open)\n", style.Bold.Render("✓"), sb.ID)
 	}
 	return true
 }

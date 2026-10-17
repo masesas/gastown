@@ -2741,21 +2741,25 @@ func getBeadStatus(bd *BdCli, workDir, beadID string) (string, bool) {
 	return issues[0].Status, true
 }
 
-// mergedMRForBead returns the merged MR whose source issue is beadID, or "".
-// Tests override it.
-var mergedMRForBead = func(workDir, beadID string) (string, error) {
+// mergeQueueHoldForBead classifies beadID with the shared merge-queue
+// predicate (beads.MergeQueueHold) over this rig's merge requests (polecats of
+// this rig submit their MRs here). Tests override it.
+var mergeQueueHoldForBead = func(workDir, beadID string) (beads.MergeQueueHold, string, error) {
 	townRoot, err := workspace.Find(workDir)
 	if err != nil || townRoot == "" {
 		townRoot = workDir
 	}
-	return beads.New(workDir).MergedMergeRequestFor(beadID, mergeproof.Resolver(townRoot))
+	return beads.New(workDir).MergeQueueHoldFor(beadID, mergeproof.Resolver(townRoot))
 }
 
 // resetAbandonedBead resets a dead polecat's hooked bead so it can be re-dispatched.
 // If the bead is in "hooked" or "in_progress" status, it:
-//  0. Checks if the polecat's work is already on main, or its MR already
-//     merged (any target, e.g. an integration branch) — if so, closes the bead
-//     instead of resetting (prevents re-dispatch of completed work)
+//  0. Checks if the polecat's work is already on main, or the merge queue
+//     holds the bead (beads.MergeQueueHold, gt-pd1c.59): an MR that landed (any
+//     target, e.g. an integration branch) closes the bead, a pending MR parks
+//     it for the refinery (in_progress, no assignee) — neither is reset or
+//     re-dispatched. An unreadable merge queue skips the reset (fail closed;
+//     the next patrol retries)
 //  1. Reads the respawn count from the spawn-count ledger (recorded by sling
 //     when a dispatch actually started a session, so one death = one count)
 //  2. Resets status to open
@@ -2791,19 +2795,30 @@ func resetAbandonedBead(bd *BdCli, workDir, rigName, hookBead, polecatName strin
 		return false
 	}
 
-	// Guard: a merged MR means the work landed on its target (which may be an
-	// integration branch, not main). Close the bead; reopening it would make
-	// the convoy feeder dispatch finished work again.
-	mrID, mrErr := mergedMRForBead(workDir, hookBead)
-	if mrErr != nil {
-		// Fail open (the polecat must be recovered) but loudly: resetting here
-		// may re-dispatch merged work if the merge queue was unreadable.
-		fmt.Fprintf(os.Stderr, "witness: WARNING cannot check merged MRs for %s, resetting without merge proof: %v\n", hookBead, mrErr)
-	} else if mrID != "" {
+	// Guard: the merge queue owns work submitted as an MR (gt-pd1c.59). A
+	// landed MR means the work is on its target (which may be an integration
+	// branch, not main): close the bead. A pending MR means the refinery will
+	// close it on merge or release it on rejection: park it (clear the dead
+	// polecat's assignee, keep it out of bd ready). Reopening either would make
+	// the convoy feeder or the deacon dispatch the work a second time.
+	hold, mrID, holdErr := mergeQueueHoldForBead(workDir, hookBead)
+	if holdErr != nil {
+		// Fail closed: without the merge queue we cannot tell abandoned work
+		// from work waiting for its merge. The next patrol retries.
+		fmt.Fprintf(os.Stderr, "witness: WARNING cannot read merge queue for %s, not resetting: %v\n", hookBead, holdErr)
+		return false
+	}
+	switch hold {
+	case beads.HoldLanded:
 		reason := fmt.Sprintf("Merged in %s (verified by witness, polecat %s)", mrID, polecatName)
 		// --force: a bead with an attached molecule has open steps that block a plain close.
 		if err := bd.Run(workDir, "close", hookBead, "--force", "-r", reason); err != nil {
 			fmt.Fprintf(os.Stderr, "witness: failed to close bead %s (MR %s merged): %v\n", hookBead, mrID, err)
+		}
+		return false
+	case beads.HoldPending:
+		if err := bd.Run(workDir, "update", hookBead, "--status="+string(beads.StatusInProgress), "--assignee="); err != nil {
+			fmt.Fprintf(os.Stderr, "witness: failed to park bead %s (MR %s pending): %v\n", hookBead, mrID, err)
 		}
 		return false
 	}

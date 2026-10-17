@@ -143,7 +143,7 @@ func setupReviewOnlyDoneEnv(t *testing.T, workDir string) {
 	t.Setenv("BD_ACTOR", reviewOnlyAssignee)
 	t.Chdir(workDir)
 	doneIssue = "bd-source"
-	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID string) error { return nil }
+	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID, mrID string) error { return nil }
 }
 
 // setupReviewOnlyGitRepoWithoutCommits creates a pushed feature branch that has

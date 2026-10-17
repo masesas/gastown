@@ -38,6 +38,12 @@ type terminalMRCloseResult struct {
 	// meaningful when SourceCloseAttempted (the MR is merged-terminal).
 	SourceClose          mergedWorkBeadCloseResult
 	SourceCloseAttempted bool
+
+	// SourceRelease is set when this call closed the MR without landing and
+	// handed its parked source bead back (beads.ReleaseWorkBead); empty when
+	// the source was merged, owned by a live worker, terminal or unknown.
+	SourceRelease    beads.ReleaseOutcome
+	SourceReleaseErr error
 }
 
 func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (*terminalMRCloseResult, error) {
@@ -117,6 +123,11 @@ func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (
 			}),
 			MergeCommit: firstNonEmpty(opts.MergeCommit, fields.MergeCommit),
 		})
+	} else if result.Closed {
+		// The other half of the ownership rule (gt-pd1c.59): gt done parks the
+		// source of a submitted MR, so the close that ends an MR without
+		// landing (rejected, superseded, conflict) hands it back for rework.
+		result.SourceRelease, result.SourceReleaseErr = releaseUnmergedSource(b, result.SourceIssue, opts.Prover)
 	}
 
 	if result.AgentBead != "" {
@@ -125,6 +136,44 @@ func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (
 		result.AgentActiveMRClearErr = clearErr
 	}
 	return result, nil
+}
+
+// releaseUnmergedSource gives the source bead of an MR closed without landing
+// back to the merge-queue rule (beads.ReleaseWorkBead): reopened for rework,
+// parked if another MR of it is still pending, closed if one already landed.
+// Only an unowned, non-terminal source is released: one that a live worker has
+// claimed again, or that is already closed, is left alone. Errors are
+// reported, not returned: the MR close itself succeeded.
+func releaseUnmergedSource(b *beads.Beads, sourceIssue string, prover beads.MergeProver) (beads.ReleaseOutcome, error) {
+	if sourceIssue == "" {
+		return "", nil
+	}
+	issue, err := b.Show(sourceIssue)
+	if err != nil {
+		if errors.Is(err, beads.ErrNotFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read source %s for release: %w", sourceIssue, err)
+	}
+	if issue == nil || beads.IssueStatus(strings.TrimSpace(issue.Status)).IsTerminal() || strings.TrimSpace(issue.Assignee) != "" {
+		return "", nil
+	}
+	return b.ReleaseWorkBead(sourceIssue, func(string) beads.MergeProver { return prover })
+}
+
+// reportSourceRelease prints what releaseUnmergedSource did with the source
+// bead of an MR closed without landing.
+func reportSourceRelease(out io.Writer, prefix string, result *terminalMRCloseResult) {
+	if out == nil || result == nil {
+		return
+	}
+	if result.SourceReleaseErr != nil {
+		_, _ = fmt.Fprintf(out, "%sWarning: source %s of MR %s not released: %v\n", prefix, result.SourceIssue, result.MRID, result.SourceReleaseErr)
+		return
+	}
+	if result.SourceRelease != "" {
+		_, _ = fmt.Fprintf(out, "%sSource %s of MR %s %s\n", prefix, result.SourceIssue, result.MRID, result.SourceRelease)
+	}
 }
 
 // mergedMRClose reports whether this close leaves the MR terminal as merged,

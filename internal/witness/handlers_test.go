@@ -1623,10 +1623,10 @@ func TestResetAbandonedBead_ClosesWhenMRMerged(t *testing.T) {
 	// Pilot kp-4az.5: the MR merged into an integration branch (not main), the
 	// polecat session ended with the bead still hooked. The witness must close
 	// it, not reset it to open (which made the convoy feeder re-dispatch it).
-	oldVerify, oldMR := verifyCommitOnMain, mergedMRForBead
+	oldVerify := verifyCommitOnMain
 	verifyCommitOnMain = func(workDir, rigName, polecatName string) (bool, error) { return false, nil }
-	mergedMRForBead = func(workDir, beadID string) (string, error) { return "kp-wisp-a2i1", nil }
-	t.Cleanup(func() { verifyCommitOnMain, mergedMRForBead = oldVerify, oldMR })
+	t.Cleanup(func() { verifyCommitOnMain = oldVerify })
+	stubMergeQueueHold(t, beads.HoldLanded, "kp-wisp-a2i1", nil)
 
 	bd, mock := mockBd(
 		func(args []string) (string, error) {
@@ -1660,12 +1660,12 @@ func TestResetAbandonedBead_ResetsWhenWorkNotOnMain(t *testing.T) {
 	// When verifyCommitOnMain returns false, resetAbandonedBead should reset
 	// the bead for re-dispatch (existing behavior).
 
-	oldVerify, oldMR := verifyCommitOnMain, mergedMRForBead
+	oldVerify := verifyCommitOnMain
 	verifyCommitOnMain = func(workDir, rigName, polecatName string) (bool, error) {
 		return false, nil // work NOT on main
 	}
-	mergedMRForBead = func(workDir, beadID string) (string, error) { return "", nil }
-	t.Cleanup(func() { verifyCommitOnMain, mergedMRForBead = oldVerify, oldMR })
+	t.Cleanup(func() { verifyCommitOnMain = oldVerify })
+	stubMergeQueueHold(t, beads.HoldNone, "", nil)
 
 	bd, mock := mockBd(
 		func(args []string) (string, error) {
@@ -1897,6 +1897,8 @@ func TestDetectOrphanedBeads_ResultTypes(t *testing.T) {
 
 func TestDetectOrphanedBeads_WithMockBd(t *testing.T) {
 	installFakeTmuxNoServer(t)
+	// No MR holds these beads (the merge queue is read; gt-pd1c.59 fails closed otherwise).
+	stubMergeQueueHold(t, beads.HoldNone, "", nil)
 
 	// Set up town directory structure
 	townRoot := t.TempDir()
@@ -2182,6 +2184,8 @@ func TestFindMRBeadForBranch_NoBdAvailable(t *testing.T) {
 
 func TestDetectOrphanedMolecules_WithMockBd(t *testing.T) {
 	installFakeTmuxNoServer(t)
+	// No MR holds these beads (the merge queue is read; gt-pd1c.59 fails closed otherwise).
+	stubMergeQueueHold(t, beads.HoldNone, "", nil)
 
 	// Full test with mock bd returning beads assigned to dead polecats.
 	//

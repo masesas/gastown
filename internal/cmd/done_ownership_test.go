@@ -110,7 +110,7 @@ func runDoneForOwnershipTest(t *testing.T, assignee string, failShow bool) (erro
 	doneIssue = "bd-source"
 	doneCleanupStatus = "unpushed"
 	doneSkipVerify = true
-	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID string) error { return nil }
+	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID, mrID string) error { return nil }
 	err := runDone(nil, nil)
 
 	logData, _ := os.ReadFile(logPath)
@@ -183,7 +183,7 @@ func TestRunDone_EscalatedWithAssignmentLookupError_NotBlockedByLookup(t *testin
 	t.Chdir(workDir)
 
 	doneStatus = "ESCALATED"
-	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID string) error { return nil }
+	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID, mrID string) error { return nil }
 	err := runDone(nil, nil)
 	if err != nil && strings.Contains(err.Error(), "hooked issue") {
 		t.Fatalf("ESCALATED must not be blocked by the assignment lookup, got: %v", err)

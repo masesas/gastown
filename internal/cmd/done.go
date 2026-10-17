@@ -42,6 +42,11 @@ This is a convenience command for polecats that:
 4. Exits the polecat session after durable handoff
    (Witness/refinery cleanup owns the retired sandbox)
 
+With an MR the issue is not closed here: gt done closes its own molecule and
+parks the issue for the merge queue (in_progress, no assignee). The Refinery
+closes it when the MR merges and reopens it when the MR is rejected. Without
+an MR (no-merge work, or nothing to submit) gt done closes the issue itself.
+
 Exit statuses:
   COMPLETED      - Work done, MR submitted (default)
   ESCALATED      - Hit blocker, needs human intervention
@@ -119,12 +124,12 @@ var newDoneSessionKiller = func() doneSessionKiller {
 
 var updateAgentStateOnDoneFn = updateAgentStateOnDone
 
-func updateAgentStateAfterSubmission(cwd, townRoot, exitType, issueID string, pushFailed, mrFailed bool) error {
+func updateAgentStateAfterSubmission(cwd, townRoot, exitType, issueID, mrID string, pushFailed, mrFailed bool) error {
 	if !shouldUpdateAgentStateOnDone(pushFailed, mrFailed) {
 		style.PrintWarning("skipping agent cleanup because push or MR submission failed")
 		return nil
 	}
-	return updateAgentStateOnDoneFn(cwd, townRoot, exitType, issueID)
+	return updateAgentStateOnDoneFn(cwd, townRoot, exitType, issueID, mrID)
 }
 
 func resolveDonePolecatWorktree() (donePolecatWorktree, error) {
@@ -1885,7 +1890,7 @@ notifyWitness:
 
 	// Update agent bead state (ZFC: self-report completion). If push/MR failed,
 	// keep the hook intact so Witness can recover the still-open work.
-	if err := updateAgentStateAfterSubmission(cwd, townRoot, exitType, issueID, pushFailed, mrFailed); err != nil {
+	if err := updateAgentStateAfterSubmission(cwd, townRoot, exitType, issueID, mrID, pushFailed, mrFailed); err != nil {
 		return err
 	}
 
@@ -2194,7 +2199,8 @@ func clearDoneCheckpoints(bd *beads.Beads, agentBeadID string) {
 	}
 }
 
-// updateAgentStateOnDone closes the hooked work bead and reports cleanup status.
+// updateAgentStateOnDone closes the hooked work bead (or, when mrID is set, hands
+// it to the merge queue: see handOffSourceToMergeQueue) and reports cleanup status.
 // Uses issueID directly to find the hooked bead instead of reading the agent bead's
 // hook_bead slot (hq-l6mm5: direct bead tracking).
 //
@@ -2207,7 +2213,7 @@ func clearDoneCheckpoints(bd *beads.Beads, agentBeadID string) {
 // BUG FIX (hq-3xaxy): This function must be resilient to working directory deletion.
 // If the polecat's worktree is deleted before gt done finishes, we use env vars as fallback.
 // All errors are warnings, not failures - gt done must complete even if bead ops fail.
-func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
+func updateAgentStateOnDone(cwd, townRoot, exitType, issueID, mrID string) error {
 	// Get role context - try multiple sources for resilience
 	roleInfo, err := GetRoleWithContext(cwd, townRoot)
 	if err != nil {
@@ -2306,6 +2312,15 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
 				goto doneStateUpdate
 			}
 
+			// gt-pd1c.59: work submitted as an MR belongs to the merge queue. The
+			// refinery closes the source bead when the MR merges (so closed_at
+			// is the merge time) and releases it when the MR is closed without
+			// landing. gt done only closes its own molecule and parks the bead.
+			if strings.TrimSpace(mrID) != "" {
+				handOffSourceToMergeQueue(hookBd, hookedBeadID, hookedBead, mrID)
+				goto doneStateUpdate
+			}
+
 			if skipReason, fatal := doneSourceCloseSkipReason(hookBd, hookedBeadID, hookedBead); skipReason != "" {
 				style.PrintWarning("%s", skipReason)
 				fmt.Fprintf(os.Stderr, "  The bead will remain open for witness/mayor review.\n")
@@ -2321,30 +2336,12 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
 			// has attached_molecule pointing to the wisp. Without this fix, gt done
 			// only closed the hooked bead, leaving the wisp orphaned.
 			// Order matters: wisp closes -> unblocks base bead -> base bead closes.
-			attachment := beads.ParseAttachmentFields(hookedBead)
-			if attachment != nil && attachment.AttachedMolecule != "" {
-				// Close molecule step descendants before closing the wisp root.
-				// bd close doesn't cascade — without this, open/in_progress steps
-				// from the molecule stay stuck forever after gt done completes.
-				// Order: step children -> wisp root -> base bead.
-				if n := closeDescendants(hookBd, attachment.AttachedMolecule); n > 0 {
-					fmt.Fprintf(os.Stderr, "Closed %d molecule step(s) for %s\n", n, attachment.AttachedMolecule)
-				}
-
-				// Close the wisp root with --force and audit reason.
-				// ForceCloseWithReason handles any status (hooked, open, in_progress)
-				// and records the reason + session for attribution.
-				// Same pattern as gt mol burn/squash (#1879).
-				if closeErr := hookBd.ForceCloseWithReason("done", attachment.AttachedMolecule); closeErr != nil {
-					if !errors.Is(closeErr, beads.ErrNotFound) {
-						fmt.Fprintf(os.Stderr, "Warning: couldn't close attached molecule %s: %v\n", attachment.AttachedMolecule, closeErr)
-						// Don't try to close hookedBeadID - it may still be blocked.
-						// But DO clear hooks and update agent state (goto doneStateUpdate)
-						// so the polecat isn't stuck in 'working' state (za-o9e).
-						goto doneStateUpdate
-					}
-					// Not found = already burned/deleted by another path, continue
-				}
+			// Don't try to close hookedBeadID if the wisp could not be closed - it
+			// may still be blocked. But DO clear hooks and update agent state
+			// (goto doneStateUpdate) so the polecat isn't stuck in 'working' state (za-o9e).
+			if err := closeDoneMolecule(hookBd, hookedBead); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+				goto doneStateUpdate
 			}
 
 			// Acceptance criteria gate: skip close if criteria are unchecked.
@@ -2404,6 +2401,42 @@ doneStateUpdate:
 	clearDoneIntentLabel(agentBd, agentBeadID)
 	clearDoneCheckpoints(agentBd, agentBeadID)
 	return nil
+}
+
+// closeDoneMolecule closes the polecat's attached molecule (wisp) of a work
+// bead: its step descendants first (bd close doesn't cascade), then the wisp
+// root with --force and an audit reason (same pattern as gt mol burn/squash,
+// #1879). A molecule that is already gone is not an error.
+func closeDoneMolecule(bd *beads.Beads, workBead *beads.Issue) error {
+	attachment := beads.ParseAttachmentFields(workBead)
+	if attachment == nil || attachment.AttachedMolecule == "" {
+		return nil
+	}
+	if n := closeDescendants(bd, attachment.AttachedMolecule); n > 0 {
+		fmt.Fprintf(os.Stderr, "Closed %d molecule step(s) for %s\n", n, attachment.AttachedMolecule)
+	}
+	if err := bd.ForceCloseWithReason("done", attachment.AttachedMolecule); err != nil && !errors.Is(err, beads.ErrNotFound) {
+		return fmt.Errorf("couldn't close attached molecule %s: %w", attachment.AttachedMolecule, err)
+	}
+	return nil
+}
+
+// handOffSourceToMergeQueue is gt done's part of the merge-queue ownership
+// rule (gt-pd1c.59): close the polecat's molecule, then park the source bead
+// (beads.ParkWorkBead: in_progress, no assignee) instead of closing it. The
+// refinery closes it when the MR merges and releases it when the MR is closed
+// without landing; until then every reset/redispatch path consults
+// beads.MergeQueueHold and leaves it alone. Failures are warnings: the MR is
+// already submitted and gt done must finish.
+func handOffSourceToMergeQueue(bd *beads.Beads, issueID string, issue *beads.Issue, mrID string) {
+	if err := closeDoneMolecule(bd, issue); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	}
+	if err := bd.ParkWorkBead(issueID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		return
+	}
+	fmt.Printf("%s Issue %s handed to the merge queue (%s); the refinery closes it on merge\n", style.Bold.Render("✓"), issueID, mrID)
 }
 
 // ensureAgentBeadExists recreates a missing agent bead so done-intent labels,

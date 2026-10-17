@@ -1744,6 +1744,7 @@ func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit
 	if result.AgentActiveMRClearErr != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to clear agent bead %s active_mr: %v\n", result.AgentBead, result.AgentActiveMRClearErr)
 	}
+	reportSourceRelease(e.output, "[Engineer] ", result)
 	return nil
 }
 

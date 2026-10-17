@@ -101,7 +101,14 @@ gt session status <rig>/<role> --json | jq -r '.running' | grep -q true && echo 
 
 **4. Identify orphans:**
 - Issue in_progress + assignee session dead = orphan
-- Issue in_progress + no assignee = orphan
+- Issue in_progress + no assignee = orphan, UNLESS the merge queue holds it
+- NOT an orphan: an issue whose MR is still in the merge queue. `gt done`
+  parks a submitted issue as in_progress with no assignee; the refinery closes
+  it on merge or reopens it on rejection. Check before classifying:
+  ```bash
+  gt mq list <rig>    # an open MR whose branch names <issue> = held, skip it
+  ```
+  Never reset, reassign or close a held issue.
 
 Record each orphan with:
 - Issue ID

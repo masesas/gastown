@@ -188,7 +188,7 @@ func setupDoneDirectFixture(t *testing.T, rigSettings, sourceDescription string)
 	doneIssue = "bd-source"
 	doneCleanupStatus = "unpushed"
 	doneSkipVerify = true
-	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID string) error { return nil }
+	updateAgentStateOnDoneFn = func(cwd, townRoot, exitType, issueID, mrID string) error { return nil }
 	return doneDirectFixture{workDir: workDir, remote: remote, branch: branch, logPath: logPath}
 }
 

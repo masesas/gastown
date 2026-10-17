@@ -245,38 +245,6 @@ func LandedMergeRequest(mrs []*Issue, resolve ProverResolver) string {
 	return ""
 }
 
-// MergedMergeRequestFor returns the ID of an MR whose work landed and whose
-// source issue is issueID, or "" when none exists.
-func (b *Beads) MergedMergeRequestFor(issueID string, resolve ProverResolver) (string, error) {
-	bySource, err := b.MergeRequestsBySource()
-	if err != nil {
-		return "", err
-	}
-	return LandedMergeRequest(bySource[strings.TrimSpace(issueID)], resolve), nil
-}
-
-// ReleaseWorkBead hands a work bead back after its worker went away (polecat
-// removal, unsling, stale hook cleanup). One rule: a bead whose MR already
-// landed is finished work and is closed; any other bead returns to open with
-// no assignee. Reopening landed work makes the convoy feeder dispatch it
-// again. If the merge queue cannot be read the bead is reopened (the worker
-// must be released) and the lookup error is returned alongside.
-func (b *Beads) ReleaseWorkBead(issueID string, resolve ProverResolver) (closed bool, err error) {
-	mrID, lookupErr := b.MergedMergeRequestFor(issueID, resolve)
-	if mrID != "" {
-		if err := b.ForceCloseWithReason("Merged in "+mrID, issueID); err != nil {
-			return false, fmt.Errorf("closing merged work bead %s: %w", issueID, err)
-		}
-		return true, nil
-	}
-	openStatus := "open"
-	empty := ""
-	if err := b.Update(issueID, UpdateOptions{Status: &openStatus, Assignee: &empty}); err != nil {
-		return false, err
-	}
-	return false, lookupErr
-}
-
 // FindOpenMRsForIssue returns all open merge-request beads whose source_issue
 // matches the given issue ID. Used to find prior attempts when re-dispatching
 // an issue and to supersede old MRs when a new one is created.

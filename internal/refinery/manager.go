@@ -713,6 +713,7 @@ func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*Merg
 	if closeResult.AgentActiveMRClearErr != nil {
 		_, _ = fmt.Fprintf(m.output, "Warning: failed to clear agent bead %s active_mr: %v\n", closeResult.AgentBead, closeResult.AgentActiveMRClearErr)
 	}
+	reportSourceRelease(m.output, "", closeResult)
 
 	// Update in-memory state for return value
 	if closeResult.Closed {

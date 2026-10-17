@@ -1514,17 +1514,20 @@ func runResetStale(bd *beads.Beads, dryRun bool) error {
 				style.Bold.Render(issue.ID),
 				issue.Assignee)
 		} else {
-			// Reset status to open and clear assignee
-			openStatus := "open"
-			emptyAssignee := ""
-			if err := bd.Update(issue.ID, beads.UpdateOptions{
-				Status:   &openStatus,
-				Assignee: &emptyAssignee,
-			}); err != nil {
+			// Release through the shared merge-queue rule (gt-pd1c.59): open with
+			// no assignee, unless an MR holds the bead (pending: parked for the
+			// refinery; merged: closed). Landing is read from the MR record only
+			// (no git prover here).
+			outcome, err := bd.ReleaseWorkBead(issue.ID, nil)
+			if err != nil {
 				fmt.Printf("  %s Failed to reset %s: %v\n",
 					style.Warning.Render("⚠"),
 					issue.ID, err)
 				continue
+			}
+			if outcome != beads.ReleaseReopened {
+				fmt.Printf("  %s: %s (held by merge queue: %s)\n",
+					style.Dim.Render(issue.ID), issue.Assignee, outcome)
 			}
 		}
 		resetCount++

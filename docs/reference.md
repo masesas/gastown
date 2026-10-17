@@ -261,8 +261,11 @@ with = "macro-formula"
 ```
 1. Work through formula checklist (shown inline by gt prime)
 2. Submit to merge queue via gt done
-3. gt done preserves branch/MR metadata and exits the session
-4. Witness/refinery cleanup handles any retired sandbox state
+3. gt done preserves branch/MR metadata, closes the polecat's molecule, parks the
+   issue for the merge queue (in_progress, no assignee) and exits the session
+4. Refinery closes the issue when the MR merges (closed_at = merge time) and
+   reopens it when the MR is rejected; without an MR gt done closes it itself
+5. Witness/refinery cleanup handles any retired sandbox state
 ```
 
 ### Session Cycling

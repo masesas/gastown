@@ -100,37 +100,12 @@ func readCalls(t *testing.T, logPath string) string {
 	return string(data)
 }
 
-func TestMergedMergeRequestFor_GitIsTheProof(t *testing.T) {
-	installMergedMRBDStub(t, pendingMRRows, closedMRRows)
-	b := New(t.TempDir())
-	cases := []struct {
-		issue, want string
-		landed      []string
-	}{
-		{"gt-work1", "gt-wisp-merged", nil},          // close_reason merged: fast path, no git needed
-		{"gt-work4", "gt-wisp-bare", []string{"c4"}}, // pilot: bd close with no reason, commit on target
-		{"gt-work4", "", nil},                        // same MR, commit not on target
-		{"gt-work2", "", nil},                        // rejected, never landed
-		{"gt-work3", "gt-wisp-open", []string{"c3"}}, // pending MR whose commit already landed
-		{"gt-work3", "", nil},                        // pending, not landed
-	}
-	for _, c := range cases {
-		got, err := b.MergedMergeRequestFor(c.issue, resolverFor(c.landed...))
-		if err != nil || got != c.want {
-			t.Errorf("MergedMergeRequestFor(%s, landed=%v) = (%q, %v), want %q", c.issue, c.landed, got, err, c.want)
-		}
-	}
-	if got, _ := b.MergedMergeRequestFor("gt-work4", nil); got != "" {
-		t.Errorf("without a prover a bare-closed MR must not count as landed, got %q", got)
-	}
-}
-
 func TestReleaseWorkBead_ClosesWorkWhoseMRMerged(t *testing.T) {
 	log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
 	// Pilot shape: MR closed via bare bd close, commit already on the target.
-	closed, err := New(t.TempDir()).ReleaseWorkBead("gt-work4", resolverFor("c4"))
-	if err != nil || !closed {
-		t.Fatalf("ReleaseWorkBead = (%v, %v), want closed", closed, err)
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work4", resolverFor("c4"))
+	if err != nil || outcome != ReleaseClosed {
+		t.Fatalf("ReleaseWorkBead = (%v, %v), want closed", outcome, err)
 	}
 	calls := readCalls(t, log)
 	if !strings.Contains(calls, "close") || !strings.Contains(calls, "gt-work4") {
@@ -143,9 +118,9 @@ func TestReleaseWorkBead_ClosesWorkWhoseMRMerged(t *testing.T) {
 
 func TestReleaseWorkBead_ReopensWorkWithoutLandedMR(t *testing.T) {
 	log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
-	closed, err := New(t.TempDir()).ReleaseWorkBead("gt-work2", resolverFor()) // rejected
-	if err != nil || closed {
-		t.Fatalf("ReleaseWorkBead = (%v, %v), want reopened", closed, err)
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work2", resolverFor()) // rejected
+	if err != nil || outcome != ReleaseReopened {
+		t.Fatalf("ReleaseWorkBead = (%v, %v), want reopened", outcome, err)
 	}
 	calls := readCalls(t, log)
 	if !strings.Contains(calls, "update gt-work2") || !strings.Contains(calls, "--status=open") {
@@ -153,17 +128,41 @@ func TestReleaseWorkBead_ReopensWorkWithoutLandedMR(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkBead_ReleasesWorkerWhenQueueUnreadable(t *testing.T) {
+// gt-pd1c.59: a bead whose MR is still in the queue belongs to the refinery.
+// Releasing its worker parks it (in_progress, no assignee) instead of making
+// it dispatchable again.
+func TestReleaseWorkBead_ParksWorkWithPendingMR(t *testing.T) {
+	log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work3", resolverFor())
+	if err != nil || outcome != ReleaseParked {
+		t.Fatalf("ReleaseWorkBead = (%v, %v), want parked", outcome, err)
+	}
+	calls := readCalls(t, log)
+	if !strings.Contains(calls, "update gt-work3 --status=in_progress --assignee=") {
+		t.Fatalf("expected gt-work3 parked, calls:\n%s", calls)
+	}
+	if strings.Contains(calls, "--status=open") || strings.Contains(calls, "\nclose ") {
+		t.Fatalf("work held by the merge queue must be neither reopened nor closed, calls:\n%s", calls)
+	}
+}
+
+// Fail closed: with the merge queue unreadable the worker is still released,
+// but the bead is parked, not reopened for dispatch.
+func TestReleaseWorkBead_ParksWhenQueueUnreadable(t *testing.T) {
 	log := installMergedMRBDStub(t, "", "")
-	closed, err := New(t.TempDir()).ReleaseWorkBead("gt-work1", resolverFor())
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work1", resolverFor())
 	if err == nil {
 		t.Fatal("expected the merge-queue lookup error to be reported")
 	}
-	if closed {
-		t.Fatal("must not close without merge proof")
+	if outcome != ReleaseParked {
+		t.Fatalf("outcome = %v, want parked", outcome)
 	}
-	if calls := readCalls(t, log); !strings.Contains(calls, "--status=open") {
-		t.Fatalf("worker must still be released, calls:\n%s", calls)
+	calls := readCalls(t, log)
+	if !strings.Contains(calls, "update gt-work1 --status=in_progress --assignee=") {
+		t.Fatalf("worker must still be released (parked), calls:\n%s", calls)
+	}
+	if strings.Contains(calls, "--status=open") {
+		t.Fatalf("must not reopen without reading the merge queue, calls:\n%s", calls)
 	}
 }
 
