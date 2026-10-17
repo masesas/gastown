@@ -253,13 +253,21 @@ func TestPrePushGuardRigLoadErrorFailsClosedForAgents(t *testing.T) {
 }
 
 func TestParsePrePushUpdates(t *testing.T) {
-	in := "refs/heads/main 1111 refs/heads/main 2222\n\nrefs/tags/v1 3333 refs/tags/v1 " + testZeroSHA + "\n"
+	sha := func(c string) string { return strings.Repeat(c, 40) }
+	in := "refs/heads/main " + sha("1") + " refs/heads/main " + sha("2") + "\n\nrefs/tags/v1 " + strings.Repeat("3", 64) +
+		" refs/tags/v1 " + testZeroSHA + "\n"
 	got, err := parsePrePushUpdates(strings.NewReader(in))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].RemoteSHA != "2222" || got[1].RemoteRef != "refs/tags/v1" {
+	if len(got) != 2 || got[0].RemoteSHA != sha("2") || got[1].RemoteRef != "refs/tags/v1" {
 		t.Fatalf("got %+v", got)
+	}
+	// gt-pd1c.78 round 1 (L): object names are validated.
+	for _, bad := range []string{"1111", sha("G"), sha("A"), "-x" + sha("1"), strings.Repeat("1", 39)} {
+		if _, err := parsePrePushUpdates(strings.NewReader("refs/heads/main " + bad + " refs/heads/main " + sha("2") + "\n")); err == nil {
+			t.Fatalf("object name %q must fail closed", bad)
+		}
 	}
 	if _, err := parsePrePushUpdates(strings.NewReader("refs/heads/main 1111\n")); err == nil {
 		t.Fatal("malformed line must fail closed")

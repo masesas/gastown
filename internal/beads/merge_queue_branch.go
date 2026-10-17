@@ -20,11 +20,17 @@ func (q *MergeQueue) BranchHold(branch string) (HoldDetail, error) {
 	if err := q.Err(); err != nil {
 		return HoldDetail{Hold: HoldNone}, err
 	}
-	branch = strings.TrimSpace(branch)
+	branch = plainBranch(branch)
 	if branch == "" {
 		return HoldDetail{Hold: HoldNone}, errors.New("branch name is empty")
 	}
 	return mergeQueueHoldDetail(q.mergeRequestsFromBranch(branch), q.resolve), nil
+}
+
+// plainBranch is a branch name without surrounding space or a refs/heads/
+// prefix, so "refs/heads/polecat/x" and "polecat/x" compare equal.
+func plainBranch(b string) string {
+	return strings.TrimPrefix(strings.TrimSpace(b), "refs/heads/")
 }
 
 // mergeRequestsFromBranch returns the MRs whose branch field is branch,
@@ -36,7 +42,7 @@ func (q *MergeQueue) mergeRequestsFromBranch(branch string) []*Issue {
 			if mr == nil {
 				continue
 			}
-			if fields := ParseMRFields(mr); fields != nil && strings.TrimSpace(fields.Branch) == branch {
+			if fields := ParseMRFields(mr); fields != nil && plainBranch(fields.Branch) == branch {
 				out = append(out, mr)
 			}
 		}

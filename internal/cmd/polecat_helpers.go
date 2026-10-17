@@ -95,6 +95,9 @@ type SafetyCheckResult struct {
 	OpenMR        string
 	AssignedIssue string // open work bead still assigned to the polecat
 	GitState      *GitState
+	// AgentBeadUnreadable: the agent bead could not be read, so the hook and
+	// cleanup_status checks did not run (gt-pd1c.78: nuke --force by agents).
+	AgentBeadUnreadable bool
 }
 
 // checkPolecatSafety performs safety checks before destructive operations.
@@ -113,6 +116,7 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 	agentIssue, fields, err := bd.GetAgentBead(agentBeadID)
 	if blocker := agentBeadLookupBlocker(err); blocker != "" {
 		result.Reasons = append(result.Reasons, blocker)
+		result.AgentBeadUnreadable = true
 	}
 
 	if err != nil || fields == nil {

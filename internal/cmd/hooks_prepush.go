@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -29,12 +30,15 @@ import (
 //     targets). Pushes to polecat/* and every other branch and tags pass
 //     without any I/O beyond reading stdin, so normal polecat work is not
 //     slowed down.
-//   - Polecat branch deletion (gt-pd1c.78, agents other than crew): allowed
-//     only when it loses no work (polecatBranchDeletion): the tip is preserved
-//     on the remote default branch or a remote integration/* branch, or the
-//     merge queue (beads.MergeQueue.BranchHold) says no MR is open and none
-//     landed, or the deciding landed MR's commit is the tip. An unreadable
-//     merge queue refuses. Humans and crew are not checked.
+//   - Polecat branch tips (gt-pd1c.78, agents other than crew): a deletion,
+//     or a rewrite (not a fast-forward) by an agent other than the refinery
+//     and the owning polecat, discards the remote tip and is allowed only
+//     when that loses no work (polecatBranchDeletion): the old tip is
+//     preserved on the remote default branch or a remote integration/*
+//     branch, or the merge queue (beads.MergeQueue.BranchHold) says no MR is
+//     open and none landed, or the deciding MR landed by git proof with
+//     exactly that commit. An unreadable merge queue refuses. Humans and crew
+//     are not checked.
 //   - Target roles (gt-pd1c.78): an update of a target by an agent other than
 //     the refinery or crew (witness, mayor, deacon, dog, boot, polecat, an
 //     unknown role) is refused. Exceptions already in Gas Town: a polecat on a
@@ -87,10 +91,12 @@ pre-push hook runs this with git's arguments and pipes git's pre-push input
 
 Rules (agent = GT_ROLE, BD_ACTOR, GT_POLECAT or GT_CREW is set):
   - Pushes to polecat/*, other branches, tags: allowed, not checked.
-  - Agent (not crew) deletion of polecat/*: allowed only when the tip is
-    preserved on the remote default branch or integration/*, or the merge
-    queue shows no open MR and no landed work from the branch (or the landed
-    MR's commit is the tip). Unreadable beads: refused.
+  - Agent (not crew) deletion of polecat/*, or a non-fast-forward update by
+    an agent other than the refinery and the owning polecat: allowed only
+    when the old tip is preserved on the remote default branch or
+    integration/*, or the merge queue shows no open MR and no landed work
+    from the branch (or a git-proven landed MR's commit is the tip).
+    Unreadable beads: refused.
   - Update of the default branch or integration/* by an agent other than the
     refinery or crew: refused (a polecat may push there only when the rig's
     merge queue is disabled; a new integration/* branch with no new commits
@@ -123,6 +129,9 @@ func init() {
 }
 
 func runHooksPrePush(cmd *cobra.Command, args []string) error {
+	// First: nothing the guard starts (git, bd, provers of rig repositories)
+	// may inherit the pushing repository's GIT_DIR & co. (clearGitLocalEnv).
+	clearGitLocalEnv()
 	updates, err := parsePrePushUpdates(cmd.InOrStdin())
 	if err != nil {
 		return err
@@ -155,14 +164,10 @@ func runHooksPrePush(cmd *cobra.Command, args []string) error {
 	return g.check(updates)
 }
 
-// prePushMergeQueue reads the town's merge queue for the repository at cwd.
-// Git's repository-local variables (GIT_DIR in a worktree hook) are cleared
-// first so bd and the git provers of the rig repositories are not pointed at
-// the pushing repository.
+// prePushMergeQueue reads the town's merge queue for the repository at cwd
+// (runHooksPrePush has already cleared git's repository-local variables).
 func prePushMergeQueue(cwd string) *beads.MergeQueue {
-	locs := prePushLocations(cwd)
-	clearGitLocalEnv()
-	for _, loc := range locs {
+	for _, loc := range prePushLocations(cwd) {
 		if town, err := workspace.Find(loc); err == nil && town != "" {
 			return mergeproof.TownMergeQueue(town)
 		}
@@ -212,6 +217,10 @@ func detectPrePushRig(locations []string) (*prePushRig, error) {
 	return nil, nil
 }
 
+// prePushSHA is a SHA-1 or SHA-256 object name as git writes it to pre-push
+// input (all zeros for "no commit").
+var prePushSHA = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+
 // prePushUpdate is one line of git's pre-push input.
 type prePushUpdate struct {
 	LocalRef, LocalSHA, RemoteRef, RemoteSHA string
@@ -230,6 +239,9 @@ func parsePrePushUpdates(r io.Reader) ([]prePushUpdate, error) {
 		f := strings.Fields(line)
 		if len(f) != 4 {
 			return nil, fmt.Errorf("BLOCKED: pre-push guard: malformed input line (want 4 fields, got %d)", len(f))
+		}
+		if !prePushSHA.MatchString(f[1]) || !prePushSHA.MatchString(f[3]) {
+			return nil, errors.New("BLOCKED: pre-push guard: malformed input line (object names must be 40-64 lowercase hex digits)")
 		}
 		out = append(out, prePushUpdate{LocalRef: f[0], LocalSHA: f[1], RemoteRef: f[2], RemoteSHA: f[3]})
 	}
@@ -336,10 +348,7 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 		return nil // tag or other ref
 	}
 	if strings.HasPrefix(branch, "polecat/") {
-		if u.LocalSHA != prePushZeroSHA {
-			return nil // polecat work
-		}
-		return g.checkPolecatDelete(u, branch)
+		return g.checkPolecatUpdate(u, branch)
 	}
 	agentVar := agentSessionEnvVar(g.getenv)
 	deletion := u.LocalSHA == prePushZeroSHA

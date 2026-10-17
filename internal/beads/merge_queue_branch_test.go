@@ -64,3 +64,29 @@ func TestMergeQueueBranchHold(t *testing.T) {
 		t.Error("a nil queue must be an error (fail closed)")
 	}
 }
+
+// gt-pd1c.78 round 1 (H2): the predicate says what decided a landed verdict,
+// so callers that discard work can insist on git proof.
+func TestMergeQueueBranchHoldEvidence(t *testing.T) {
+	mr := func(id, desc string) *Issue { return &Issue{ID: id, Status: "closed", Description: desc} }
+	idx := MergeQueueIndex{
+		"gt-r": {mr("mr-rec", "branch: polecat/r\ntarget: main\nsource_issue: gt-r\nrig: gastown\ncommit_sha: cr\nclose_reason: merged\n")},
+		"gt-m": {mr("mr-mc", "branch: polecat/m\ntarget: main\nsource_issue: gt-m\nrig: gastown\ncommit_sha: cm\nmerge_commit: abc\n")},
+		"gt-g": {mr("mr-git", "branch: refs/heads/polecat/g\ntarget: main\nsource_issue: gt-g\nrig: gastown\ncommit_sha: cg\n")},
+		"gt-h": {mr("mr-human", "branch: polecat/h\ntarget: main\nsource_issue: gt-h\nrig: gastown\nlanding: landed\n")},
+	}
+	q := NewMergeQueue(idx, nil, func(string) MergeProver { return fakeProver{"cg": true} })
+	cases := map[string]LandingEvidence{
+		"polecat/r":            EvidenceRecorded,
+		"polecat/m":            EvidenceRecorded,
+		"polecat/g":            EvidenceGit, // MR branch stored as refs/heads/...: same branch
+		"refs/heads/polecat/g": EvidenceGit,
+		"polecat/h":            EvidenceHumanVerdict,
+	}
+	for branch, want := range cases {
+		d, err := q.BranchHold(branch)
+		if err != nil || d.Hold != HoldLanded || d.Evidence != want {
+			t.Errorf("BranchHold(%q) = (%v, %q, %v), want landed by %q", branch, d.Hold, d.Evidence, err, want)
+		}
+	}
+}

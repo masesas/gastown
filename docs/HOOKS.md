@@ -247,17 +247,21 @@ warnings, never fatal.
 ### Rules (`gt hooks pre-push`)
 
 A caller is an **agent** when `GT_ROLE`, `BD_ACTOR`, `GT_POLECAT` or `GT_CREW`
-is set (the same helper as the `gt mq integration land` gate). Its **role**
-comes from `GT_ROLE`, else `BD_ACTOR`, else `GT_CREW` alone (crew); a polecat
-identity anywhere (`GT_POLECAT`, a `<rig>/polecats/<name>` `BD_ACTOR`) wins over
-a crew `GT_ROLE`. Crew and the `overseer` identity keep the human column of
-the two coordinator rules below (gt-pd1c.78); all other rows treat crew as an
-agent, as before.
+is set (the same helper as the `gt mq integration land` gate). For the
+coordinator rules (gt-pd1c.78) every identity variable that is set makes a
+claim (`GT_ROLE` and `BD_ACTOR` parsed like `GT_ROLE`, `GT_POLECAT` = polecat,
+`GT_CREW` = crew) and conflicts are read the strictest way: the caller keeps
+the human column only when every claim is crew, or `BD_ACTOR=overseer` while
+`GT_ROLE` and `GT_POLECAT` are empty (e.g. `GT_ROLE=<rig>/crew/x` with
+`BD_ACTOR=<rig>/witness` is an agent). Otherwise the role is the agent role
+the claims agree on; disagreeing agent claims make an unknown role. The bash
+fallback classifies the same way (one env matrix tests both). All other rows
+treat crew as an agent, as before.
 
 | Push | Agent | Human |
 |---|---|---|
 | Push to `polecat/*`, other branches, tags | allowed, nothing checked | allowed |
-| Delete `polecat/*` (agents other than crew) | allowed only when it loses no work: the tip is preserved (ancestor, merge-tree no-op or every patch present, the `gt polecat prune` rule) on the remote default branch or a remote `integration/*` branch; or the merge queue (`MergeQueue.BranchHold`, the one predicate) shows no open MR from the branch and every MR from it definitely not landed (or none); or the deciding landed MR's `commit_sha` is the tip. An open MR, a landing git cannot decide, landed work with later commits or an unreadable merge queue refuse. The git proof runs first, so the refinery and `gt mq post-merge` / `gt polecat prune --remote` (which delete only landed tips) never read beads | allowed |
+| Delete `polecat/*` (agents other than crew), or rewrite it (not a fast-forward) when the agent is neither the refinery nor the polecat that owns the branch | the old remote tip is checked; allowed only when discarding it loses no work: the tip is preserved (ancestor, merge-tree no-op or every patch present, the `gt polecat prune` rule) on the remote default branch or a remote `integration/*` branch; or the merge queue (`MergeQueue.BranchHold`, the one predicate) shows no open MR from the branch and every MR from it definitely not landed (or none); or the deciding MR landed **by git proof** and its `commit_sha` is the tip (a landed verdict resting only on `close_reason`/`merge_commit` or a human `landing:` verdict is not trusted for discarding work). An MR closed by hand that git proves did not land counts as not landed, so its branch may be deleted (user decision). An open MR, a landing git cannot decide, landed work with later commits or an unreadable merge queue refuse. The git proof runs first, so the refinery and `gt mq post-merge` / `gt polecat prune --remote` (which delete only landed tips) never read beads | allowed |
 | Update the default branch or `integration/*` by an agent other than the refinery or crew (witness, mayor, deacon, dog, boot, polecat, unknown role) | refused. A polecat may push there only when the rig's `merge_queue.enabled` is `false` (`gt done`, direct convoy strategy); any agent may create an `integration/*` branch whose tip is already on a remote target (`gt mq integration create`). The refinery and crew are unchanged | allowed |
 | Default branch or `integration/*` from a repository that runs the managed hook but whose rig cannot be detected | refused (fail closed) | checked as below, without rig settings |
 | Default branch or `integration/*` from a repository without the managed hook and outside any rig (e.g. the Gas Town source repo, whose `.githooks/pre-push` delegates) | checked as below without rig settings: auto-land off, no scope | same |
@@ -291,7 +295,13 @@ sha all zeros) is never a land; it is still scope-checked.
 
 - A local hook is advisory against a determined caller: `git push --no-verify`,
   `git -c core.hooksPath=/dev/null push`, deleting the hook, or clearing the
-  agent variables skip it.
+  agent variables skip it. The only real guarantee is on the remote: branch
+  protection or a pre-receive hook.
+- `merge_queue.enabled` (which lets a polecat push to a target, direct
+  strategy) lives in `<rig>/settings/config.json`, a file agents can edit;
+  that is a known limit of a local guard.
+- Pre-push input is validated: object names must be 40-64 lowercase hex
+  digits (all zeros for "no commit"); anything else refuses the push.
 - Land detection is ancestry-based. A squash merge, cherry-pick or rebase of
   integration commits onto the default branch creates new SHAs and is **not**
   detected as a land (it is only scope-checked). Mitigation: remote branch
@@ -307,13 +317,16 @@ sha all zeros) is never a land; it is still scope-checked.
   queue index groups by source). The `close_reason`/`merge_commit` fields that
   make an MR landed can be edited with `bd update` (cross-check in stage 2).
 - `gt polecat nuke --force` uses the same deletion rule for the polecat's
-  remote and local tip; when it does not hold, an agent is refused and a human
-  or crew must type the polecat addresses at a terminal. `gt polecat remove
-  --force` is not gated.
+  remote and local tip, and also requires a clean worktree (no uncommitted or
+  untracked non-ignored files, no stash), no active hook bead, no open work
+  assigned and a readable agent bead (from the nuke safety checks). When that
+  does not hold, an agent is refused and a human or crew must type the polecat
+  addresses at a terminal. `gt polecat remove --force` is not gated.
 - The Gas Town repo's own `.githooks/pre-push` fallback (no `gt` with
   `hooks pre-push` on `PATH`) cannot read the merge queue or rig settings, so
-  it is stricter: agents other than crew may not delete `polecat/*`, and only
-  the refinery, crew and humans may update the default branch or
+  it is stricter: agents other than crew may not delete `polecat/*`, agents
+  other than crew, the refinery and the owning polecat may not rewrite it,
+  and only the refinery, crew and humans may update the default branch or
   `integration/*`.
 - Agents can no longer delete an unlanded `integration/*` branch (e.g. to
   abandon an epic); a human does that.

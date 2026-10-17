@@ -188,7 +188,8 @@ SAFETY CHECKS: The command refuses to nuke a polecat if:
 Use --force to bypass safety checks (LOSES WORK). An agent (anything but a
 human or crew) may use --force only when every polecat's branch is provably
 safe to delete: its tip is on the default branch or an integration branch,
-or no MR from it is open and none landed (gt-pd1c.78). Otherwise --force
+or no MR from it is open and none landed (gt-pd1c.78), and the worktree is
+clean with no active hook bead. Otherwise --force
 needs a human or crew at a terminal, who types the polecat addresses again.
 Use --dry-run to see what would happen and safety check status.
 

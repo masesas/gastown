@@ -64,18 +64,20 @@ var (
 )
 
 // confirmHumanInteractively is the second guard of a human-only action: a TTY
-// and the expected text typed again. There is no flag to skip it.
-func confirmHumanInteractively(prompt, expected string) error {
+// and the expected text typed again. There is no flag to skip it. Every error
+// names the action (e.g. "landing verdict", "gt polecat nuke --force");
+// errors.Is(err, errNotInteractive) still holds without a TTY.
+func confirmHumanInteractively(action, prompt, expected string) error {
 	if !humanConfirmTTY() {
-		return errNotInteractive
+		return fmt.Errorf("%s: %w", action, errNotInteractive)
 	}
 	_, _ = fmt.Fprint(humanConfirmOutput, prompt)
 	line, err := bufio.NewReader(humanConfirmInput).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("reading confirmation: %w", err)
+		return fmt.Errorf("%s: reading confirmation: %w", action, err)
 	}
 	if strings.TrimSpace(line) != expected {
-		return fmt.Errorf("confirmation did not match %q: nothing done", expected)
+		return fmt.Errorf("%s: confirmation did not match %q: nothing done", action, expected)
 	}
 	return nil
 }
@@ -84,13 +86,7 @@ func confirmHumanInteractively(prompt, expected string) error {
 // landing verdict is recorded.
 func confirmLandingInteractively(mrID, verdict string) error {
 	prompt := fmt.Sprintf("Record landing verdict %q on MR %s? This overrides what git could not decide.\nType the MR ID to confirm: ", verdict, mrID)
-	if err := confirmHumanInteractively(prompt, mrID); err != nil {
-		if errors.Is(err, errNotInteractive) {
-			return err
-		}
-		return fmt.Errorf("MR %s: %w", mrID, err)
-	}
-	return nil
+	return confirmHumanInteractively("landing verdict on MR "+mrID, prompt, mrID)
 }
 
 // runMQConfirmLanding records a human verdict on an MR whose landing git

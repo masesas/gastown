@@ -12,14 +12,31 @@ import (
 
 // gt-pd1c.78 tahap 1: coordinator guards in the pre-push hook.
 
-func mqWith(mrs ...*beads.Issue) func() *beads.MergeQueue {
+func mqWith(mrs ...*beads.Issue) func() *beads.MergeQueue { return mqWithProver(nil, mrs...) }
+
+// gitLanded is a beads.MergeProver whose git says the listed commits landed
+// and every other commit definitely did not.
+type gitLanded map[string]bool
+
+func (g gitLanded) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	if g[commit] {
+		return nil
+	}
+	return stubNotOnTarget{"commit " + commit + " not on " + branch}
+}
+
+func mqWithProver(landed gitLanded, mrs ...*beads.Issue) func() *beads.MergeQueue {
 	return func() *beads.MergeQueue {
 		idx := beads.MergeQueueIndex{}
 		for _, mr := range mrs {
 			src := beads.ParseMRFields(mr).SourceIssue
 			idx[src] = append(idx[src], mr)
 		}
-		return beads.NewMergeQueue(idx, nil, nil)
+		var resolve beads.ProverResolver
+		if landed != nil {
+			resolve = func(string) beads.MergeProver { return landed }
+		}
+		return beads.NewMergeQueue(idx, nil, resolve)
 	}
 }
 
@@ -61,10 +78,18 @@ func TestPrePushGuardPolecatBranchDeletion(t *testing.T) {
 			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "")), wantErr: "cannot tell"},
 		{name: "beads unreadable: blocked", env: witness, tip: f.good, queue: unread, wantErr: "cannot read the merge queue"},
 		{name: "no queue loader: blocked", env: witness, tip: f.good, wantErr: "not available"},
-		{name: "landed MR whose commit is the tip: allowed", env: witness, tip: f.good,
-			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "close_reason: merged\n"))},
-		{name: "landed MR with later commits on the branch: blocked", env: witness, tip: f.bad,
-			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "close_reason: merged\n")), wantErr: "commits after the MR"},
+		{name: "landed only by recorded close_reason: blocked (H2)", env: witness, tip: f.good,
+			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "close_reason: merged\n")), wantErr: "git has not proven"},
+		{name: "landed only by recorded merge_commit: blocked (H2)", env: witness, tip: f.good,
+			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "merge_commit: abc\n")), wantErr: "git has not proven"},
+		{name: "landed only by human verdict: blocked (H2)", env: witness, tip: f.good,
+			queue: mqWith(mrIssue("mr1", "closed", branch, "", "landing: landed\n")), wantErr: "git has not proven"},
+		{name: "git-proven landed MR whose commit is the tip: allowed", env: witness, tip: f.good,
+			queue: mqWithProver(gitLanded{f.good: true}, mrIssue("mr1", "closed", branch, f.good, ""))},
+		{name: "git-proven landed MR with later commits on the branch: blocked", env: witness, tip: f.bad,
+			queue: mqWithProver(gitLanded{f.good: true}, mrIssue("mr1", "closed", branch, f.good, "")), wantErr: "commits after the MR"},
+		{name: "closed by hand, git proves not landed: allowed (user decision)", env: witness, tip: f.good,
+			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, ""))},
 		{name: "mayor deletes unlanded branch with open MR: blocked", env: []string{"GT_ROLE", "mayor"}, tip: f.good,
 			queue: mqWith(mrIssue("mr1", "open", branch, f.good, "")), wantErr: "is open"},
 		{name: "refinery deletes branch landed on main: allowed", env: []string{"GT_ROLE", "myrig/refinery"}, tip: f.mainSHA, queue: unread},

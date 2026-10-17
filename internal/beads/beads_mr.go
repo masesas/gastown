@@ -196,7 +196,7 @@ func UnverifiedReason(mr *Issue, prover MergeProver) string {
 	if mr == nil {
 		return "missing MR"
 	}
-	verdict, reason := mrLandingVerdictReason(IssueStatus(strings.TrimSpace(mr.Status)), ParseMRFields(mr), prover)
+	verdict, reason, _ := mrLandingVerdictReason(IssueStatus(strings.TrimSpace(mr.Status)), ParseMRFields(mr), prover)
 	if verdict != verdictUnknown {
 		return ""
 	}
@@ -226,37 +226,55 @@ func IsCommitNotOnTarget(err error) bool {
 }
 
 func mrLandingVerdict(status IssueStatus, fields *MRFields, prover MergeProver) landingVerdict {
-	verdict, _ := mrLandingVerdictReason(status, fields, prover)
+	verdict, _, _ := mrLandingVerdictReason(status, fields, prover)
 	return verdict
 }
+
+// LandingEvidence says what decided an MR's landing verdict (gt-pd1c.78):
+// callers that discard work on a "landed" verdict trust only git.
+type LandingEvidence string
+
+const (
+	// EvidenceNone: no verdict (unknown landing).
+	EvidenceNone LandingEvidence = ""
+	// EvidenceRecorded: the structured merged signal on the bead
+	// (close_reason=merged or merge_commit). Bead fields can be edited with
+	// bd update, so this is not git proof.
+	EvidenceRecorded LandingEvidence = "recorded"
+	// EvidenceGit: a definite git answer from the MR's prover.
+	EvidenceGit LandingEvidence = "git"
+	// EvidenceHumanVerdict: a recorded human landing verdict (MRFields.Landing).
+	EvidenceHumanVerdict LandingEvidence = "human_verdict"
+)
 
 // mrLandingVerdictReason decides whether an MR's work landed, in this order:
 // structured merged signal (written only by closeTerminalMR) > definite git
 // answer (reachability, then patch equivalence) > human verdict (MRFields.Landing, terminal MRs only) > unknown. A
 // recorded verdict therefore never overrides git: a false `landing:` written
 // by hand cannot reopen work git proves landed, nor close work git proves did
-// not land. For verdictUnknown the reason says why git could not decide.
-func mrLandingVerdictReason(status IssueStatus, fields *MRFields, prover MergeProver) (landingVerdict, string) {
+// not land. For verdictUnknown the reason says why git could not decide; the
+// evidence says which of the sources decided.
+func mrLandingVerdictReason(status IssueStatus, fields *MRFields, prover MergeProver) (landingVerdict, string, LandingEvidence) {
 	if fields == nil {
-		return verdictUnknown, "MR has no merge-request fields"
+		return verdictUnknown, "MR has no merge-request fields", EvidenceNone
 	}
 	if status.IsTerminal() && (strings.EqualFold(strings.TrimSpace(fields.CloseReason), "merged") ||
 		strings.TrimSpace(fields.MergeCommit) != "") {
-		return verdictLanded, ""
+		return verdictLanded, "", EvidenceRecorded
 	}
 	gitVerdict, reason := gitLandingVerdict(fields, prover)
 	if gitVerdict != verdictUnknown {
-		return gitVerdict, ""
+		return gitVerdict, "", EvidenceGit
 	}
 	if status.IsTerminal() {
 		switch strings.TrimSpace(fields.Landing) {
 		case LandingLanded:
-			return verdictLanded, ""
+			return verdictLanded, "", EvidenceHumanVerdict
 		case LandingNotLanded:
-			return verdictNotLanded, ""
+			return verdictNotLanded, "", EvidenceHumanVerdict
 		}
 	}
-	return verdictUnknown, reason
+	return verdictUnknown, reason, EvidenceNone
 }
 
 // gitLandingVerdict is the git part of the landing decision.

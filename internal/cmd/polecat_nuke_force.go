@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -12,16 +14,23 @@ import (
 )
 
 // gt polecat nuke --force gate (gt-pd1c.78). --force skips the nuke safety
-// checks and discards the polecat's branch. Any caller may use it when the
-// polecat branch deletion rule (polecatBranchDeletion) holds for every target;
-// otherwise it is a human-only action: an agent (anything but a human or
-// crew, humanOrCrewActor) is refused, and a human or crew confirms at a TTY by
+// checks and discards the polecat's branch and worktree. Any caller may use
+// it when, for every target, the polecat branch deletion rule
+// (polecatBranchDeletion) holds and nothing else would be lost (no dirty
+// worktree, no active hook bead: nukeForceWorkCheck). Otherwise it is a
+// human-only action: an agent (anything but a human or crew,
+// humanOrCrewActor) is refused, and a human or crew confirms at a TTY by
 // typing the targets again (confirmHumanInteractively). Nuke without --force
 // is not affected.
 
-// nukeForceTargetCheck applies the deletion rule to one target; tests replace
-// it.
-var nukeForceTargetCheck = nukeTargetBranchDeletable
+// nukeForceAction names the action in refusals and prompts.
+const nukeForceAction = "gt polecat nuke --force"
+
+// nukeForceTargetCheck reports what a --force nuke of one target would lose
+// (nil = nothing); tests replace it.
+var nukeForceTargetCheck = func(p polecatTarget) error {
+	return errors.Join(nukeTargetBranchDeletable(p), nukeForceWorkCheck(p))
+}
 
 // gateNukeForceFor runs the gate for an actual --force nuke (not a dry run).
 func gateNukeForceFor(targets []polecatTarget, force, dryRun bool) error {
@@ -36,14 +45,15 @@ func gateNukeForce(targets []polecatTarget, check func(polecatTarget) error) err
 	var unproven []string
 	for _, p := range targets {
 		if err := check(p); err != nil {
-			unproven = append(unproven, fmt.Sprintf("  - %s/%s: %v", p.rigName, p.polecatName, err))
+			why := strings.ReplaceAll(err.Error(), "\n", "; ")
+			unproven = append(unproven, fmt.Sprintf("  - %s/%s: %s", p.rigName, p.polecatName, why))
 		}
 	}
 	if len(unproven) == 0 {
 		return nil
 	}
 	details := strings.Join(unproven, "\n")
-	if _, err := humanOrCrewActor("gt polecat nuke --force"); err != nil {
+	if _, err := humanOrCrewActor(nukeForceAction); err != nil {
 		return fmt.Errorf("%w\nThe work of these polecats is not proven safe to discard:\n%s\n"+
 			"Use gt polecat nuke without --force (it runs the safety checks), or escalate to a human", err, details)
 	}
@@ -52,11 +62,72 @@ func gateNukeForce(targets []polecatTarget, check func(polecatTarget) error) err
 		addrs = append(addrs, p.rigName+"/"+p.polecatName)
 	}
 	expected := strings.Join(addrs, " ")
-	prompt := fmt.Sprintf("gt polecat nuke --force discards work that is not proven safe:\n%s\nType %q to confirm: ", details, expected)
-	if err := confirmHumanInteractively(prompt, expected); err != nil {
-		return fmt.Errorf("gt polecat nuke --force: %w\nNot proven safe to discard:\n%s", err, details)
+	prompt := fmt.Sprintf("%s discards work that is not proven safe:\n%s\nType %q to confirm: ", nukeForceAction, details, expected)
+	if err := confirmHumanInteractively(nukeForceAction, prompt, expected); err != nil {
+		return fmt.Errorf("%w\nNot proven safe to discard:\n%s", err, details)
 	}
 	return nil
+}
+
+// nukeForceWorkCheck is the non-branch part of the gate (round 1, M1),
+// built on the existing nuke safety checks (checkPolecatSafety) and git state
+// (getGitState): a dirty worktree (uncommitted or untracked files that are not
+// ignored, or stashes), an active hook bead, open work still assigned, or an
+// agent bead that cannot be read refuses.
+func nukeForceWorkCheck(p polecatTarget) error {
+	if p.mgr == nil || p.r == nil {
+		return fmt.Errorf("cannot read the polecat (fail closed)")
+	}
+	res := checkPolecatSafety(p)
+	state, stateErr := res.GitState, error(nil)
+	if state == nil {
+		state, stateErr = nukeWorktreeGitState(p)
+	}
+	if problems := forceNukeWorkProblems(res, state, stateErr); len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// nukeWorktreeGitState reads the polecat worktree's git state; a worktree
+// that no longer exists has nothing to lose (nil, nil).
+func nukeWorktreeGitState(p polecatTarget) (*GitState, error) {
+	info, err := p.mgr.Get(p.polecatName)
+	if err != nil || info == nil {
+		return nil, fmt.Errorf("cannot read the polecat")
+	}
+	if info.ClonePath == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(info.ClonePath); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return getGitState(info.ClonePath)
+}
+
+// forceNukeWorkProblems lists what a --force nuke would lose besides the
+// branch: from the safety-check result and the worktree git state.
+func forceNukeWorkProblems(res *SafetyCheckResult, state *GitState, stateErr error) []string {
+	var out []string
+	if res != nil {
+		if res.AgentBeadUnreadable {
+			out = append(out, "agent bead unreadable: hook and cleanup state cannot be verified")
+		}
+		if res.HookBead != "" && !res.HookStale {
+			out = append(out, fmt.Sprintf("has work on hook (%s)", res.HookBead))
+		}
+		if res.AssignedIssue != "" {
+			out = append(out, fmt.Sprintf("open work %s is still assigned to it", res.AssignedIssue))
+		}
+	}
+	switch {
+	case stateErr != nil:
+		out = append(out, "cannot check the worktree git state (fail closed)")
+	case state != nil && (len(state.UncommittedFiles) > 0 || state.StashCount > 0):
+		out = append(out, fmt.Sprintf("worktree is dirty (%d uncommitted/untracked file(s), %d stash(es))",
+			len(state.UncommittedFiles), state.StashCount))
+	}
+	return out
 }
 
 // nukeTargetBranchDeletable applies the polecat branch deletion rule to the
@@ -80,21 +151,20 @@ func nukeTargetBranchDeletable(p polecatTarget) error {
 // the local tip must both pass; with neither, the merge queue decides.
 func polecatRepoBranchDeletable(repoGit *git.Git, branch, defaultBranch string, queue func() *beads.MergeQueue) error {
 	_ = repoGit.Fetch("origin") // best effort: remote target tips become local objects
-	remoteTip := pushRemoteTip(repoGit, branch)
+	tips := targetTipResolver{
+		defaults: []string{defaultBranch},
+		list: func(prefix string) ([]git.RemoteRef, error) {
+			return repoGit.ListPushRemoteRefsWithHashes("origin", prefix)
+		},
+	}
+	remoteTip, _ := tips.branchTip(branch) // unreadable: the git proof is skipped
 	localTip, _ := repoGit.Rev("refs/heads/" + branch + "^{commit}")
-	defaults := []string{defaultBranch}
-	tips := uniqueNonEmpty(remoteTip, strings.TrimSpace(localTip))
-	if len(tips) == 0 {
+	candidates := uniqueNonEmpty(remoteTip, strings.TrimSpace(localTip))
+	if len(candidates) == 0 {
 		return polecatBranchDeletion{branch: branch, queue: queue}.check()
 	}
-	for _, tip := range tips {
-		d := polecatBranchDeletion{
-			branch:  branch,
-			tip:     tip,
-			targets: func() ([]git.RemoteRef, error) { return pushRemoteTargetTips(repoGit, defaults) },
-			git:     repoGit,
-			queue:   queue,
-		}
+	for _, tip := range candidates {
+		d := polecatBranchDeletion{branch: branch, tip: tip, tips: tips, git: repoGit, queue: queue}
 		if err := d.check(); err != nil {
 			return err
 		}
@@ -115,46 +185,6 @@ func nukeMergeQueue(rigPath string) func() *beads.MergeQueue {
 		}
 		return q
 	}
-}
-
-// pushRemoteTip returns the tip of branch on origin's push URL, "" when absent
-// or unreadable (the git proof is then skipped).
-func pushRemoteTip(g *git.Git, branch string) string {
-	refs, err := g.ListPushRemoteRefsWithHashes("origin", "refs/heads/"+branch)
-	if err != nil {
-		return ""
-	}
-	for _, ref := range refs {
-		if ref.Name == "refs/heads/"+branch {
-			return strings.TrimSpace(ref.Hash)
-		}
-	}
-	return ""
-}
-
-// pushRemoteTargetTips lists the default branch and integration/* tips on
-// origin's push URL.
-func pushRemoteTargetTips(g *git.Git, defaults []string) ([]git.RemoteRef, error) {
-	var out []git.RemoteRef
-	for _, b := range defaults {
-		if b = strings.TrimSpace(b); b == "" {
-			continue
-		}
-		refs, err := g.ListPushRemoteRefsWithHashes("origin", "refs/heads/"+b)
-		if err != nil {
-			return nil, err
-		}
-		for _, ref := range refs {
-			if ref.Name == "refs/heads/"+b {
-				out = append(out, ref)
-			}
-		}
-	}
-	integration, err := g.ListPushRemoteRefsWithHashes("origin", "refs/heads/"+integrationBranchPrefix)
-	if err != nil {
-		return nil, err
-	}
-	return append(out, integration...), nil
 }
 
 func uniqueNonEmpty(values ...string) []string {
