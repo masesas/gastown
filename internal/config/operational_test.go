@@ -506,3 +506,27 @@ func TestPressureThresholds_JSON(t *testing.T) {
 		t.Errorf("JSON max sessions: got %v, want 8", raw.Daemon.PressureMaxSessionsV())
 	}
 }
+
+// gt-pd1c.82: reminder interval for overseer notices about unverified holds.
+func TestWitnessThresholds_UnverifiedReminderInterval(t *testing.T) {
+	t.Parallel()
+
+	var op *OperationalConfig
+	if got := op.GetWitnessConfig().UnverifiedReminderIntervalD(); got != 24*time.Hour {
+		t.Errorf("default: got %v, want 24h", got)
+	}
+	for in, want := range map[string]time.Duration{
+		"6h":    6 * time.Hour,
+		"0s":    DefaultWitnessUnverifiedReminderInterval, // never "remind every patrol"
+		"-1h":   DefaultWitnessUnverifiedReminderInterval,
+		"bogus": DefaultWitnessUnverifiedReminderInterval,
+		"1m":    time.Hour, // floor
+		"59m":   time.Hour,
+		"1h":    time.Hour,
+	} {
+		op := &OperationalConfig{Witness: &WitnessThresholds{UnverifiedReminderInterval: in}}
+		if got := op.GetWitnessConfig().UnverifiedReminderIntervalD(); got != want {
+			t.Errorf("%q: got %v, want %v", in, got, want)
+		}
+	}
+}

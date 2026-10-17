@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
@@ -60,9 +59,6 @@ const nullAssigneeSelectQuery = `SELECT id, title, updated_at FROM issues WHERE 
 
 // nullAssigneeMergeQueueFn reads the town-wide merge queue; tests override it.
 var nullAssigneeMergeQueueFn = mergeproof.TownMergeQueue
-
-// validBeadID is the shape of a bead ID the fix may put into SQL.
-var validBeadID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Run queries each rig database for in_progress beads with NULL/empty assignee.
 func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
@@ -136,8 +132,9 @@ func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, 
 		if rig == "" {
 			rig = row.RigDB
 		}
-		details = append(details, fmt.Sprintf("[%s] %s — UNVERIFIED: MR %s is closed but its landing cannot be decided (%s; updated: %s). Not fixed automatically; an overseer decides: `gt mq reject %s %s --confirm-not-landed` (reopen for rework) or `gt mq post-merge %s %s --confirm-landed` (close)",
-			row.RigDB, row.ID, row.MRID, row.Reason, row.UpdatedAt, rig, row.MRID, rig, row.MRID))
+		notLanded, landed := beads.UnverifiedExitCommands(rig, row.MRID)
+		details = append(details, fmt.Sprintf("[%s] %s — UNVERIFIED: MR %s is closed but its landing cannot be decided (%s; updated: %s). Not fixed automatically; an overseer decides: `%s` (reopen for rework) or `%s` (close)",
+			row.RigDB, row.ID, row.MRID, row.Reason, row.UpdatedAt, notLanded, landed))
 	}
 	if len(pending) > 0 {
 		details = append(details, fmt.Sprintf("%d more held by a pending MR (awaiting merge) — not touched", len(pending)))
@@ -171,15 +168,15 @@ func (c *NullAssigneeCheck) okResult() *CheckResult {
 // and only a human verdict can decide).
 func splitMergeQueueHeld(rows []nullAssigneeRow, queue *beads.MergeQueue) (reopen, landed, pending, unverified []nullAssigneeRow) {
 	for _, row := range rows {
-		hold, mrID, _ := queue.Hold(row.ID)
-		switch hold {
+		d, _ := queue.Detail(row.ID)
+		switch d.Hold {
 		case beads.HoldLanded:
-			row.MRID = mrID
+			row.MRID = d.MRID
 			landed = append(landed, row)
 		case beads.HoldPending:
 			pending = append(pending, row)
 		case beads.HoldUnverified:
-			row.MRID, row.MRRig, row.Reason = queue.Unverified(row.ID)
+			row.MRID, row.MRRig, row.Reason = d.MRID, d.Rig, d.Reason
 			unverified = append(unverified, row)
 		default:
 			reopen = append(reopen, row)
@@ -189,11 +186,11 @@ func splitMergeQueueHeld(rows []nullAssigneeRow, queue *beads.MergeQueue) (reope
 }
 
 // nullAssigneeFixQueryFor resets exactly the given beads (still in_progress
-// with no assignee) to open. Every ID must match validBeadID.
+// with no assignee) to open. Every ID must be beads.IsSafeID.
 func nullAssigneeFixQueryFor(ids []string) (string, error) {
 	quoted := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if !validBeadID.MatchString(id) {
+		if !beads.IsSafeID(id) {
 			return "", fmt.Errorf("refusing bead ID %q: not a valid bead ID", id)
 		}
 		quoted = append(quoted, "'"+id+"'")
@@ -212,7 +209,7 @@ func (c *NullAssigneeCheck) Fix(ctx *CheckContext) error {
 	var errs []string
 	// Landed work: close through the shared settle (gt-pd1c.59).
 	for _, row := range c.landed {
-		if !validBeadID.MatchString(row.ID) {
+		if !beads.IsSafeID(row.ID) {
 			errs = append(errs, fmt.Sprintf("%s: refusing bead ID %q: not a valid bead ID", row.RigDB, row.ID))
 			continue
 		}

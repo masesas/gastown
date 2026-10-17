@@ -2918,24 +2918,6 @@ Please re-dispatch to an available polecat.`,
 	return true
 }
 
-// settleLandedParkedBead closes a parked bead (in_progress, no assignee)
-// whose MR landed (beads.HoldLanded). Pending or free beads are left alone;
-// an unreadable merge queue is reported, never acted on.
-func settleLandedParkedBead(bd *BdCli, workDir, beadID string, queue *beads.MergeQueue) error {
-	hold, mrID, err := queue.Hold(beadID)
-	if err != nil {
-		return fmt.Errorf("merge queue unreadable, not settling %s: %w", beadID, err)
-	}
-	if hold != beads.HoldLanded {
-		return nil
-	}
-	reason := fmt.Sprintf("Merged in %s (settled by witness)", mrID)
-	if err := bd.Run(workDir, "close", beadID, "--force", "-r", reason); err != nil {
-		return fmt.Errorf("closing parked bead %s (MR %s landed): %w", beadID, mrID, err)
-	}
-	return nil
-}
-
 // OrphanedBeadResult contains a single detected orphaned bead.
 type OrphanedBeadResult struct {
 	BeadID        string
@@ -2996,18 +2978,19 @@ func DetectOrphanedBeads(bd *BdCli, workDir, rigName string, router *mail.Router
 
 	t := tmux.NewTmux()
 	var queue *beads.MergeQueue // read once, for the first parked bead
+	notice := newOverseerNotice(workDir, rigName, router)
 
 	for _, bead := range beadList {
 		if bead.Assignee == "" {
 			// No assignee — not a dead-polecat orphan. An in_progress bead
 			// without assignee is parked for the merge queue (gt done,
-			// gt-pd1c.59): if its MR landed but was closed by hand, nothing
-			// else closes it, so settle it here.
+			// gt-pd1c.59): settle it with the patrol's parked-bead rule
+			// (landed → closed, unverified → overseer notified).
 			if bead.status == "in_progress" {
 				if queue == nil {
 					queue = witnessMergeQueue(workDir)
 				}
-				if err := settleLandedParkedBead(bd, workDir, bead.ID, queue); err != nil {
+				if _, _, err := settleParkedBead(bd, workDir, bead.ID, queue, notice); err != nil {
 					result.Errors = append(result.Errors, err)
 				}
 			}

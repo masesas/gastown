@@ -2,6 +2,7 @@ package util
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -24,4 +25,15 @@ func RedactURL(rawURL string) string {
 	}
 	u.User = nil
 	return u.String()
+}
+
+// urlCredentialsPattern matches the userinfo of a URL inside free text
+// ("https://user:token@host" → "://user:token@").
+var urlCredentialsPattern = regexp.MustCompile(`://[^/\s@]+@`)
+
+// RedactURLCredentials masks URL credentials anywhere in free text (e.g. a git
+// error message): "://user:token@" becomes "://***@". Use RedactURL for a
+// value that is a single URL.
+func RedactURLCredentials(text string) string {
+	return urlCredentialsPattern.ReplaceAllString(text, "://***@")
 }

@@ -687,6 +687,12 @@ type MRFields struct {
 	Landing   string
 	LandingBy string
 
+	// UnverifiedNotifiedAt is when the overseer was last mailed about this MR
+	// holding its source as unverified (RFC3339, gt-pd1c.82). Written by the
+	// witness patrol only after the mail was sent; it dedups the notice and
+	// times the reminder.
+	UnverifiedNotifiedAt string
+
 	// Conflict resolution fields (for priority scoring)
 	RetryCount      int    // Number of conflict-resolution cycles
 	LastConflictSHA string // SHA of main when conflict occurred
@@ -775,6 +781,9 @@ func ParseMRFields(issue *Issue) *MRFields {
 			hasFields = true
 		case "landing_by", "landing-by", "landingby":
 			fields.LandingBy = value
+			hasFields = true
+		case "unverified_notified_at", "unverified-notified-at", "unverifiednotifiedat":
+			fields.UnverifiedNotifiedAt = value
 			hasFields = true
 		case "agent_bead", "agent-bead", "agentbead":
 			fields.AgentBead = value
@@ -868,6 +877,9 @@ func FormatMRFields(fields *MRFields) string {
 	}
 	if fields.LandingBy != "" {
 		lines = append(lines, "landing_by: "+fields.LandingBy)
+	}
+	if fields.UnverifiedNotifiedAt != "" {
+		lines = append(lines, "unverified_notified_at: "+fields.UnverifiedNotifiedAt)
 	}
 	if fields.AgentBead != "" {
 		lines = append(lines, "agent_bead: "+fields.AgentBead)
@@ -967,6 +979,10 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 		"basesha":           true,
 		"pre-verified-base": true,
 		"preverifiedbase":   true,
+
+		"unverified_notified_at": true,
+		"unverified-notified-at": true,
+		"unverifiednotifiedat":   true,
 	}
 
 	// Collect non-MR lines from existing description
