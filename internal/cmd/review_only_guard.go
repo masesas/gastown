@@ -47,6 +47,9 @@ func findReviewOnlyWork(cwd, agentID string, candidates ...reviewOnlyCandidate) 
 			}
 			issue = loaded
 		}
+		// Same warnings as gt sling: an ignored or non-canonical marker
+		// (gt-pd1c.75).
+		printReviewOnlyDescriptionWarnings(id, issue.Description)
 		return beads.IsReviewOnly(issue), nil
 	}
 	for _, c := range candidates {

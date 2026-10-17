@@ -618,25 +618,42 @@ reports the push as deferred.
 
 Where the marker counts: attachment fields (`review_only`, `no_merge`,
 `attached_*`, `dispatched_by`, `convoy_id`, `merge_strategy`, `mode`,
-`formula_vars`, ...) are read only from the description's header block: the
-first lines of the description, starting with a `key: value` line and ending at
-the first blank line or the first Markdown block (code fence, `>` quote, `#`
-heading, list item, table row). This is where `gt sling` writes them. A
-`review_only: true` line in the free text, a code block or a quote does not mark
-the bead, and rewrites leave it untouched; `gt sling` warns when such a line is
+`formula_vars`, ...) are read only from the description's header block. That is
+the first paragraph, outside fenced code blocks, whose first line is a known
+attachment `key: value` field (not indented as code). It ends at the first
+blank line or Markdown block (code fence, `>` quote, `#` heading, list item,
+table row). `gt sling` writes the fields at the top of the description; free text
+above them is tolerated. A `review_only: true` line in a code block, a quote, a
+list item or a later paragraph does not mark the bead, and rewrites leave it
+untouched. `gt sling`, `gt done` and `gt mq submit` warn when such a line is
 ignored. Use `gt sling --review-only` to mark a bead.
+Older gt wrote `attached_args` and non-JSON `formula_vars` values raw, possibly
+over several lines (blank lines, lists, fences included). After such a field,
+the text up to the next known attachment key is read as part of that value, so
+the `no_merge`/`review_only` fields written after it still count. New values
+are always written on one line.
 
 Values: only `true` and `false` (any case) are canonical. Any other value
-(`no`, `off`, `0`, `maybe`, ...) still marks the bead review-only (fail closed),
-and is kept exactly as written: no tool turns it into `true` or drops it. `gt
-sling` warns about it; fix the value, or clear the marker.
+(`no`, `off`, `0`, `f`, `maybe`, or an empty value) still marks the bead
+review-only (fail closed). Before gt-pd1c.75, `0`/`f` meant false. The value is
+kept exactly as written: no tool turns it into `true` or drops it. `gt sling`,
+`gt done` and `gt mq submit` warn about it; fix the value, or clear the marker.
 
 Clearing: `gt bead clear-review-only <bead> --reason "<why>"` is the one
-explicit way to remove the marker. Only a human (overseer), crew or the mayor may
-run it; polecats and other agents are refused. It records a bead comment
-(`review_only cleared by <who> at <time>: <why>`) before changing the
-description, and emits a `review_only_cleared` event; if the comment cannot be
-written the marker is kept. A bead that is not review-only is left as it is.
+explicit way to remove the marker. Only a human (overseer) or crew may run it,
+from an interactive terminal, typing the bead ID again to confirm. Every agent
+is refused, the mayor included; an agent that thinks a marker is wrong
+escalates by mail. The command writes a bead comment
+`review_only clear requested by <who> at <time>: <why>` before changing the
+description. If that comment cannot be written, the marker is kept. After the
+change is verified by re-reading the bead, it adds
+`review_only cleared by <who> at <time>: <why>` and emits a
+`review_only_cleared` event (best-effort). `--reason` is one line (line breaks
+folded, URL credentials masked), at most 500 bytes, without control
+characters. A bead that is not review-only is left as it is, without a prompt.
+These are local guards against agents doing this by mistake, not an
+authentication boundary: anyone who can run `bd update` on the bead can still
+edit the description directly.
 
 `no_merge` vs `review_only`: `no_merge` (`--no-merge`) is an assignment field,
 like `attached_molecule`: detaching or burning the attached molecule (as a

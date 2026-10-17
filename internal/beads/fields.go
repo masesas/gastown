@@ -27,10 +27,12 @@ type AttachmentFields struct {
 	ConvoyOwned      bool     // If true, convoy has gt:owned label (caller-managed lifecycle)
 	FormulaVars      string   // Newline-separated key=value pairs for formula template substitution
 
-	// ReviewOnlyRaw is a non-canonical review_only value as written (anything
-	// but true/false, gt-pd1c.75). ReviewOnly is true for it (fail closed) and
-	// FormatAttachmentFields writes it back verbatim, never as "true".
-	ReviewOnlyRaw string
+	// ReviewOnlyNonCanonical: the review_only value is not true/false
+	// (gt-pd1c.75); ReviewOnlyRaw holds it as written, possibly "". ReviewOnly
+	// is true for it (fail closed) and FormatAttachmentFields writes it back
+	// verbatim, never as "true".
+	ReviewOnlyNonCanonical bool
+	ReviewOnlyRaw          string
 }
 
 // ParseAttachmentFields extracts attachment fields from an issue's description.
@@ -47,37 +49,36 @@ func ParseAttachmentFields(issue *Issue) *AttachmentFields {
 	reviewOnlyCanonicalTrue := false
 	var formulaVars []string
 
-	header, _ := splitAttachmentHeader(issue.Description)
+	_, header, _ := splitAttachmentHeader(issue.Description)
 	for _, line := range header {
-		key, value, ok := headerFieldLine(line)
-		if !ok || value == "" {
+		key, value, ok := attachmentFieldLine(line)
+		if !ok || (value == "" && key != "review_only") {
 			continue
 		}
 
-		// Map keys to fields (case-insensitive)
-		switch strings.ToLower(key) {
-		case "attached_molecule", "attached-molecule", "attachedmolecule":
+		switch key {
+		case "attached_molecule":
 			fields.AttachedMolecule = value
 			hasFields = true
-		case "attached_formula", "attached-formula", "attachedformula":
+		case "attached_formula":
 			fields.AttachedFormula = value
 			hasFields = true
-		case "attached_at", "attached-at", "attachedat":
+		case "attached_at":
 			fields.AttachedAt = value
 			hasFields = true
-		case "attached_args", "attached-args", "attachedargs":
+		case "attached_args":
 			fields.AttachedArgs = value
 			hasFields = true
-		case "attached_vars", "attached-vars", "attachedvars":
+		case "attached_vars":
 			fields.AttachedVars = parseAttachedVars(value)
 			hasFields = true
-		case "dispatched_by", "dispatched-by", "dispatchedby":
+		case "dispatched_by":
 			fields.DispatchedBy = value
 			hasFields = true
-		case "no_merge", "no-merge", "nomerge":
+		case "no_merge":
 			fields.NoMerge = strings.ToLower(value) == "true"
 			hasFields = true
-		case "review_only", "review-only", "reviewonly":
+		case "review_only":
 			// OR across lines: once any line marks the bead, it stays marked.
 			// A non-canonical value marks it too (fail closed) and is kept
 			// verbatim unless a canonical true line is present as well.
@@ -85,23 +86,24 @@ func ParseAttachmentFields(issue *Issue) *AttachmentFields {
 			fields.ReviewOnly = fields.ReviewOnly || marked
 			if canonical && marked {
 				reviewOnlyCanonicalTrue = true
-			} else if !canonical && fields.ReviewOnlyRaw == "" {
+			} else if !canonical && !fields.ReviewOnlyNonCanonical {
+				fields.ReviewOnlyNonCanonical = true
 				fields.ReviewOnlyRaw = value
 			}
 			hasFields = true
 		case "mode":
 			fields.Mode = value
 			hasFields = true
-		case "convoy_id", "convoy-id", "convoyid", "convoy":
+		case "convoy_id":
 			fields.ConvoyID = value
 			hasFields = true
-		case "merge_strategy", "merge-strategy", "mergestrategy":
+		case "merge_strategy":
 			fields.MergeStrategy = value
 			hasFields = true
-		case "convoy_owned", "convoy-owned", "convoyowned":
+		case "convoy_owned":
 			fields.ConvoyOwned = strings.ToLower(value) == "true"
 			hasFields = true
-		case "formula_vars", "formula-vars", "formulavars":
+		case "formula_vars":
 			formulaVars = append(formulaVars, splitFormulaVars(parseFormulaVars(value))...)
 			hasFields = true
 		}
@@ -110,6 +112,7 @@ func ParseAttachmentFields(issue *Issue) *AttachmentFields {
 		fields.FormulaVars = strings.Join(formulaVars, "\n")
 	}
 	if reviewOnlyCanonicalTrue {
+		fields.ReviewOnlyNonCanonical = false
 		fields.ReviewOnlyRaw = ""
 	}
 
@@ -151,11 +154,11 @@ func FormatAttachmentFields(fields *AttachmentFields) string {
 		lines = append(lines, "no_merge: true")
 	}
 	if fields.ReviewOnly {
-		value := "true"
-		if raw := singleLine(strings.TrimSpace(fields.ReviewOnlyRaw)); raw != "" {
-			value = raw
+		line := "review_only: true"
+		if fields.ReviewOnlyNonCanonical {
+			line = strings.TrimSpace("review_only: " + singleLine(strings.TrimSpace(fields.ReviewOnlyRaw)))
 		}
-		lines = append(lines, "review_only: "+value)
+		lines = append(lines, line)
 	}
 	if fields.Mode != "" {
 		lines = append(lines, "mode: "+singleLine(fields.Mode))
@@ -226,7 +229,8 @@ func SetAttachmentFields(issue *Issue, fields *AttachmentFields) string {
 			sticky = *fields
 		}
 		sticky.ReviewOnly = true
-		if sticky.ReviewOnlyRaw == "" {
+		if !sticky.ReviewOnlyNonCanonical {
+			sticky.ReviewOnlyNonCanonical = existing.ReviewOnlyNonCanonical
 			sticky.ReviewOnlyRaw = existing.ReviewOnlyRaw
 		}
 		fields = &sticky
@@ -238,61 +242,19 @@ func SetAttachmentFields(issue *Issue, fields *AttachmentFields) string {
 // with fields (nil clears them). It has no review_only stickiness: only
 // SetAttachmentFields, WithReviewOnlyMarker and WithoutReviewOnlyMarker call it.
 func writeAttachmentFields(issue *Issue, fields *AttachmentFields) string {
-	// Known attachment field keys (lowercase)
-	attachmentKeys := map[string]bool{
-		"attached_molecule": true,
-		"attached-molecule": true,
-		"attachedmolecule":  true,
-		"attached_formula":  true,
-		"attached-formula":  true,
-		"attachedformula":   true,
-		"attached_at":       true,
-		"attached-at":       true,
-		"attachedat":        true,
-		"attached_args":     true,
-		"attached-args":     true,
-		"attachedargs":      true,
-		"attached_vars":     true,
-		"attached-vars":     true,
-		"attachedvars":      true,
-		"dispatched_by":     true,
-		"dispatched-by":     true,
-		"dispatchedby":      true,
-		"no_merge":          true,
-		"no-merge":          true,
-		"nomerge":           true,
-		"review_only":       true,
-		"review-only":       true,
-		"reviewonly":        true,
-		"mode":              true,
-		"convoy_id":         true,
-		"convoy-id":         true,
-		"convoyid":          true,
-		"convoy":            true,
-		"merge_strategy":    true,
-		"merge-strategy":    true,
-		"mergestrategy":     true,
-		"convoy_owned":      true,
-		"convoy-owned":      true,
-		"convoyowned":       true,
-		"formula_vars":      true,
-		"formula-vars":      true,
-		"formulavars":       true,
-	}
-
 	// Keep everything but the attachment field lines of the header block:
-	// other header lines (unknown keys, continuation text) and the free text
-	// after the header, verbatim.
+	// free text above the header, other header lines (unknown keys,
+	// continuation text) and the text after the header, verbatim.
 	var otherLines []string
 	if issue != nil && issue.Description != "" {
-		header, rest := splitAttachmentHeader(issue.Description)
+		pre, header, rest := splitAttachmentHeader(issue.Description)
+		var headerOther []string
 		for _, line := range header {
-			if key, _, ok := headerFieldLine(line); ok && attachmentKeys[strings.ToLower(key)] {
-				continue // replaced by fields below
+			if _, _, ok := attachmentFieldLine(line); !ok {
+				headerOther = append(headerOther, line)
 			}
-			otherLines = append(otherLines, line)
 		}
-		otherLines = append(otherLines, rest...)
+		otherLines = joinLineBlocks(pre, headerOther, rest)
 	}
 
 	// Build new description: attachment fields first, then other content
@@ -315,6 +277,19 @@ func writeAttachmentFields(issue *Issue, fields *AttachmentFields) string {
 	}
 
 	return formatted + "\n\n" + strings.Join(otherLines, "\n")
+}
+
+// joinLineBlocks concatenates blocks of lines without doubling the blank line
+// where two blocks meet.
+func joinLineBlocks(blocks ...[]string) []string {
+	var out []string
+	for _, block := range blocks {
+		for len(out) > 0 && len(block) > 0 && strings.TrimSpace(out[len(out)-1]) == "" && strings.TrimSpace(block[0]) == "" {
+			block = block[1:]
+		}
+		out = append(out, block...)
+	}
+	return out
 }
 
 // ConvoyFields holds the structured fields for a convoy bead.

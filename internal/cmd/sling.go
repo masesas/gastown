@@ -1349,7 +1349,7 @@ func restoreRollbackRawWorkflowFieldsFromCurrent(beadID, townRoot, hookWorkDir s
 	if restored, restoreErr := restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir, info, originalInfo); restoreErr != nil {
 		fmt.Printf("  %s Could not restore raw workflow metadata on %s: %v\n", style.Dim.Render("Warning:"), beadID, restoreErr)
 		if beads.IsReviewOnly(&beads.Issue{Description: info.Description}) {
-			fmt.Printf("  %s %s stays review-only; if it should not be, run: %s bead clear-review-only %s --reason \"<why>\"\n", style.Dim.Render("Warning:"), beadID, cli.Name(), beadID)
+			fmt.Printf("  %s %s stays review-only; if it should not be, a human can run: %s bead clear-review-only %s --reason \"<why>\"\n", style.Dim.Render("Warning:"), beadID, cli.Name(), beadID)
 		}
 	} else if restored {
 		fmt.Printf("  %s Restored raw workflow metadata on %s\n", style.Dim.Render("○"), beadID)

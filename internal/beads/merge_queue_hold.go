@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/steveyegge/gastown/internal/util"
 )
@@ -126,15 +125,7 @@ const maxHoldReasonLen = 300
 // holdReason makes a landing reason safe to show to a human: one line, URL
 // credentials masked, bounded length.
 func holdReason(reason string) string {
-	reason = strings.Join(strings.Fields(util.RedactURLCredentials(reason)), " ")
-	if len(reason) > maxHoldReasonLen {
-		cut := maxHoldReasonLen
-		for cut > 0 && !utf8.RuneStart(reason[cut]) {
-			cut--
-		}
-		reason = reason[:cut] + "…"
-	}
-	return reason
+	return util.OneLine(reason, maxHoldReasonLen)
 }
 
 // MergeQueueIndex holds the merge requests of one or more beads DBs grouped
