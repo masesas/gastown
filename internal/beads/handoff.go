@@ -254,7 +254,8 @@ func (b *Beads) AttachMolecule(pinnedBeadID, moleculeID string) (*Issue, error) 
 		AttachedAt:       currentTimestamp(),
 	}
 
-	// Update description with attachment fields
+	// Update description with attachment fields (keeps a sticky review_only
+	// marker, gt-pd1c.69)
 	newDesc := SetAttachmentFields(issue, fields)
 
 	// Update the issue
@@ -284,14 +285,13 @@ func (b *Beads) DetachMolecule(pinnedBeadID string) (*Issue, error) {
 	}
 
 	// Check if there's anything to detach
-	attachment := ParseAttachmentFields(issue)
-	if attachment == nil {
+	if ParseAttachmentFields(issue) == nil {
 		return issue, nil // Nothing to detach
 	}
 
-	// Clear the assignment's attachment fields; sticky bead markers
-	// (review_only) survive the detach (gt-pd1c.69).
-	newDesc := SetAttachmentFields(issue, DetachedAttachmentFields(attachment))
+	// Clear the assignment's attachment fields; SetAttachmentFields keeps the
+	// sticky review_only marker (gt-pd1c.69).
+	newDesc := SetAttachmentFields(issue, nil)
 	if newDesc == issue.Description {
 		return issue, nil
 	}

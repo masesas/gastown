@@ -701,6 +701,20 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("getting current branch: %w", err)
 	}
 
+	// Review-only work (gt-pd1c.69): the target bead (--issue, else the branch)
+	// or any bead hooked to this polecat. Resolved before the auto-commit
+	// safety net so a review leg is never auto-committed. An unverifiable
+	// status fails closed: no auto-commit here, and COMPLETED refuses once the
+	// source issue has been validated below.
+	reviewOnlyTarget := doneIssue
+	if reviewOnlyTarget == "" {
+		reviewOnlyTarget = parseBranchName(branch).Issue
+	}
+	reviewOnlyBead, reviewOnlyErr := findReviewOnlyWork(cwd, sender, reviewOnlyCandidate{ID: reviewOnlyTarget})
+	if reviewOnlyErr != nil {
+		style.PrintWarning("%v; skipping the auto-commit safety net", reviewOnlyErr)
+	}
+
 	// Auto-detect cleanup status if not explicitly provided
 	// This prevents premature polecat cleanup by ensuring witness knows git state
 	if doneCleanupStatus == "" {
@@ -785,7 +799,9 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	//
 	// Auto-commit ensures work is NEVER lost regardless of exit type or agent behavior.
 	// The commit message is clearly marked as an auto-save so reviewers know.
-	if doneCleanupStatus == "uncommitted" {
+	if doneCleanupStatus == "uncommitted" && (reviewOnlyBead != "" || reviewOnlyErr != nil) {
+		fmt.Printf("\n%s Uncommitted changes left in the worktree are NOT auto-committed: review-only work produces no commits\n\n", style.Bold.Render("⚠"))
+	} else if doneCleanupStatus == "uncommitted" {
 		// Re-check to get file details (cleanup detection already confirmed uncommitted changes)
 		workStatus, err := g.CheckUncommittedWork()
 		if err == nil && workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
@@ -1004,7 +1020,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("checking git status: %w", err)
 		}
 		if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
-			return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+			if reviewOnlyBead == "" {
+				return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+			}
+			// A review leg that only reports may leave scratch files; they are
+			// never committed and stay in the worktree (gt-pd1c.69).
+			style.PrintWarning("review-only issue %s: leaving uncommitted changes uncommitted (%s)", reviewOnlyBead, workStatus.String())
 		}
 
 		// Check if branch has commits ahead of the clean target base. In fork-backed
@@ -1024,8 +1045,11 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// this is a non-code task (email, research, analysis, PRD review)
 		// where zero commits is expected.
 		// Must be checked before the zero-commit guard below (GH#2496, gt-kvf).
-		isNoMergeTask := false
-		reviewOnlySource := false
+		if reviewOnlyErr != nil {
+			return fmt.Errorf("%w\nNothing was pushed and no merge request was created; retry gt done when beads is reachable", reviewOnlyErr)
+		}
+		reviewOnlySource := reviewOnlyBead != ""
+		isNoMergeTask := reviewOnlySource
 		if issueID != "" {
 			sourceInfo, sourceErr := resolveSubmitSourceIssue(cwd, issueID)
 			if sourceErr != nil {
@@ -1033,7 +1057,10 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 			sourceIssueForNoMerge = sourceInfo.Issue
 			sourceBD = sourceInfo.BD
-			reviewOnlySource = beads.IsReviewOnly(sourceIssueForNoMerge)
+			if reviewOnlyBead == "" && beads.IsReviewOnly(sourceIssueForNoMerge) {
+				reviewOnlyBead = issueID
+			}
+			reviewOnlySource = reviewOnlyBead != ""
 			af := beads.ParseAttachmentFields(sourceIssueForNoMerge)
 			isNoMergeTask = reviewOnlySource || (af != nil && af.NoMerge)
 		}
@@ -1144,7 +1171,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		}
 
 		if reviewOnlySource {
-			return fmt.Errorf("cannot complete review-only issue %s with commits ahead of %s; add a fresh review evidence comment and complete without code changes", issueID, baseRef)
+			return reviewOnlyCommitRefusal(reviewOnlyBead, baseRef)
 		}
 
 		// Branch contamination preflight: check if branch is significantly behind

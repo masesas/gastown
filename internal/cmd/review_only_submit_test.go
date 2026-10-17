@@ -17,19 +17,30 @@ import (
 
 const reviewOnlyAssignee = "gastown/polecats/refuge"
 
-// installReviewOnlySourceBDRecorder installs a bd stub whose bd-source bead is
-// the given issue (in every beads dir) and logs every call. Returns the log path.
-func installReviewOnlySourceBDRecorder(t *testing.T, source beads.Issue) string {
+// installReviewOnlySourceBDRecorder installs a bd stub that serves bd-source
+// (and every hooked issue) from JSON in every beads dir, lists the hooked
+// issues as the calling agent's assignment, and logs every call. Returns the
+// log path.
+func installReviewOnlySourceBDRecorder(t *testing.T, source beads.Issue, hooked ...beads.Issue) string {
 	t.Helper()
-	data, err := json.Marshal([]beads.Issue{source})
-	if err != nil {
-		t.Fatalf("marshal source: %v", err)
-	}
 	dir := t.TempDir()
-	sourcePath := filepath.Join(dir, "source.json")
-	if err := os.WriteFile(sourcePath, data, 0o644); err != nil {
-		t.Fatalf("write source json: %v", err)
+	writeJSON := func(name string, v any) {
+		t.Helper()
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
 	}
+	for _, issue := range append([]beads.Issue{source}, hooked...) {
+		writeJSON("show-"+issue.ID+".json", []beads.Issue{issue})
+	}
+	if hooked == nil {
+		hooked = []beads.Issue{}
+	}
+	writeJSON("hooked.json", hooked)
 	logPath := filepath.Join(dir, "bd.log")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = "--allow-stale" ]; then
@@ -40,15 +51,23 @@ if [ "$1" = "version" ]; then
   exit 0
 fi
 printf '%%s\t%%s\n' "$BEADS_DIR" "$*" >> %q
-if [ "$1" = "show" ] && [ "$2" = "bd-source" ]; then
-  cat %q
+data=%q
+if [ "$1" = "show" ] && [ -f "$data/show-$2.json" ]; then
+  cat "$data/show-$2.json"
   exit 0
 fi
-if [ "$1" = "comments" ] && [ "$2" = "bd-source" ]; then
+if [ "$1" = "comments" ] && [ "$2" != "add" ]; then
   echo '[]'
   exit 0
 fi
-if [ "$1" = "list" ] || [ "$1" = "sql" ]; then
+if [ "$1" = "list" ]; then
+  case "$*" in
+    *--status=hooked*) cat "$data/hooked.json" ;;
+    *) echo '[]' ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "sql" ]; then
   echo '[]'
   exit 0
 fi
@@ -64,7 +83,7 @@ if [ "$1" = "close" ]; then
 fi
 echo "unexpected bd command: $*" >&2
 exit 1
-`, logPath, sourcePath)
+`, logPath, dir)
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write bd recorder: %v", err)
@@ -202,5 +221,122 @@ func TestRunDoneReviewOnlyWithoutCommitsCompletes(t *testing.T) {
 	log := readSubmitSourceBDLog(t, logPath)
 	if !strings.Contains(log, "close bd-source") {
 		t.Fatalf("report-only review leg was not closed:\n%s", log)
+	}
+}
+
+// codeSourceIssue is an ordinary (not review-only) bead assigned to nobody.
+func codeSourceIssue() beads.Issue {
+	return beads.Issue{ID: "bd-source", Title: "code task", Status: "open", Priority: 1, Type: "task",
+		Description: "Implement the thing."}
+}
+
+// hookedReviewLeg is the review-only leg hooked to the calling polecat.
+func hookedReviewLeg() beads.Issue {
+	leg := reviewOnlySourceIssue(time.Now().Add(-time.Hour))
+	leg.ID = "gt-review-leg"
+	return leg
+}
+
+func TestRunMqSubmitRefusesWhenHookedBeadIsReviewOnly(t *testing.T) {
+	workDir, _, _ := setupRoutedSourceTestTown(t)
+	setupRoutedSubmitCommandTown(t, workDir)
+	branch := setupRoutedSubmitGitRepo(t, workDir, true)
+	logPath := installReviewOnlySourceBDRecorder(t, codeSourceIssue(), hookedReviewLeg())
+	resetMqSubmitFlagsForTest(t)
+	t.Setenv("GT_TEST_NUDGE_LOG", filepath.Join(t.TempDir(), "nudge.log"))
+	t.Setenv("GT_RIG", "")
+	t.Setenv("GT_ROLE", reviewOnlyAssignee)
+	t.Setenv("BD_ACTOR", reviewOnlyAssignee)
+	t.Chdir(workDir)
+
+	mqSubmitBranch = branch
+	mqSubmitIssue = "bd-source" // another bead than the hooked review leg
+	mqSubmitNoCleanup = true
+	err := runMqSubmit(nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "gt-review-leg") {
+		t.Fatalf("runMqSubmit --issue <other bead> with a hooked review leg = %v, want refusal naming gt-review-leg", err)
+	}
+	assertNoMergeRequestCreated(t, logPath)
+}
+
+func TestRunDoneRefusesWhenHookedBeadIsReviewOnly(t *testing.T) {
+	workDir, _, _ := setupRoutedSourceTestTown(t)
+	setupRoutedSubmitCommandTown(t, workDir)
+	setupRoutedSubmitGitRepo(t, workDir, false)
+	logPath := installReviewOnlySourceBDRecorder(t, codeSourceIssue(), hookedReviewLeg())
+	setupReviewOnlyDoneEnv(t, workDir)
+	doneSkipVerify = true // doneIssue = bd-source: another bead than the hooked review leg
+
+	err := runDone(nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "gt-review-leg") {
+		t.Fatalf("runDone --issue <other bead> with a hooked review leg = %v, want refusal naming gt-review-leg", err)
+	}
+	assertNoMergeRequestCreated(t, logPath)
+}
+
+func TestRunDoneReviewOnlyRefusalExplainsRecovery(t *testing.T) {
+	workDir, _, _ := setupRoutedSourceTestTown(t)
+	setupRoutedSubmitCommandTown(t, workDir)
+	setupRoutedSubmitGitRepo(t, workDir, false)
+	installReviewOnlySourceBDRecorder(t, reviewOnlySourceIssue(time.Now().Add(-time.Hour)))
+	setupReviewOnlyDoneEnv(t, workDir)
+	doneSkipVerify = true
+
+	err := runDone(nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "git reset --hard") {
+		t.Fatalf("review-only refusal = %v, want recovery hint with git reset --hard", err)
+	}
+}
+
+func TestRunDoneReviewOnlyWithUncommittedFilesCompletesWithoutCommit(t *testing.T) {
+	workDir, _, _ := setupRoutedSourceTestTown(t)
+	setupRoutedSubmitCommandTown(t, workDir)
+	setupReviewOnlyGitRepoWithoutCommits(t, workDir)
+	head := runGitForMQSubmitTest(t, workDir, "rev-parse", "HEAD")
+	// Leftovers of a review leg: a modified tracked file and an untracked report.
+	writeMQSubmitTestFile(t, workDir, "file.txt", "scratch edit\n")
+	writeMQSubmitTestFile(t, workDir, "findings.md", "notes\n")
+	assignedAt := time.Now().Add(-time.Hour)
+	evidence := beads.Comment{
+		Author:    reviewOnlyAssignee,
+		CreatedAt: assignedAt.Add(time.Minute).UTC().Format(time.RFC3339Nano),
+		Text:      "REPORT: no gaps found\nhead_sha: " + head,
+	}
+	logPath := installReviewOnlySourceBDRecorder(t, reviewOnlySourceIssue(assignedAt, evidence))
+	setupReviewOnlyDoneEnv(t, workDir)
+
+	if err := runDone(nil, nil); err != nil {
+		t.Fatalf("runDone for a report-only review leg with leftover files: %v", err)
+	}
+	if after := runGitForMQSubmitTest(t, workDir, "rev-parse", "HEAD"); after != head {
+		t.Fatalf("gt done committed on a review-only bead: HEAD %s -> %s", head, after)
+	}
+	assertNoMergeRequestCreated(t, logPath)
+	if log := readSubmitSourceBDLog(t, logPath); !strings.Contains(log, "close bd-source") {
+		t.Fatalf("report-only review leg was not closed:\n%s", log)
+	}
+}
+
+func TestFindReviewOnlyWorkFailsClosedAndPrefersTarget(t *testing.T) {
+	prev := findAssignedBeadsForReviewOnly
+	t.Cleanup(func() { findAssignedBeadsForReviewOnly = prev })
+
+	findAssignedBeadsForReviewOnly = func(workDir, agentID string) ([]string, error) {
+		return nil, fmt.Errorf("database is locked")
+	}
+	if _, err := findReviewOnlyWork(t.TempDir(), reviewOnlyAssignee); err == nil {
+		t.Fatal("assignment lookup failure must fail closed")
+	}
+
+	review := reviewOnlySourceIssue(time.Now())
+	got, err := findReviewOnlyWork(t.TempDir(), reviewOnlyAssignee, reviewOnlyCandidate{ID: review.ID, Issue: &review})
+	if err != nil || got != review.ID {
+		t.Fatalf("preloaded review-only target = (%q, %v), want (%q, nil) without assignment lookup", got, err, review.ID)
+	}
+
+	findAssignedBeadsForReviewOnly = func(workDir, agentID string) ([]string, error) { return nil, nil }
+	code := codeSourceIssue()
+	if got, err := findReviewOnlyWork(t.TempDir(), "", reviewOnlyCandidate{ID: code.ID, Issue: &code}); err != nil || got != "" {
+		t.Fatalf("code bead without agent = (%q, %v), want (\"\", nil)", got, err)
 	}
 }

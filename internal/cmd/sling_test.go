@@ -155,14 +155,20 @@ func readMutableBDDescription(t *testing.T, descPath string) string {
 	return string(b)
 }
 
-func assertNoRawReviewMetadata(t *testing.T, desc string) {
+// assertRollbackKeptOnlyReviewOnly checks a rolled-back description: the
+// per-assignment workflow fields (no_merge, attached_at) are gone, while the
+// sticky review_only marker survives (gt-pd1c.69: rollback never drops it).
+func assertRollbackKeptOnlyReviewOnly(t *testing.T, desc string) {
 	t.Helper()
-	if strings.Contains(desc, "no_merge: true") || strings.Contains(desc, "review_only: true") {
-		t.Fatalf("stale raw review metadata remains in description:\n%s", desc)
+	if strings.Contains(desc, "no_merge: true") || strings.Contains(desc, "attached_at:") {
+		t.Fatalf("stale per-assignment metadata remains in description:\n%s", desc)
 	}
 	fields := beads.ParseAttachmentFields(&beads.Issue{Description: desc})
-	if fields != nil && (fields.NoMerge || fields.ReviewOnly) {
-		t.Fatalf("parsed stale raw review metadata from description: %+v", fields)
+	if fields == nil || !fields.ReviewOnly {
+		t.Fatalf("rollback dropped the sticky review_only marker:\n%s", desc)
+	}
+	if fields.NoMerge || fields.AttachedAt != "" {
+		t.Fatalf("parsed stale per-assignment metadata from description: %+v", fields)
 	}
 }
 
@@ -1654,7 +1660,7 @@ exit /b 0
 	}
 }
 
-func TestRollbackSlingArtifactsClearsRawReviewOnlyMetadata(t *testing.T) {
+func TestRollbackSlingArtifactsKeepsReviewOnlyClearsAssignmentMetadata(t *testing.T) {
 	initial := strings.Join([]string{
 		"attached_at: 2026-06-30T12:00:00Z",
 		"no_merge: true",
@@ -1672,7 +1678,7 @@ func TestRollbackSlingArtifactsClearsRawReviewOnlyMetadata(t *testing.T) {
 	}, "gt-rawrollback", filepath.Join(townRoot, "gastown", "polecats", "toast"), "")
 
 	desc := readMutableBDDescription(t, descPath)
-	assertNoRawReviewMetadata(t, desc)
+	assertRollbackKeptOnlyReviewOnly(t, desc)
 	if !strings.Contains(desc, "dispatched_by: mayor/") {
 		t.Fatalf("rollback did not preserve unrelated dispatch metadata:\n%s", desc)
 	}
@@ -1718,7 +1724,7 @@ func TestRollbackSlingArtifactsKeepsMetadataWhenMoleculeBurnFails(t *testing.T) 
 	assertHasRawReviewMetadata(t, desc)
 }
 
-func TestRollbackSlingArtifactsClearsRawReviewOnlyMetadataAfterMoleculeBurnSucceeds(t *testing.T) {
+func TestRollbackSlingArtifactsKeepsReviewOnlyAfterMoleculeBurnSucceeds(t *testing.T) {
 	initial := strings.Join([]string{
 		"attached_molecule: gt-wisp-stale",
 		"attached_at: 2026-06-30T12:00:00Z",
@@ -1762,7 +1768,7 @@ func TestRollbackSlingArtifactsClearsRawReviewOnlyMetadataAfterMoleculeBurnSucce
 	}, "gt-rawrollback", filepath.Join(townRoot, "gastown", "polecats", "toast"), "")
 
 	desc := readMutableBDDescription(t, descPath)
-	assertNoRawReviewMetadata(t, desc)
+	assertRollbackKeptOnlyReviewOnly(t, desc)
 	if strings.Contains(desc, "attached_molecule: gt-wisp-stale") {
 		t.Fatalf("rollback reintroduced stale attached molecule:\n%s", desc)
 	}
@@ -1790,7 +1796,7 @@ func TestRestoreRollbackRawWorkflowFieldsFromCurrentRestoresOriginalValues(t *te
 
 	desc := readMutableBDDescription(t, descPath)
 	fields := beads.ParseAttachmentFields(&beads.Issue{Description: desc})
-	if fields == nil || !fields.NoMerge || fields.ReviewOnly {
+	if fields == nil || !fields.NoMerge || !fields.ReviewOnly { // review_only is sticky (gt-pd1c.69)
 		t.Fatalf("rollback did not restore original workflow values: %+v\n%s", fields, desc)
 	}
 	if !strings.Contains(desc, "dispatched_by: mayor/") || !strings.Contains(desc, "Keep this body.") {
@@ -1839,7 +1845,7 @@ func TestRunSlingRawReviewOnlyExistingTargetHookFailureClearsPreHookMetadata(t *
 		t.Fatal("expected hook failure from runSling")
 	}
 	desc := readMutableBDDescription(t, descPath)
-	assertNoRawReviewMetadata(t, desc)
+	assertRollbackKeptOnlyReviewOnly(t, desc)
 	if !strings.Contains(desc, "Keep this body.") {
 		t.Fatalf("rollback did not preserve description body:\n%s", desc)
 	}
@@ -1880,7 +1886,7 @@ func TestExecuteSlingRawReviewOnlyHookFailureClearsPreHookMetadata(t *testing.T)
 	if err == nil {
 		t.Fatal("expected hook failure from executeSling")
 	}
-	assertNoRawReviewMetadata(t, readMutableBDDescription(t, descPath))
+	assertRollbackKeptOnlyReviewOnly(t, readMutableBDDescription(t, descPath))
 }
 
 func TestExecuteSlingRawReviewOnlyHookFailureRestoresOriginalMetadata(t *testing.T) {
@@ -1925,7 +1931,7 @@ func TestExecuteSlingRawReviewOnlyHookFailureRestoresOriginalMetadata(t *testing
 	}
 	desc := readMutableBDDescription(t, descPath)
 	fields := beads.ParseAttachmentFields(&beads.Issue{Description: desc})
-	if fields == nil || !fields.NoMerge || fields.ReviewOnly {
+	if fields == nil || !fields.NoMerge || !fields.ReviewOnly { // review_only is sticky (gt-pd1c.69)
 		t.Fatalf("rollback did not restore original asymmetric metadata: %+v\n%s", fields, desc)
 	}
 	if !strings.Contains(desc, "Keep this body.") {

@@ -1260,38 +1260,41 @@ var getBeadInfoForRollback = getBeadInfo
 var collectExistingMoleculesForRollback = collectExistingMolecules
 var burnExistingMoleculesForRollback = burnExistingMolecules
 
-func rawWorkflowFieldValues(info *beadInfo) (noMerge, reviewOnly bool, attachedAt string) {
+// rawWorkflowFieldValues returns the per-assignment workflow fields a raw
+// sling writes before hooking. review_only is not among them: it is sticky on
+// the bead (beads.SetAttachmentFields never drops it), so rollback has nothing
+// to restore for it and cannot lose it (gt-pd1c.69).
+func rawWorkflowFieldValues(info *beadInfo) (noMerge bool, attachedAt string) {
 	if info == nil {
-		return false, false, ""
+		return false, ""
 	}
-	issue := &beads.Issue{Description: info.Description}
-	fields := beads.ParseAttachmentFields(issue)
+	fields := beads.ParseAttachmentFields(&beads.Issue{Description: info.Description})
 	if fields == nil {
-		return false, false, ""
+		return false, ""
 	}
-	return fields.NoMerge, fields.ReviewOnly, fields.AttachedAt
+	return fields.NoMerge, fields.AttachedAt
 }
 
 func restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info, originalInfo *beadInfo) (bool, error) {
 	if info == nil {
 		return false, nil
 	}
-	originalNoMerge, originalReviewOnly, originalAttachedAt := rawWorkflowFieldValues(originalInfo)
+	originalNoMerge, originalAttachedAt := rawWorkflowFieldValues(originalInfo)
 	issue := &beads.Issue{Description: info.Description}
 	fields := beads.ParseAttachmentFields(issue)
 	if fields == nil {
-		if !originalNoMerge && !originalReviewOnly {
+		if !originalNoMerge {
 			return false, nil
 		}
 		fields = &beads.AttachmentFields{}
 	}
-	if fields.NoMerge == originalNoMerge && fields.ReviewOnly == originalReviewOnly && fields.AttachedAt == originalAttachedAt {
+	if fields.NoMerge == originalNoMerge && fields.AttachedAt == originalAttachedAt {
 		return false, nil
 	}
-	fields.NoMerge = originalNoMerge
-	fields.ReviewOnly = originalReviewOnly
-	fields.AttachedAt = originalAttachedAt
-	newDesc := beads.SetAttachmentFields(issue, fields)
+	restored := *fields
+	restored.NoMerge = originalNoMerge
+	restored.AttachedAt = originalAttachedAt
+	newDesc := beads.SetAttachmentFields(issue, &restored)
 	if newDesc == info.Description {
 		return false, nil
 	}

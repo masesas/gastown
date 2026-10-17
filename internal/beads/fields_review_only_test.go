@@ -1,7 +1,6 @@
 package beads
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -29,33 +28,9 @@ func TestIsReviewOnly(t *testing.T) {
 	}
 }
 
-func TestDetachedAttachmentFieldsKeepsOnlyReviewOnly(t *testing.T) {
-	if got := DetachedAttachmentFields(nil); got != nil {
-		t.Fatalf("nil fields: got %+v, want nil", got)
-	}
-	plain := &AttachmentFields{AttachedMolecule: "gt-wisp", NoMerge: true, ConvoyID: "hq-cv-1"}
-	if got := DetachedAttachmentFields(plain); got != nil {
-		t.Fatalf("non-review fields survived detach: %+v", got)
-	}
-	review := &AttachmentFields{
-		AttachedMolecule: "gt-wisp",
-		AttachedFormula:  "mol-polecat-work",
-		AttachedAt:       "2026-01-01T00:00:00Z",
-		DispatchedBy:     "mayor/",
-		ReviewOnly:       true,
-	}
-	got := DetachedAttachmentFields(review)
-	if got == nil || !reflect.DeepEqual(*got, AttachmentFields{ReviewOnly: true}) {
-		t.Fatalf("DetachedAttachmentFields = %+v, want only ReviewOnly", got)
-	}
-	if review.AttachedMolecule != "gt-wisp" {
-		t.Fatal("DetachedAttachmentFields mutated its input")
-	}
-}
-
 func TestDetachDescriptionKeepsReviewOnlyMarker(t *testing.T) {
 	issue := &Issue{Description: "attached_molecule: gt-wisp\nattached_at: 2026-01-01T00:00:00Z\nreview_only: true\n\nBody text."}
-	desc := SetAttachmentFields(issue, DetachedAttachmentFields(ParseAttachmentFields(issue)))
+	desc := SetAttachmentFields(issue, nil) // what DetachMolecule writes
 	fields := ParseAttachmentFields(&Issue{Description: desc})
 	if fields == nil || !fields.ReviewOnly || fields.AttachedMolecule != "" || fields.AttachedAt != "" {
 		t.Fatalf("detached description = %q, fields %+v", desc, fields)
@@ -79,5 +54,58 @@ func TestWithReviewOnlyMarker(t *testing.T) {
 	}
 	if again := WithReviewOnlyMarker(got); again != got {
 		t.Fatalf("marking twice changed the description: %q", again)
+	}
+}
+
+func TestReviewOnlyParsingFailsClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		desc string
+		want bool
+	}{
+		{"true then false", "review_only: true\nreview_only: false", true},
+		{"false then true", "review_only: false\nbody\nreview_only: true", true},
+		{"yes", "review_only: yes", true},
+		{"one", "review_only: 1", true},
+		{"garbage", "review_only: maybe", true},
+		{"false", "review_only: false", false},
+		{"FALSE", "review_only: FALSE", false},
+		{"zero", "review_only: 0", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsReviewOnly(&Issue{Description: tt.desc}); got != tt.want {
+				t.Fatalf("IsReviewOnly(%q) = %v, want %v", tt.desc, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithReviewOnlyMarkerOverridesExplicitFalse(t *testing.T) {
+	got := WithReviewOnlyMarker("Leg body.\nreview_only: false")
+	if !IsReviewOnly(&Issue{Description: got}) {
+		t.Fatalf("a later review_only: false line disabled the marker: %q", got)
+	}
+}
+
+func TestSetAttachmentFieldsKeepsReviewOnlySticky(t *testing.T) {
+	issue := &Issue{Description: "attached_molecule: gt-old\nreview_only: true\n\nBody."}
+	for name, fields := range map[string]*AttachmentFields{
+		"detach (nil)":          nil,
+		"new attachment":        {AttachedMolecule: "gt-new", AttachedAt: "2026-10-17T00:00:00Z"},
+		"explicit false marker": {ReviewOnly: false, NoMerge: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			desc := SetAttachmentFields(issue, fields)
+			if !IsReviewOnly(&Issue{Description: desc}) {
+				t.Fatalf("SetAttachmentFields dropped review_only: %q", desc)
+			}
+			if strings.Contains(desc, "gt-old") {
+				t.Fatalf("stale attachment kept: %q", desc)
+			}
+		})
+	}
+	if fields := (&AttachmentFields{AttachedMolecule: "gt-new"}); SetAttachmentFields(&Issue{Description: "Body."}, fields) != "attached_molecule: gt-new\n\nBody." || fields.ReviewOnly {
+		t.Fatal("non-review bead gained review_only or input was mutated")
 	}
 }

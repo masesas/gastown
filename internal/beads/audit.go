@@ -68,9 +68,9 @@ func (b *Beads) DetachMoleculeWithAudit(pinnedBeadID string, opts DetachOptions)
 		fmt.Fprintf(os.Stderr, "Warning: failed to write audit log: %v\n", err)
 	}
 
-	// Clear the assignment's attachment fields; sticky bead markers
-	// (review_only) survive the detach (gt-pd1c.69).
-	newDesc := SetAttachmentFields(issue, DetachedAttachmentFields(attachment))
+	// Clear the assignment's attachment fields; SetAttachmentFields keeps the
+	// sticky review_only marker (gt-pd1c.69).
+	newDesc := SetAttachmentFields(issue, nil)
 	if newDesc == issue.Description {
 		return issue, nil
 	}

@@ -588,10 +588,15 @@ must not commit, push or open a merge request. The mode is stored as the
 `review_only: true` field on the bead and is sticky: a later `gt sling` of the
 same bead without the flag (including `--force`, scheduler dispatch, convoy
 re-dispatch, or after the previous polecat was nuked) keeps it and refreshes the
-assignment timestamp. `gt prime` shows a REVIEW-ONLY directive, `gt done`
-refuses commits ahead of the base (complete with a `REPORT:`/`FINDINGS:` comment
-carrying `head_sha: <HEAD>` and no new commits), and `gt mq submit` refuses the
-bead. The field is removed only by editing the bead description.
+assignment timestamp; detach, burn and a failed sling's rollback keep it too.
+`gt prime` shows a REVIEW-ONLY directive. `gt done` and `gt mq submit` refuse
+commits and merge requests when the target bead (`--issue` or the branch) or
+any bead hooked to the caller is review-only; a lookup failure refuses too.
+`gt done` never auto-commits leftover files of review-only work; complete with
+a `REPORT:`/`FINDINGS:` comment carrying `head_sha: <HEAD>` and no new commits.
+Parsing fails closed: any `review_only` line with a value other than an explicit
+false (`false`, `0`, ...) marks the bead. The field is removed only by editing
+the bead description.
 
 Agent overrides:
 
