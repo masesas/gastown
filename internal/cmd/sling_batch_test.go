@@ -476,8 +476,10 @@ case "$cmd" in
     exit 0
     ;;
   show)
-    # bdShow: return convoy details for isTrackedByConvoy check
-    case "$1" in
+    # bdShow: return convoy details for isTrackedByConvoy check.
+    # The ID is the last argument (bd show --json -- <id>).
+    for last; do :; done
+    case "$last" in
       hq-cv-existing)
         echo '[{"id":"hq-cv-existing","issue_type":"convoy","status":"open"}]'
         ;;

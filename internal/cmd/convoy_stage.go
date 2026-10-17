@@ -57,12 +57,26 @@ type StageResult struct {
 	Tree             []TreeNodeJSON  `json:"tree"`
 }
 
-// GatedTaskJSON is the JSON representation of a task gated by non-slingable blockers.
+// GatedTaskJSON is the JSON representation of a task gated by non-slingable
+// blockers or blockers outside the staged set.
 type GatedTaskJSON struct {
 	ID      string   `json:"id"`
 	Title   string   `json:"title"`
 	Type    string   `json:"type"`
 	GatedBy []string `json:"gated_by"`
+	// ExternalBlockers details the GatedBy entries that are not in the staged
+	// set (gt-pd1c.43). Omitted when every gate is a staged node.
+	ExternalBlockers []ExternalBlockerJSON `json:"external_blockers,omitempty"`
+}
+
+// ExternalBlockerJSON describes a gating blocker outside the staged set.
+// Resolved is false when its status could not be read (it gates fail-closed);
+// Type and Status are then empty.
+type ExternalBlockerJSON struct {
+	ID       string `json:"id"`
+	Type     string `json:"type,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Resolved bool   `json:"resolved"`
 }
 
 // FindingJSON is the JSON representation of a StagingFinding.
@@ -398,15 +412,7 @@ func runConvoyStage(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 11b: Add gated task warnings and recalculate status.
-	for _, g := range gated {
-		warns = append(warns, StagingFinding{
-			Severity:     "warning",
-			Category:     "gated",
-			BeadIDs:      []string{g.TaskID},
-			Message:      fmt.Sprintf("task %s is gated by non-slingable blocker(s): %s", g.TaskID, strings.Join(g.GatedBy, ", ")),
-			SuggestedFix: fmt.Sprintf("close or tombstone %s to include %s in waves", strings.Join(g.GatedBy, ", "), g.TaskID),
-		})
-	}
+	warns = append(warns, gatedFindings(gated, dag)...)
 	if len(gated) > 0 {
 		status = chooseStatus(errs, warns)
 	}
@@ -500,15 +506,7 @@ func runConvoyStageJSON(dag *ConvoyDAG, input *StageInput, errs, warns []Staging
 	}
 
 	// Add gated task warnings and recalculate status.
-	for _, g := range gated {
-		warns = append(warns, StagingFinding{
-			Severity:     "warning",
-			Category:     "gated",
-			BeadIDs:      []string{g.TaskID},
-			Message:      fmt.Sprintf("task %s is gated by non-slingable blocker(s): %s", g.TaskID, strings.Join(g.GatedBy, ", ")),
-			SuggestedFix: fmt.Sprintf("close or tombstone %s to include %s in waves", strings.Join(g.GatedBy, ", "), g.TaskID),
-		})
-	}
+	warns = append(warns, gatedFindings(gated, dag)...)
 	if len(gated) > 0 {
 		status = chooseStatus(errs, warns)
 		result.Warnings = buildFindingsJSON(warns)
@@ -869,8 +867,12 @@ func updateStagedConvoy(existingConvoyID string, dag *ConvoyDAG, waves []Wave, s
 }
 
 // ConvoyDAG represents an in-memory dependency graph for convoy staging.
+// Nodes is the staged set. External holds execution blockers of staged
+// slingable beads that are not in the staged set (see ExternalBlocker); their
+// IDs also appear in the dependents' BlockedBy.
 type ConvoyDAG struct {
-	Nodes map[string]*ConvoyDAGNode
+	Nodes    map[string]*ConvoyDAGNode
+	External map[string]*ExternalBlocker
 }
 
 // ConvoyDAGNode represents a single bead in the DAG.
@@ -885,6 +887,11 @@ type ConvoyDAGNode struct {
 	Blocks    []string // IDs of beads this one blocks
 	Children  []string // parent-child children (hierarchy only, not execution)
 	Parent    string   // parent-child parent
+	// CloseReason decides whether this closed bead resolves a merge-blocks edge.
+	CloseReason string
+	// MergeBlockedBy marks BlockedBy entries reached by a merge-blocks edge:
+	// closed only resolves them with a "Merged in ..." close reason.
+	MergeBlockedBy map[string]bool
 }
 
 // detectCycles checks the DAG for cycles in execution edges (blocks/conditional-blocks/waits-for).
@@ -980,10 +987,10 @@ type Wave struct {
 
 // GatedTask represents a slingable task that cannot be placed in any wave
 // because it is blocked (directly or transitively) by an open non-slingable
-// node such as a decision or epic.
+// node such as a decision or epic, or by an open blocker outside the staged set.
 type GatedTask struct {
 	TaskID  string
-	GatedBy []string // IDs of non-slingable open blockers (direct gates only)
+	GatedBy []string // IDs of open gating blockers (direct gates only)
 }
 
 // isSlingableType delegates to the canonical convoy.IsSlingableType, which
@@ -993,14 +1000,17 @@ func isSlingableType(beadType string) bool {
 }
 
 // computeWaves assigns each slingable task to an execution wave using Kahn's algorithm.
-// Wave 1 = tasks with no unsatisfied blocking deps within the staged set.
+// Wave 1 = tasks with no unsatisfied blocking deps.
 // Wave N+1 = tasks whose blockers are ALL in wave N or earlier.
 // Epics and non-slingable types are excluded from wave task lists but their
 // blocking edges ARE respected — a task blocked by a decision bead will not
 // appear until that decision is resolved (fixes #2141).
+// Blockers outside the staged set (dag.External) act as gates the same way:
+// open or unreadable ones keep their dependents out of every wave (gt-pd1c.43).
 // Parent-child deps do NOT create execution edges.
 // Returns (waves, gatedTasks, error). gatedTasks lists tasks blocked by open
-// non-slingable nodes (decisions, epics) that cannot be placed in any wave.
+// non-slingable nodes (decisions, epics) or open external blockers that
+// cannot be placed in any wave.
 func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
 	// Step 1: Filter to slingable types only.
 	slingable := make(map[string]*ConvoyDAGNode)
@@ -1022,10 +1032,8 @@ func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
 		for _, blocker := range node.BlockedBy {
 			if _, ok := slingable[blocker]; ok {
 				deg++ // slingable blocker — handled by Kahn's
-			} else if bNode, ok := dag.Nodes[blocker]; ok {
-				if bNode.Status != "closed" && bNode.Status != "tombstone" {
-					deg++ // non-slingable open blocker — gate
-				}
+			} else if dag.isOpenBlocker(node, blocker) {
+				deg++ // open non-slingable or external blocker — gate
 			}
 		}
 		inDegree[id] = deg
@@ -1057,10 +1065,8 @@ func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
 					if _, ok := slingable[blocker]; ok {
 						continue
 					}
-					if bNode, ok := dag.Nodes[blocker]; ok {
-						if bNode.Status != "closed" && bNode.Status != "tombstone" {
-							gatedBy = append(gatedBy, blocker)
-						}
+					if dag.isOpenBlocker(node, blocker) {
+						gatedBy = append(gatedBy, blocker)
 					}
 				}
 				sort.Strings(gatedBy)
@@ -1203,6 +1209,8 @@ type BeadInfo struct {
 	// Assignee is the bead's current assignee ("" when unassigned).
 	Assignee string
 	Rig      string // resolved rig name
+	// CloseReason decides whether a closed bead resolves a merge-blocks edge.
+	CloseReason string
 }
 
 // DepInfo represents a raw dependency from bd dep list output.
@@ -1214,38 +1222,56 @@ type DepInfo struct {
 
 // buildConvoyDAG constructs a ConvoyDAG from raw bead and dependency data.
 // Edge classification:
-//   - blocks, conditional-blocks, waits-for → execution edges (BlockedBy/Blocks)
+//   - blocks, conditional-blocks, waits-for, merge-blocks → execution edges (BlockedBy/Blocks)
 //   - parent-child → hierarchy metadata (Children/Parent), NOT execution edges
 //   - related, tracks, discovered-from, etc. → ignored
-func buildConvoyDAG(beads []BeadInfo, deps []DepInfo) *ConvoyDAG {
-	dag := &ConvoyDAG{Nodes: make(map[string]*ConvoyDAGNode)}
+//
+// An execution edge whose blocker is not in the staged set (outside the epic
+// tree, or hidden from `bd list --parent`) is not dropped: for a slingable
+// dependent the blocker is resolved once via externalBlockerLookupFn and
+// recorded in dag.External, so it gates the dependent (gt-pd1c.43). Wrapped
+// external:<rig>:<id> IDs are normalised first.
+func buildConvoyDAG(beadList []BeadInfo, deps []DepInfo) *ConvoyDAG {
+	dag := &ConvoyDAG{
+		Nodes:    make(map[string]*ConvoyDAGNode),
+		External: make(map[string]*ExternalBlocker),
+	}
 
 	// Create nodes from beads.
-	for _, b := range beads {
+	for _, b := range beadList {
 		dag.Nodes[b.ID] = &ConvoyDAGNode{
-			ID:       b.ID,
-			Title:    b.Title,
-			Type:     b.Type,
-			Status:   b.Status,
-			Assignee: b.Assignee,
-			Rig:      b.Rig,
+			ID:          b.ID,
+			Title:       b.Title,
+			Type:        b.Type,
+			Status:      b.Status,
+			Assignee:    b.Assignee,
+			Rig:         b.Rig,
+			CloseReason: b.CloseReason,
 		}
 	}
 
 	// Process deps.
 	for _, d := range deps {
-		from := dag.Nodes[d.DependsOnID] // the blocker
-		to := dag.Nodes[d.IssueID]       // the blocked
-		if from == nil || to == nil {
-			continue // skip deps referencing beads not in our set
+		blockerID := beads.ExtractIssueID(d.DependsOnID)
+		from := dag.Nodes[blockerID]                     // the blocker
+		to := dag.Nodes[beads.ExtractIssueID(d.IssueID)] // the blocked
+		if to == nil {
+			continue // dependent not staged: nothing to order
+		}
+		if from == nil {
+			if blockerID != "" && beads.IsBlockingDependencyType(d.Type) && isSlingableType(to.Type) {
+				dag.addExternalBlocker(to, blockerID, d.Type)
+			}
+			continue
 		}
 
-		switch d.Type {
-		case "blocks", "conditional-blocks", "waits-for", "merge-blocks":
+		switch {
+		case beads.IsBlockingDependencyType(d.Type):
 			// Execution edges.
 			from.Blocks = append(from.Blocks, to.ID)
 			to.BlockedBy = append(to.BlockedBy, from.ID)
-		case "parent-child":
+			markMergeBlocks(to, from.ID, d.Type)
+		case d.Type == "parent-child":
 			// Hierarchy only.
 			from.Children = append(from.Children, to.ID)
 			to.Parent = from.ID
@@ -1418,7 +1444,7 @@ func renderWaveTable(waves []Wave, dag *ConvoyDAG) string {
 // renderGatedTasks produces a display section for tasks gated by non-slingable nodes.
 func renderGatedTasks(gated []GatedTask, dag *ConvoyDAG) string {
 	var buf strings.Builder
-	buf.WriteString("\n  Gated (blocked by open non-slingable nodes):\n")
+	buf.WriteString("\n  Gated (blocked by open non-slingable nodes or blockers outside the staged set):\n")
 	buf.WriteString("  " + strings.Repeat("─", 80) + "\n")
 
 	for _, g := range gated {
@@ -1433,7 +1459,7 @@ func renderGatedTasks(gated []GatedTask, dag *ConvoyDAG) string {
 			title = string(runes[:28]) + ".."
 		}
 
-		gateInfo := strings.Join(g.GatedBy, ", ")
+		gateInfo := dag.describeBlockers(g.GatedBy)
 		if len(g.GatedBy) == 0 {
 			gateInfo = "(transitively gated)"
 		}
@@ -1457,10 +1483,11 @@ func buildGatedJSON(gated []GatedTask, dag *ConvoyDAG) []GatedTaskJSON {
 			continue
 		}
 		result = append(result, GatedTaskJSON{
-			ID:      g.TaskID,
-			Title:   node.Title,
-			Type:    node.Type,
-			GatedBy: g.GatedBy,
+			ID:               g.TaskID,
+			Title:            node.Title,
+			Type:             node.Type,
+			GatedBy:          g.GatedBy,
+			ExternalBlockers: buildExternalBlockersJSON(g.GatedBy, dag),
 		})
 	}
 	return result
@@ -1479,6 +1506,7 @@ type bdShowResult struct {
 	Description string   `json:"description"`
 	IssueType   string   `json:"issue_type"`
 	Labels      []string `json:"labels"`
+	CloseReason string   `json:"close_reason"`
 }
 
 // bdDepResult matches the JSON output of `bd dep list <id> --json`.
@@ -1498,10 +1526,21 @@ func runBdJSONForBead(beadID string, args ...string) ([]byte, error) {
 	return runBdJSON(resolveBeadDir(beadID), args...)
 }
 
-// bdShow runs `bd show <id> --json` and returns the parsed bead info.
-// Returns error if bd exits non-zero or returns no results.
+// errInvalidBeadID rejects an ID before it reaches bd. IDs come from bead
+// data written by agents; one shaped like a flag (--db=...) would otherwise be
+// parsed as a bd global option.
+func errInvalidBeadID(beadID string) error {
+	return fmt.Errorf("invalid bead ID %q", beadID)
+}
+
+// bdShow runs `bd show --json -- <id>` and returns the parsed bead info.
+// Returns error if the ID is not a valid raw bead ID (beads.IsSafeID), if bd
+// exits non-zero or returns no results.
 func bdShow(beadID string) (*bdShowResult, error) {
-	out, err := runBdJSONForBead(beadID, "show", beadID, "--json")
+	if !beads.IsSafeID(beadID) {
+		return nil, errInvalidBeadID(beadID)
+	}
+	out, err := runBdJSONForBead(beadID, "show", "--json", "--", beadID)
 	if err != nil {
 		return nil, fmt.Errorf("bd show %s: %w", beadID, err)
 	}
@@ -1517,11 +1556,14 @@ func bdShow(beadID string) (*bdShowResult, error) {
 	return &results[0], nil
 }
 
-// bdDepList runs `bd dep list <id> --json` and returns parsed deps.
+// bdDepList runs `bd dep list --json -- <id>` and returns parsed deps.
 // bd dep list returns the beads that <id> depends on. Each result's
 // DependsOnID is the dependency target; IssueID is set to <id> by this func.
 func bdDepList(beadID string) ([]bdDepResult, error) {
-	out, err := runBdJSONForBead(beadID, "dep", "list", beadID, "--json")
+	if !beads.IsSafeID(beadID) {
+		return nil, errInvalidBeadID(beadID)
+	}
+	out, err := runBdJSONForBead(beadID, "dep", "list", "--json", "--", beadID)
 	if err != nil {
 		return nil, fmt.Errorf("bd dep list %s: %w", beadID, err)
 	}
@@ -1550,6 +1592,9 @@ func bdDepList(beadID string) ([]bdDepResult, error) {
 // `bd list --parent` doesn't see children that were added via `bd dep add ...
 // --type=parent-child`. The deps table is authoritative.
 func bdListChildren(parentID string) ([]bdShowResult, error) {
+	if !beads.IsSafeID(parentID) {
+		return nil, errInvalidBeadID(parentID)
+	}
 	out, err := runBdJSONForBead(parentID, "list", "--parent="+parentID, "--json")
 	if err != nil {
 		return nil, fmt.Errorf("bd list --parent=%s: %w", parentID, err)
@@ -1687,11 +1732,12 @@ func collectEpicBeads(epicID string) ([]BeadInfo, []DepInfo, error) {
 
 		// Add bead info.
 		allBeads = append(allBeads, BeadInfo{
-			ID:     current.ID,
-			Title:  current.Title,
-			Type:   current.IssueType,
-			Status: current.Status,
-			Rig:    rigFromBeadID(current.ID),
+			ID:          current.ID,
+			Title:       current.Title,
+			Type:        current.IssueType,
+			Status:      current.Status,
+			Rig:         rigFromBeadID(current.ID),
+			CloseReason: current.CloseReason,
 		})
 
 		// Fetch deps for this bead.
@@ -1735,12 +1781,13 @@ func collectTaskListBeads(taskIDs []string) ([]BeadInfo, []DepInfo, error) {
 		}
 
 		allBeads = append(allBeads, BeadInfo{
-			ID:       result.ID,
-			Title:    result.Title,
-			Type:     result.IssueType,
-			Status:   result.Status,
-			Assignee: result.Assignee,
-			Rig:      rigFromBeadID(result.ID),
+			ID:          result.ID,
+			Title:       result.Title,
+			Type:        result.IssueType,
+			Status:      result.Status,
+			Assignee:    result.Assignee,
+			Rig:         rigFromBeadID(result.ID),
+			CloseReason: result.CloseReason,
 		})
 
 		// Fetch deps.
@@ -1953,6 +2000,7 @@ func detectWarnings(dag *ConvoyDAG, input *StageInput) []StagingFinding {
 	findings = append(findings, detectCrossRig(dag)...)
 	findings = append(findings, estimateCapacity(dag)...)
 	findings = append(findings, detectMissingBranches(dag)...)
+	findings = append(findings, detectUnresolvedBlockers(dag)...)
 
 	// Sort findings by first bead ID for determinism.
 	sort.Slice(findings, func(i, j int) bool {
@@ -1988,7 +2036,7 @@ func detectOrphans(dag *ConvoyDAG, input *StageInput) []StagingFinding {
 		// to avoid false orphan warnings for decision-gated tasks.
 		inDeg := 0
 		for _, blocker := range node.BlockedBy {
-			if _, ok := dag.Nodes[blocker]; ok {
+			if dag.knowsBlocker(blocker) {
 				inDeg++
 			}
 		}

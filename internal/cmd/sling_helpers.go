@@ -250,7 +250,7 @@ func collectExistingMoleculeDeps(beadID, townRoot string) ([]string, error) {
 	if beadID == "" {
 		return nil, nil
 	}
-	if !isValidBeadID(beadID) {
+	if !beads.IsSafeID(beadID) {
 		return nil, fmt.Errorf("invalid bead ID: %q", beadID)
 	}
 

@@ -201,7 +201,8 @@ func dispatchWave1(convoyID string, dag *ConvoyDAG, waves []Wave, townRoot, base
 }
 
 // readyUndispatchedTasks returns the slingable tasks of the DAG that still need
-// a worker: status open, no assignee, and every execution blocker closed. Beads
+// a worker: status open, no assignee, and every execution blocker closed, staged
+// or not (an unreadable blocker outside the staged set holds the bead). Beads
 // that are hooked, in progress, assigned, or finished are never returned, which
 // keeps re-launching an open convoy idempotent. held are beads whose work is
 // in or through a merge request (mergeQueueHeldIssues, the same predicate the
@@ -215,7 +216,7 @@ func readyUndispatchedTasks(dag *ConvoyDAG, held mergeQueueHeld) []string {
 		}
 		blocked := false
 		for _, blockerID := range node.BlockedBy {
-			if b := dag.Nodes[blockerID]; b != nil && b.Status != "closed" && b.Status != "tombstone" {
+			if dag.isOpenBlocker(node, blockerID) {
 				blocked = true
 				break
 			}

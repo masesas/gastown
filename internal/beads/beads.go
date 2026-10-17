@@ -390,13 +390,6 @@ func (d *IssueDep) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-var blockingDependencyTypes = map[string]bool{
-	"blocks":             true,
-	"conditional-blocks": true,
-	"waits-for":          true,
-	"merge-blocks":       true,
-}
-
 var nonblockingDependencyTypes = map[string]bool{
 	"tracks":          true,
 	"parent-child":    true,
@@ -450,7 +443,7 @@ func unresolvedBlockingDependencyIDs(issue *Issue) ([]string, int) {
 	ids := make([]string, 0, len(issue.Dependencies))
 	count := 0
 	for _, dep := range issue.Dependencies {
-		if !isBlockingDependencyType(dep.DependencyType) || isResolvedDependency(dep) {
+		if !IsBlockingDependencyType(dep.DependencyType) || isResolvedDependency(dep) {
 			continue
 		}
 		count++
@@ -478,23 +471,14 @@ func normalizedIssueIDs(ids []string) []string {
 	return result
 }
 
-func isBlockingDependencyType(depType string) bool {
-	return blockingDependencyTypes[strings.ToLower(strings.TrimSpace(depType))]
-}
-
+// isResolvedDependency applies IsBlockerResolved to a dependency row. For
+// readiness (bd ready / mq ready) a pinned target also counts as resolved:
+// pinned beads are permanent records, never finished work.
 func isResolvedDependency(dep IssueDep) bool {
-	status := strings.ToLower(strings.TrimSpace(dep.Status))
-	switch status {
-	case "tombstone", "pinned":
+	if strings.EqualFold(strings.TrimSpace(dep.Status), "pinned") {
 		return true
-	case "closed":
-		if strings.EqualFold(strings.TrimSpace(dep.DependencyType), "merge-blocks") {
-			return strings.HasPrefix(dep.CloseReason, "Merged in ")
-		}
-		return true
-	default:
-		return false
 	}
+	return IsBlockerResolved(dep.DependencyType, dep.Status, dep.CloseReason)
 }
 
 // ListOptions specifies filters for listing issues.

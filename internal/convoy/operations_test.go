@@ -166,31 +166,8 @@ func TestCheckConvoysForIssue_NilLogger(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// blockingDepTypes map tests
-// ---------------------------------------------------------------------------
-
-func TestBlockingDepTypes_ContainsExpectedTypes(t *testing.T) {
-	expected := []string{"blocks", "conditional-blocks", "waits-for", "merge-blocks"}
-	for _, depType := range expected {
-		if !blockingDepTypes[depType] {
-			t.Errorf("blockingDepTypes should contain %q", depType)
-		}
-	}
-}
-
-func TestBlockingDepTypes_ExcludesParentChild(t *testing.T) {
-	if blockingDepTypes["parent-child"] {
-		t.Error("blockingDepTypes should NOT contain parent-child")
-	}
-}
-
-func TestBlockingDepTypes_ExactSize(t *testing.T) {
-	// Ensure the map has exactly the 4 expected entries and no extras.
-	if len(blockingDepTypes) != 4 {
-		t.Errorf("blockingDepTypes has %d entries, want 4; contents: %v", len(blockingDepTypes), blockingDepTypes)
-	}
-}
+// The blocking dependency type set is beads.IsBlockingDependencyType
+// (tested in internal/beads/blocking_test.go).
 
 // ---------------------------------------------------------------------------
 // isIssueBlocked tests (real beads store)
