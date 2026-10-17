@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -530,7 +531,7 @@ func doneReviewOnlyCloseSkipReasonForHead(bd *beads.Beads, issueID string, issue
 		return fmt.Sprintf("could not verify review evidence for %s: %v", issueID, err), true
 	}
 	if !hasEvidence {
-		return fmt.Sprintf("review-only issue %s has no fresh review evidence comment for assignee %s and head %s", issueID, strings.TrimSpace(issue.Assignee), currentHead), true
+		return fmt.Sprintf("review-only issue %s has no fresh review evidence comment for assignee %s and head %s; as %s run: %s", issueID, strings.TrimSpace(issue.Assignee), currentHead, strings.TrimSpace(issue.Assignee), reviewEvidenceCommentCommand(issueID)), true
 	}
 	return "", false
 }
@@ -620,20 +621,41 @@ func isGeneratedReviewComment(text string) bool {
 	return false
 }
 
+// reviewEvidenceSHAPattern finds head_sha / target_head_sha anywhere in a
+// line, as agents write it inline ("FINDINGS: head_sha: <sha>. 1) ..."), and
+// captures the hex run only, so trailing punctuation is ignored (gt-pd1c.69).
+var reviewEvidenceSHAPattern = regexp.MustCompile(`(?i)(?:^|[^a-z0-9_])(?:target_head_sha|head_sha)\s*[:=]\s*([0-9a-f]+)`)
+
+// reviewEvidenceHeadLinePattern keeps the older line-start "head: <sha>" form.
+var reviewEvidenceHeadLinePattern = regexp.MustCompile(`(?i)^head\s*[:=]\s*([0-9a-f]+)`)
+
+// reviewEvidenceHeadSHA returns the first head SHA a review evidence comment
+// names, lower-cased, or "" when it names none.
 func reviewEvidenceHeadSHA(text string) string {
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-		for _, key := range []string{"head_sha", "target_head_sha", "head"} {
-			for _, sep := range []string{":", "="} {
-				prefix := key + sep
-				if strings.HasPrefix(lower, prefix) {
-					return strings.TrimSpace(trimmed[len(prefix):])
-				}
+		for _, re := range []*regexp.Regexp{reviewEvidenceSHAPattern, reviewEvidenceHeadLinePattern} {
+			if m := re.FindStringSubmatch(trimmed); m != nil {
+				return strings.ToLower(m[1])
 			}
 		}
 	}
 	return ""
+}
+
+// reviewEvidenceCommentBody is the one review evidence comment format every
+// instruction shows; the shell fills in the current HEAD.
+func reviewEvidenceCommentBody() string {
+	return "FINDINGS: head_sha=$(git rev-parse HEAD)"
+}
+
+// reviewEvidenceCommentCommand is the exact command that records review
+// evidence on issueID ("<bead-id>" when unknown) that gt done accepts.
+func reviewEvidenceCommentCommand(issueID string) string {
+	if strings.TrimSpace(issueID) == "" {
+		issueID = "<bead-id>"
+	}
+	return fmt.Sprintf(`bd comments add %s "%s <your findings>"`, issueID, reviewEvidenceCommentBody())
 }
 
 func isReviewEvidenceText(text string) bool {

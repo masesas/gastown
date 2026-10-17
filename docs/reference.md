@@ -597,7 +597,17 @@ claimed review leg still counts, and a stale `in_progress` leg does not override
 the current hook); if the pick is ambiguous, every candidate counts. A lookup
 failure, or a polecat session whose identity cannot be resolved, refuses too.
 `gt done` never auto-commits leftover files of review-only work; complete with
-a `REPORT:`/`FINDINGS:` comment carrying `head_sha: <HEAD>` and no new commits.
+a comment by the assignee, e.g.
+`bd comments add <bead> "FINDINGS: head_sha=$(git rev-parse HEAD) <findings>"`
+(`head_sha`/`target_head_sha` may appear anywhere in a `REPORT:`/`FINDINGS:`
+line; trailing punctuation after the SHA is ignored), and no new commits.
+Commits on a review-only branch are never pushed to preserve them: `gt polecat
+nuke`, polecat worktree removal and `gt doctor --fix` skip the push, and the
+checkpoint dog makes no WIP commit on review-only work. The branch bead and the
+polecat's hooked bead are both checked. When that status cannot be read, the
+push (and checkpoint) is skipped too, but nuke and stale-branch cleanup keep the
+local branch so its commits survive in the rig repo, and `gt doctor --fix`
+reports the push as deferred.
 Parsing fails closed: any `review_only` line with a value other than an explicit
 false (`false`, `0`, ...) marks the bead. The field is removed only by editing
 the bead description.

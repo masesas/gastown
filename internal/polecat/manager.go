@@ -1195,6 +1195,46 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	return m.removeWithOptionsLocked(name, force, nuclear, selfNuke)
 }
 
+// reviewOnlyDecisionForClone classifies the work on the polecat's checked-out
+// branch, including its hooked bead. Call it while the polecat's work beads
+// are still assigned (before unassignWorkBeads).
+func (m *Manager) reviewOnlyDecisionForClone(name, clonePath string) ReviewOnlyDecision {
+	branch, err := git.NewGit(clonePath).CurrentBranch()
+	if err != nil || branch == "" {
+		return ReviewOnlyDecision{}
+	}
+	return m.ReviewOnlyWorkDecision(name, branch)
+}
+
+// pushBranchBeforeRemoval is the best-effort push of the polecat's branch to
+// remote before removing the worktree. This preserves committed work that
+// hasn't been pushed yet — without this, nuking a stalled polecat (e.g., after
+// disk space recovery) permanently loses any commits on the branch. The push
+// is non-blocking: failures are warnings, not errors, so nuke still proceeds.
+// See: disk-space-resilience. Review-only work is never pushed, and nothing is
+// pushed when that cannot be verified (gt-pd1c.69).
+func (m *Manager) pushBranchBeforeRemoval(clonePath string, decision ReviewOnlyDecision) {
+	polecatGit := git.NewGit(clonePath)
+	branch, brErr := polecatGit.CurrentBranch()
+	if brErr != nil || branch == "" {
+		return
+	}
+	pushed, unpushedCount, checkErr := polecatGit.BranchPushedToRemote(branch, "origin")
+	if checkErr != nil || pushed || unpushedCount == 0 {
+		return
+	}
+	if !decision.PreserveAllowed() {
+		style.PrintWarning("not pushing before removal: %s", decision.Reason)
+		return
+	}
+	if pushErr := polecatGit.Push("origin", branch, false); pushErr != nil {
+		style.PrintWarning("could not push branch %s before removal (%d unpushed commit(s)): %v",
+			branch, unpushedCount, pushErr)
+		style.PrintWarning("WORK AT RISK: branch %s has %d unpushed commit(s) in worktree %s",
+			branch, unpushedCount, clonePath)
+	}
+}
+
 func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke bool) error {
 	if !m.exists(name) {
 		return ErrPolecatNotFound
@@ -1258,6 +1298,10 @@ func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke 
 		}
 	}
 
+	// Classify the branch's work while the hook is still assigned; the push
+	// below must not preserve review-only work (gt-pd1c.69).
+	preserveDecision := m.reviewOnlyDecisionForClone(name, clonePath)
+
 	// Unassign any work beads still pointing at this polecat (gt-e4u1).
 	// Without this, beads remain assigned to a ghost polecat (status in_progress,
 	// assignee set) after removal, permanently stuck with no one working on them.
@@ -1288,23 +1332,7 @@ func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke 
 		}
 	}
 
-	// Best-effort: Push the polecat's branch to remote before removing the worktree.
-	// This preserves committed work that hasn't been pushed yet — without this,
-	// nuking a stalled polecat (e.g., after disk space recovery) permanently loses
-	// any commits on the branch. The push is non-blocking: failures are warnings,
-	// not errors, so nuke still proceeds. See: disk-space-resilience.
-	polecatGit := git.NewGit(clonePath)
-	if branch, brErr := polecatGit.CurrentBranch(); brErr == nil && branch != "" {
-		pushed, unpushedCount, checkErr := polecatGit.BranchPushedToRemote(branch, "origin")
-		if checkErr == nil && !pushed && unpushedCount > 0 {
-			if pushErr := polecatGit.Push("origin", branch, false); pushErr != nil {
-				style.PrintWarning("could not push branch %s before removal (%d unpushed commit(s)): %v",
-					branch, unpushedCount, pushErr)
-				style.PrintWarning("WORK AT RISK: branch %s has %d unpushed commit(s) in worktree %s",
-					branch, unpushedCount, clonePath)
-			}
-		}
-	}
+	m.pushBranchBeforeRemoval(clonePath, preserveDecision)
 
 	// Get repo base to remove the worktree properly
 	repoGit, err := m.repoBase()
@@ -3071,6 +3099,13 @@ func (m *Manager) CleanupStaleBranches() (int, error) {
 	for _, branch := range branches {
 		if currentBranches[branch] {
 			continue // This branch is in use
+		}
+		// Keep an orphaned branch whose review-only status cannot be read:
+		// nuke kept it for the same reason and its commits may be unpushed
+		// (gt-pd1c.69).
+		if decision := m.ReviewOnlyWorkDecision("", branch); decision.KeepLocalBranch() {
+			style.PrintWarning("keeping branch %s: %s", branch, decision.Reason)
+			continue
 		}
 		// Delete orphaned branch
 		if err := repoGit.DeleteBranch(branch, true); err != nil {

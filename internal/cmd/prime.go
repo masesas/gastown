@@ -711,7 +711,7 @@ func checkSlungWork(ctx RoleContext, hookedBead *beads.Issue) (bool, error) {
 	outputAutonomousDirective(ctx, hookedBead, hasWorkflow)
 	outputHookedBeadDetails(contractBead, contractWarning)
 	if beads.IsReviewOnly(hookedBead) {
-		outputReviewOnlyDirective()
+		outputReviewOnlyDirective(hookedBead.ID)
 	}
 
 	if hasWorkflow {
@@ -1030,7 +1030,7 @@ func outputMoleculeWorkflow(ctx RoleContext, attachment *beads.AttachmentFields)
 		fmt.Printf("%s\n", style.Bold.Render("Work through ALL steps above, including submit and cleanup."))
 		fmt.Println("The base bead is your assignment. The formula steps define your workflow.")
 		if attachment.ReviewOnly {
-			fmt.Printf("\n%s\n", style.Bold.Render(reviewOnlyCompletionLine()))
+			fmt.Printf("\n%s\n", style.Bold.Render(reviewOnlyCompletionLine("")))
 			return nil
 		}
 		fmt.Printf("\n%s\n", style.Bold.Render("REQUIRED: When all steps complete, run `"+cli.Name()+" done` to submit to the merge queue. Do NOT stop after implementation — the formula has submit steps you must follow."))
@@ -1048,15 +1048,16 @@ func outputMoleculeWorkflow(ctx RoleContext, attachment *beads.AttachmentFields)
 // reviewOnlyCompletionLine is how a review-only assignment completes. It
 // replaces the merge-queue reminder for beads with review_only: true
 // (gt-pd1c.69); gt done and gt mq submit enforce the same rule.
-func reviewOnlyCompletionLine() string {
-	return "REVIEW-ONLY: do NOT commit, push, or submit a merge request. Add a REPORT:/FINDINGS: comment with head_sha: <current HEAD> to the bead, then run `" + cli.Name() + " done` with no new commits."
+func reviewOnlyCompletionLine(issueID string) string {
+	return "REVIEW-ONLY: do NOT commit, push, or submit a merge request. Record your findings with exactly: " +
+		reviewEvidenceCommentCommand(issueID) + " — then run `" + cli.Name() + " done` with no new commits."
 }
 
 // outputReviewOnlyDirective prints the review-only banner for a hooked bead
 // whose review_only field is set, whatever dispatch path hooked it.
-func outputReviewOnlyDirective() {
+func outputReviewOnlyDirective(issueID string) {
 	fmt.Printf("\n%s\n", style.Bold.Render("## REVIEW-ONLY ASSIGNMENT (review_only: true)"))
-	fmt.Println("Evaluate and report back only. " + reviewOnlyCompletionLine())
+	fmt.Println("Evaluate and report back only. " + reviewOnlyCompletionLine(issueID))
 	fmt.Printf("%s refuses commits ahead of the base and %s refuses review-only beads.\n\n", "`"+cli.Name()+" done`", "`"+cli.Name()+" mq submit`")
 }
 

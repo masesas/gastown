@@ -1,12 +1,15 @@
 package doctor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/polecat"
+	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -139,11 +142,28 @@ func (c *StalledPolecatCheck) Fix(ctx *CheckContext) error {
 	}
 
 	var lastErr error
+	var deferred []string
 	for _, s := range c.stalledPolecats {
+		// Review-only work is never pushed; work whose status cannot be read
+		// is deferred and reported (gt-pd1c.69). The hook is read through the
+		// polecat manager, as every other preserve path does.
+		rigPath := filepath.Join(ctx.TownRoot, s.rigName)
+		mgr := polecat.NewManager(&rig.Rig{Name: s.rigName, Path: rigPath}, git.NewGit(rigPath), nil)
+		if decision := mgr.ReviewOnlyWorkDecision(s.name, s.branch); !decision.PreserveAllowed() {
+			fmt.Printf("  skipping push of %s/%s: %s\n", s.rigName, s.name, decision.Reason)
+			if decision.Verdict == polecat.ReviewOnlyUnverified {
+				deferred = append(deferred, fmt.Sprintf("%s/%s (%s)", s.rigName, s.name, s.branch))
+			}
+			continue
+		}
 		polecatGit := git.NewGit(s.clonePath)
 		if err := polecatGit.Push("origin", s.branch, false); err != nil {
 			lastErr = fmt.Errorf("pushing %s/%s branch %s: %w", s.rigName, s.name, s.branch, err)
 		}
+	}
+	if len(deferred) > 0 {
+		deferErr := fmt.Errorf("push deferred for %s: review-only status could not be verified; rerun gt doctor --fix when beads is reachable", strings.Join(deferred, ", "))
+		return errors.Join(lastErr, deferErr)
 	}
 	return lastErr
 }
