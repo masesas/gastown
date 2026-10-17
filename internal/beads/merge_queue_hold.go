@@ -70,7 +70,7 @@ func MergeQueueHoldOf(mrs []*Issue, resolve ProverResolver) (MergeQueueHold, str
 // HoldDetail is the merge queue's verdict on a bead with its deciding MR,
 // computed once (MergeQueueHoldOf). Rig and Reason explain a HoldUnverified
 // hold: the MR's rig and why git cannot decide whether its work landed
-// (one line, at most maxHoldReasonLen bytes, URL credentials masked).
+// (one line, at most MaxReasonLen bytes, URL credentials masked).
 type HoldDetail struct {
 	Hold   MergeQueueHold
 	MRID   string // deciding MR ("" for HoldNone)
@@ -109,7 +109,7 @@ func mergeQueueHoldDetail(mrs []*Issue, resolve ProverResolver) HoldDetail {
 			return HoldDetail{Hold: HoldLanded, MRID: mr.ID, MR: mr, Evidence: evidence}
 		case verdictUnknown:
 			if unverified == nil {
-				unverified = &HoldDetail{Hold: HoldUnverified, MRID: mr.ID, MR: mr, Rig: rig, Reason: holdReason(reason)}
+				unverified = &HoldDetail{Hold: HoldUnverified, MRID: mr.ID, MR: mr, Rig: rig, Reason: util.OneLine(reason, MaxReasonLen)}
 			}
 		}
 	}
@@ -119,14 +119,9 @@ func mergeQueueHoldDetail(mrs []*Issue, resolve ProverResolver) HoldDetail {
 	return HoldDetail{Hold: HoldNone}
 }
 
-// maxHoldReasonLen bounds HoldDetail.Reason (it may carry git error text).
-const maxHoldReasonLen = 300
-
-// holdReason makes a landing reason safe to show to a human: one line, URL
-// credentials masked, bounded length.
-func holdReason(reason string) string {
-	return util.OneLine(reason, maxHoldReasonLen)
-}
+// MaxReasonLen bounds a free-text reason shown or recorded by gt (a hold
+// reason, a git error, an abandon reason): util.OneLine(text, MaxReasonLen).
+const MaxReasonLen = 300
 
 // MergeQueueIndex holds the merge requests of one or more beads DBs grouped
 // by source issue (MRs live in the submitting polecat's rig DB, which need not
@@ -256,6 +251,44 @@ func (b *Beads) MarkUnverifiedNotified(mrID string, at time.Time) error {
 	desc := SetMRFields(issue, fields)
 	if err := b.Update(mrID, UpdateOptions{Description: &desc}); err != nil {
 		return fmt.Errorf("recording unverified notice on MR %s: %w", mrID, err)
+	}
+	return nil
+}
+
+// ErrMRTerminal: SupersedeMR found the MR already closed (e.g. the refinery
+// merged it meanwhile); nothing was changed.
+var ErrMRTerminal = errors.New("merge request is already closed")
+
+// SupersedeMR closes MR mrID as replaced by MR byID with the official
+// verdict recorded on the MR (MRFields.CloseReason "superseded"), the one way
+// gt done and gt mq submit retire an older open MR of the same source. The
+// merge queue reads that verdict (TipDisposition): only rejected and
+// superseded work may be abandoned. The MR is re-read first: an MR that is
+// already terminal (merged or closed meanwhile) is left alone
+// (ErrMRTerminal), so a supersede never overwrites a merged verdict; bd has
+// no conditional update, so the re-read narrows but cannot close that window.
+func (b *Beads) SupersedeMR(mrID, byID string) error {
+	issue, err := b.Show(mrID)
+	if err != nil {
+		return fmt.Errorf("reading MR %s: %w", mrID, err)
+	}
+	if issue == nil {
+		return fmt.Errorf("reading MR %s: %w", mrID, ErrNotFound)
+	}
+	if IssueStatus(strings.TrimSpace(issue.Status)).IsTerminal() {
+		return fmt.Errorf("superseding MR %s: %w", mrID, ErrMRTerminal)
+	}
+	fields := ParseMRFields(issue)
+	if fields == nil {
+		fields = &MRFields{}
+	}
+	fields.CloseReason = CloseReasonSuperseded
+	desc := SetMRFields(issue, fields)
+	if err := b.Update(mrID, UpdateOptions{Description: &desc}); err != nil {
+		return fmt.Errorf("recording superseded verdict on MR %s: %w", mrID, err)
+	}
+	if err := b.CloseWithReason("superseded by "+strings.TrimSpace(byID), mrID); err != nil {
+		return fmt.Errorf("closing superseded MR %s: %w", mrID, err)
 	}
 	return nil
 }

@@ -133,18 +133,18 @@ func (c gtCaller) human() bool { return c.via == "" }
 // coordinator guards.
 func (c gtCaller) exempt() bool { return c.human() || c.exemptAll }
 
-// ownsPolecatBranch reports whether the caller is the polecat whose branch
-// this is: polecat/<name>, polecat/<name>/..., or a name decoded by
-// polecat.ParseBranchName.
+// ownsPolecatBranch reports whether the caller is a polecat that may own
+// branch (polecat.BranchOwners, shared with the witness branch reconciler).
 func (c gtCaller) ownsPolecatBranch(branch string) bool {
 	if c.role != RolePolecat || c.name == "" {
 		return false
 	}
-	if branch == "polecat/"+c.name || strings.HasPrefix(branch, "polecat/"+c.name+"/") {
-		return true
+	for _, owner := range polecat.BranchOwners(branch) {
+		if owner == c.name {
+			return true
+		}
 	}
-	meta, ok := polecat.ParseBranchName(branch)
-	return ok && meta.Polecat == c.name
+	return false
 }
 
 // describe names the caller for refusal messages.

@@ -86,9 +86,20 @@ type PatrolScanOutput struct {
 // beads closed because their MR landed, and unverified beads the overseer was
 // mailed about this patrol.
 type PatrolScanParkedOutput struct {
+	Checked  int                         `json:"checked"`
+	Closed   []string                    `json:"closed,omitempty"`
+	Notified []string                    `json:"notified,omitempty"`
+	Errors   []string                    `json:"errors,omitempty"`
+	Branches *PatrolScanStrandedBranches `json:"stranded_branches,omitempty"`
+}
+
+// PatrolScanStrandedBranches holds the stranded polecat branch reconciliation
+// (witness.ReconcileStrandedBranches, gt-pd1c.78): branches reported to the
+// mayor this patrol and branches still in grace or recently reported.
+type PatrolScanStrandedBranches struct {
 	Checked  int      `json:"checked"`
-	Closed   []string `json:"closed,omitempty"`
-	Notified []string `json:"notified,omitempty"`
+	Reported []string `json:"reported,omitempty"`
+	Pending  int      `json:"pending,omitempty"`
 	Errors   []string `json:"errors,omitempty"`
 }
 
@@ -402,6 +413,12 @@ func patrolScanParkedOutput(r *witness.ScanParkedBeadsResult) *PatrolScanParkedO
 	for _, e := range r.Errors {
 		out.Errors = append(out.Errors, e.Error())
 	}
+	if b := r.Branches; b != nil {
+		out.Branches = &PatrolScanStrandedBranches{Checked: b.Checked, Reported: b.Reported, Pending: b.Pending}
+		for _, e := range b.Errors {
+			out.Branches.Errors = append(out.Branches.Errors, e.Error())
+		}
+	}
 	return out
 }
 
@@ -419,6 +436,23 @@ func printPatrolScanParked(r *witness.ScanParkedBeadsResult) {
 		fmt.Printf("  ⚠ %s: held as unverified → overseer mailed\n", id)
 	}
 	for _, e := range r.Errors {
+		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("Error: %v", e)))
+	}
+	fmt.Println()
+	printPatrolScanStranded(r.Branches)
+}
+
+// printPatrolScanStranded prints the stranded-branch reconciliation; errors
+// are always shown.
+func printPatrolScanStranded(b *witness.StrandedBranchesResult) {
+	if b == nil || (len(b.Reported) == 0 && b.Pending == 0 && len(b.Errors) == 0 && !patrolScanVerbose) {
+		return
+	}
+	fmt.Printf("%s Stranded Branches: checked %d, pending %d\n", style.Bold.Render("🌿"), b.Checked, b.Pending)
+	for _, branch := range b.Reported {
+		fmt.Printf("  ⚠ %s: work on no merge target → mayor mailed\n", branch)
+	}
+	for _, e := range b.Errors {
 		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("Error: %v", e)))
 	}
 	fmt.Println()

@@ -1829,10 +1829,15 @@ type RemoteRef struct {
 	Name string
 }
 
-// ListRemoteRefsWithHashes returns remote refs matching a prefix using ls-remote.
-// The prefix filters refs (e.g., "refs/heads/polecat/" for all polecat branches).
-// Returns full ref names like "refs/heads/polecat/furiosa-abc123".
-// A remote starting with "-" is rejected so it cannot be read as an option.
+// ListRemoteRefsWithHashes returns the remote refs whose full name starts
+// with prefix (e.g. "refs/heads/polecat/" for all polecat branches), read
+// with ls-remote. Returns full ref names like "refs/heads/polecat/furiosa-abc123".
+// ls-remote matches its pattern against the tail of a ref name, so
+// "refs/heads/integration/*" also returns a branch an agent named
+// "refs/heads/integration/x" (full name refs/heads/refs/heads/integration/x);
+// such refs are dropped here, the one exact-prefix filter every caller relies
+// on (gt-pd1c.78 S-H1). A remote starting with "-" is rejected so it cannot be
+// read as an option.
 func (g *Git) ListRemoteRefsWithHashes(remote, prefix string) ([]RemoteRef, error) {
 	if strings.HasPrefix(remote, "-") {
 		return nil, fmt.Errorf("invalid remote %q", remote)
@@ -1841,7 +1846,18 @@ func (g *Git) ListRemoteRefsWithHashes(remote, prefix string) ([]RemoteRef, erro
 	if err != nil {
 		return nil, err
 	}
-	return parseRefsWithHashes(out), nil
+	return refsWithPrefix(parseRefsWithHashes(out), prefix), nil
+}
+
+// refsWithPrefix keeps the refs whose full name starts with prefix.
+func refsWithPrefix(refs []RemoteRef, prefix string) []RemoteRef {
+	out := refs[:0:0]
+	for _, ref := range refs {
+		if strings.HasPrefix(ref.Name, prefix) {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 // ListLocalRefsWithHashes returns local refs under prefix (e.g.
@@ -2094,21 +2110,43 @@ func (g *Git) IsEmpty() (bool, error) {
 	return strings.TrimSpace(out) == "", nil
 }
 
+// RemoteHeadBranch reads the default branch the remote itself advertises
+// (its HEAD symref, `ls-remote --symref`), not the local refs/remotes/<remote>/HEAD
+// that anyone with write access to this repository can repoint
+// (gt-pd1c.78 S-M1). "" with nil error: the remote advertises no HEAD branch.
+func (g *Git) RemoteHeadBranch(remote string) (string, error) {
+	target := g.pushTarget(remote)
+	if target == "" || strings.HasPrefix(target, "-") {
+		return "", fmt.Errorf("invalid remote %q", remote)
+	}
+	out, err := g.run("ls-remote", "--symref", "--", target, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 3 && f[0] == "ref:" && f[2] == "HEAD" && strings.HasPrefix(f[1], "refs/heads/") {
+			return strings.TrimPrefix(f[1], "refs/heads/"), nil
+		}
+	}
+	return "", nil
+}
+
 // RemoteBranchExists checks if a branch exists on the remote.
 // NOTE: For named remotes with a separate pushurl, this checks the fetch URL.
 // Use PushRemoteBranchExists to verify branches that were pushed.
 func (g *Git) RemoteBranchExists(remote, branch string) (bool, error) {
-	out, err := g.run("ls-remote", "--heads", remote, branch)
+	out, err := g.run("ls-remote", "--heads", "--", remote, branch)
 	if err != nil {
 		return false, err
 	}
-	return out != "", nil
+	return parseLSRemoteTip(out, branch) != "", nil
 }
 
 // RemoteBranchTip returns the SHA at refs/heads/<branch> on the remote.
 // An empty SHA with nil error means the branch is missing.
 func (g *Git) RemoteBranchTip(remote, branch string) (string, error) {
-	out, err := g.run("ls-remote", "--heads", remote, branch)
+	out, err := g.run("ls-remote", "--heads", "--", remote, branch)
 	if err != nil {
 		return "", err
 	}
@@ -2125,11 +2163,11 @@ func (g *Git) PushRemoteBranchExists(remote, branch string) (bool, error) {
 	if pushTarget == remote {
 		return g.RemoteBranchExists(remote, branch)
 	}
-	out, err := g.run("ls-remote", "--heads", pushTarget, branch)
+	out, err := g.run("ls-remote", "--heads", "--", pushTarget, branch)
 	if err != nil {
 		return false, err
 	}
-	return out != "", nil
+	return parseLSRemoteTip(out, branch) != "", nil
 }
 
 // PushRemoteBranchTip returns the SHA at refs/heads/<branch> on the push target.
@@ -2241,7 +2279,11 @@ func (e *CommitNotOnBranchError) Error() string { return e.msg }
 // CommitNotOnTarget marks the error as a definite "not landed".
 func (e *CommitNotOnBranchError) CommitNotOnTarget() bool { return true }
 
+// parseLSRemoteTip returns the SHA of exactly refs/heads/<branch> in
+// ls-remote output (which matches patterns against ref-name tails, so other
+// refs ending in the branch name may be listed too).
 func parseLSRemoteTip(out, branch string) string {
+	branch = strings.TrimPrefix(strings.TrimSpace(branch), "refs/heads/")
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {

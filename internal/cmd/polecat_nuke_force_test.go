@@ -9,9 +9,9 @@ import (
 	gitpkg "github.com/steveyegge/gastown/internal/git"
 )
 
-// gt-pd1c.78 tahap 1: gt polecat nuke --force is gated by the polecat branch
-// deletion rule; when it does not hold, --force is a human/crew action at a
-// TTY.
+// gt-pd1c.78: gt polecat nuke --force (tahap 1) and gt polecat remove --force
+// (tahap 2) are gated by the polecat branch deletion rule; when it does not
+// hold, --force is a human/crew action at a TTY.
 
 func nukeTargets(names ...string) []polecatTarget {
 	out := make([]polecatTarget, 0, len(names))
@@ -72,8 +72,8 @@ func TestGateNukeForce(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			setCaller(t, c.env...)
-			out := stubLandingTTY(t, c.tty, c.input)
-			err := gateNukeForce(nukeTargets("nux", "max"), failFor(c.failing...))
+			hp, out := stubPrompt(c.tty, c.input)
+			err := forceDiscardGate{action: nukeForceAction, check: failFor(c.failing...), prompt: hp}.run(nukeTargets("nux", "max"))
 			if c.wantErr == "" && err != nil {
 				t.Fatalf("want allowed, got %v", err)
 			}
@@ -93,21 +93,38 @@ func TestGateNukeForce(t *testing.T) {
 	}
 }
 
-// Dry runs and nukes without --force never reach the gate.
-func TestRunPolecatNukeForceGateOnlyForForce(t *testing.T) {
+// Dry runs and runs without --force never reach the gate.
+func TestForceDiscardGateOnlyForForce(t *testing.T) {
 	setCaller(t, "GT_ROLE", "gastown/witness")
-	old := nukeForceTargetCheck
-	t.Cleanup(func() { nukeForceTargetCheck = old })
 	calls := 0
-	nukeForceTargetCheck = func(polecatTarget) error { calls++; return errUnlanded }
-	if err := gateNukeForceFor(nukeTargets("nux"), false, false); err != nil || calls != 0 {
+	hp, _ := stubPrompt(true, "gastown/nux\n")
+	gate := forceDiscardGate{action: nukeForceAction, check: func(polecatTarget) error { calls++; return errUnlanded }, prompt: hp}
+	if err := gate.runIf(nukeTargets("nux"), false, false); err != nil || calls != 0 {
 		t.Fatalf("non-force nuke: err=%v calls=%d", err, calls)
 	}
-	if err := gateNukeForceFor(nukeTargets("nux"), true, true); err != nil || calls != 0 {
+	if err := gate.runIf(nukeTargets("nux"), true, true); err != nil || calls != 0 {
 		t.Fatalf("dry run: err=%v calls=%d", err, calls)
 	}
-	if err := gateNukeForceFor(nukeTargets("nux"), true, false); err == nil || calls != 1 {
+	if err := gate.runIf(nukeTargets("nux"), true, false); err == nil || calls != 1 {
 		t.Fatalf("witness --force on an unproven branch: err=%v calls=%d", err, calls)
+	}
+}
+
+// tahap 2 (d): gt polecat remove --force is the same gate, named as itself.
+func TestRemoveForceUsesTheSameGate(t *testing.T) {
+	g := newForceDiscardGate(removeForceAction)
+	if g.action != removeForceAction || g.check == nil || g.prompt.tty == nil {
+		t.Fatalf("production gate: %+v", g)
+	}
+	setCaller(t, "GT_ROLE", "gastown/witness")
+	hp, _ := stubPrompt(true, "gastown/nux\n")
+	err := forceDiscardGate{action: removeForceAction, check: failFor("nux"), prompt: hp}.run(nukeTargets("nux"))
+	if err == nil || !strings.Contains(err.Error(), "refusing gt polecat remove --force") || !strings.Contains(err.Error(), "MR gt-mr1") {
+		t.Fatalf("witness remove --force on an unproven branch: %v", err)
+	}
+	// The production check fails closed on a polecat it cannot read.
+	if err := g.run(nukeTargets("nux")); err == nil || !strings.Contains(err.Error(), "fail closed") {
+		t.Fatalf("unreadable polecat: %v", err)
 	}
 }
 
@@ -126,37 +143,54 @@ func TestPolecatRepoBranchDeletable(t *testing.T) {
 	openMR := mqWith(mrIssue("gt-mr1", "open", "polecat/nux", f.good, ""))
 	openSplit := mqWith(mrIssue("gt-mr2", "open", "polecat/split", f.bad, ""))
 	unread := func() *beads.MergeQueue { return beads.NewMergeQueue(nil, errors.New("dolt down"), nil) }
+	deletable := func(branch string, q func() *beads.MergeQueue) error {
+		return polecatRepoBranchDeletable(repo, "gastown", branch, "main", q)
+	}
 
-	if err := polecatRepoBranchDeletable(repo, "polecat/nux", "main", openMR); err == nil || !strings.Contains(err.Error(), "gt-mr1") {
+	if err := deletable("polecat/nux", openMR); err == nil || !strings.Contains(err.Error(), "gt-mr1") {
 		t.Fatalf("unlanded branch with an open MR: %v", err)
 	}
-	if err := polecatRepoBranchDeletable(repo, "polecat/nux", "main", mqWith()); err != nil {
-		t.Fatalf("unlanded branch without any MR is free: %v", err)
+	// tahap 2: unlanded work without an MR is no longer free to discard.
+	if err := deletable("polecat/nux", mqWith()); err == nil || !strings.Contains(err.Error(), "resubmit") {
+		t.Fatalf("unlanded branch without any MR: %v", err)
 	}
-	if err := polecatRepoBranchDeletable(repo, "polecat/landed", "main", unread); err != nil {
+	if err := deletable("polecat/landed", unread); err != nil {
 		t.Fatalf("landed branch needs no beads: %v", err)
 	}
-	if err := polecatRepoBranchDeletable(repo, "polecat/split", "main", openSplit); err == nil {
+	if err := deletable("polecat/split", openSplit); err == nil {
 		t.Fatal("a local tip with unlanded work and an open MR must refuse even when the remote tip landed")
 	}
-	if err := polecatRepoBranchDeletable(repo, "polecat/gone", "main", unread); err == nil {
-		t.Fatal("no branch anywhere and unreadable beads must refuse")
+	// tahap 2: a branch that exists nowhere (origin read, no local ref) has
+	// nothing to lose, whatever beads say.
+	if err := deletable("polecat/gone", unread); err != nil {
+		t.Fatalf("no branch anywhere: %v", err)
+	}
+	// A polecat branch outside polecat/* is still read from the remote.
+	push(f.good, "custom/nux")
+	if err := deletable("custom/nux", mqWith()); err == nil {
+		t.Fatal("an unlanded branch outside polecat/* must not count as absent")
+	}
+	// An archived tip (gt polecat abandon) is preserved: no beads needed.
+	push(f.integrationOnTopBad, "polecat/abandoned")
+	archiveTip(t, f, "polecat/abandoned", f.integrationOnTopBad)
+	if err := deletable("polecat/abandoned", unread); err != nil {
+		t.Fatalf("archived tip: %v", err)
 	}
 
 	// End to end through the gate: a witness may not force-nuke it.
 	setCaller(t, "GT_ROLE", "gastown/witness")
-	stubLandingTTY(t, true, "gastown/nux\n")
-	err := gateNukeForce(nukeTargets("nux"), func(polecatTarget) error {
-		return polecatRepoBranchDeletable(repo, "polecat/nux", "main", openMR)
-	})
+	hp, _ := stubPrompt(true, "gastown/nux\n")
+	err := forceDiscardGate{action: nukeForceAction, prompt: hp, check: func(polecatTarget) error {
+		return deletable("polecat/nux", openMR)
+	}}.run(nukeTargets("nux"))
 	if err == nil || !strings.Contains(err.Error(), "refusing gt polecat nuke --force") {
 		t.Fatalf("witness nuke --force on an unlanded branch: %v", err)
 	}
 }
 
 // An unreadable polecat fails closed.
-func TestNukeTargetBranchDeletableFailsClosed(t *testing.T) {
-	if err := nukeTargetBranchDeletable(polecatTarget{rigName: "gastown", polecatName: "nux"}); err == nil ||
+func TestPolecatTargetBranchDeletableFailsClosed(t *testing.T) {
+	if err := polecatTargetBranchDeletable(polecatTarget{rigName: "gastown", polecatName: "nux"}); err == nil ||
 		!strings.Contains(err.Error(), "fail closed") {
 		t.Fatalf("polecat without manager/rig: %v", err)
 	}

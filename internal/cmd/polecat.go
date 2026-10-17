@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
@@ -102,7 +103,10 @@ var polecatRemoveCmd = &cobra.Command{
 
 Fails if session is running (stop first).
 Warns if uncommitted changes exist.
-Use --force to bypass checks.
+Use --force to bypass checks (LOSES WORK). --force has the same gate as
+gt polecat nuke --force (gt-pd1c.78): an agent may use it only when every
+polecat's branch is provably safe to delete and its worktree is clean with no
+active hook bead; otherwise a human or crew confirms at a terminal.
 
 Examples:
   gt polecat remove greenplace/Toast
@@ -161,6 +165,11 @@ This command removes orphaned branches:
   - Branches for polecats that no longer exist
   - Old timestamped branches (keeps only the current one per polecat)
 
+A branch is deleted only when its work is not lost: its tip is on the default
+branch or integration/*, archived under refs/gt/archive/*, or its MR landed
+(the polecat branch deletion rule, gt-pd1c.78). Other branches are kept with a
+warning; the witness reports them to the mayor.
+
 Examples:
   gt polecat gc greenplace
   gt polecat gc greenplace --dry-run`,
@@ -188,8 +197,9 @@ SAFETY CHECKS: The command refuses to nuke a polecat if:
 Use --force to bypass safety checks (LOSES WORK). An agent (anything but a
 human or crew) may use --force only when every polecat's branch is provably
 safe to delete: its tip is on the default branch or an integration branch,
-or no MR from it is open and none landed (gt-pd1c.78), and the worktree is
-clean with no active hook bead. Otherwise --force
+archived under refs/gt/archive/* (gt polecat abandon), or its MR landed by git
+proof (gt-pd1c.78), and the worktree is clean with no active hook bead.
+Otherwise --force
 needs a human or crew at a terminal, who types the polecat addresses again.
 Use --dry-run to see what would happen and safety check status.
 
@@ -674,6 +684,11 @@ func runPolecatRemove(cmd *cobra.Command, args []string) error {
 	if len(targets) == 0 {
 		fmt.Println("No polecats to remove.")
 		return nil
+	}
+
+	// --force gate (gt-pd1c.78): the same rule as gt polecat nuke --force.
+	if err := newForceDiscardGate(removeForceAction).runIf(targets, polecatForce, false); err != nil {
+		return err
 	}
 
 	// Remove each polecat
@@ -1668,49 +1683,16 @@ func runPolecatGC(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Garbage collecting stale polecat branches in %s...\n\n", r.Name)
 
+	// One deletion rule for both runs (gt-pd1c.78): a branch whose work is
+	// not on a merge target nor archived is kept.
+	repoGit := getRepoGitForRig(r.Path)
+	deletable := newRigBranchRule(repoGit, r.Name, r.DefaultBranch(), townMergeQueueFor(r.Path)).deletable
+
 	if polecatGCDryRun {
-		// Dry run - list branches that would be deleted
-		repoGit := git.NewGit(r.Path)
-
-		// List all polecat branches
-		branches, err := repoGit.ListBranches("polecat/*")
-		if err != nil {
-			return fmt.Errorf("listing branches: %w", err)
-		}
-
-		if len(branches) == 0 {
-			fmt.Println("No polecat branches found.")
-			return nil
-		}
-
-		// Get current branches
-		polecats, err := mgr.List()
-		if err != nil {
-			return fmt.Errorf("listing polecats: %w", err)
-		}
-
-		currentBranches := make(map[string]bool)
-		for _, p := range polecats {
-			currentBranches[p.Branch] = true
-		}
-
-		// Show what would be deleted
-		toDelete := 0
-		for _, branch := range branches {
-			if !currentBranches[branch] {
-				fmt.Printf("  Would delete: %s\n", style.Dim.Render(branch))
-				toDelete++
-			} else {
-				fmt.Printf("  Keep (in use): %s\n", style.Success.Render(branch))
-			}
-		}
-
-		fmt.Printf("\nWould delete %d branch(es), keep %d\n", toDelete, len(branches)-toDelete)
-		return nil
+		return printPolecatGCDryRun(mgr, repoGit, deletable)
 	}
 
-	// Actually clean up
-	deleted, err := mgr.CleanupStaleBranches()
+	deleted, err := mgr.CleanupStaleBranches(deletable)
 	if err != nil {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
@@ -1721,6 +1703,41 @@ func runPolecatGC(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s Deleted %d stale branch(es).\n", style.SuccessPrefix, deleted)
 	}
 
+	return nil
+}
+
+// printPolecatGCDryRun lists what gt polecat gc would delete, applying the
+// same deletion rule as the real run.
+func printPolecatGCDryRun(mgr *polecat.Manager, repoGit *git.Git, deletable func(string) error) error {
+	branches, err := repoGit.ListBranches("polecat/*")
+	if err != nil {
+		return fmt.Errorf("listing branches: %w", err)
+	}
+	if len(branches) == 0 {
+		fmt.Println("No polecat branches found.")
+		return nil
+	}
+	polecats, err := mgr.List()
+	if err != nil {
+		return fmt.Errorf("listing polecats: %w", err)
+	}
+	currentBranches := make(map[string]bool)
+	for _, p := range polecats {
+		currentBranches[p.Branch] = true
+	}
+	toDelete := 0
+	for _, branch := range branches {
+		switch {
+		case currentBranches[branch]:
+			fmt.Printf("  Keep (in use): %s\n", style.Success.Render(branch))
+		case deletable(branch) != nil:
+			fmt.Printf("  Keep (work not proven safe to discard): %s\n", style.Warning.Render(branch))
+		default:
+			fmt.Printf("  Would delete: %s\n", style.Dim.Render(branch))
+			toDelete++
+		}
+	}
+	fmt.Printf("\nWould delete %d branch(es), keep %d\n", toDelete, len(branches)-toDelete)
 	return nil
 }
 
@@ -1748,7 +1765,7 @@ func runPolecatNuke(cmd *cobra.Command, args []string) error {
 
 	// --force gate (gt-pd1c.78): agents may force-nuke only polecats whose
 	// branch is provably safe to discard; otherwise a human/crew at a TTY.
-	if err := gateNukeForceFor(targets, polecatNukeForce, polecatNukeDryRun); err != nil {
+	if err := newForceDiscardGate(nukeForceAction).runIf(targets, polecatNukeForce, polecatNukeDryRun); err != nil {
 		return err
 	}
 
@@ -2287,7 +2304,7 @@ func runPolecatPrune(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 		fmt.Println("Pruning remote polecat branches...")
 
-		remotePruned, remoteErr := pruneRemotePolecatBranches(repoGit, polecatPruneDryRun)
+		remotePruned, remoteErr := pruneRemotePolecatBranches(repoGit, r.DefaultBranch(), polecatPruneDryRun)
 		if remoteErr != nil {
 			return remoteErr
 		}
@@ -2306,28 +2323,50 @@ func runPolecatPrune(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func pruneRemotePolecatBranches(repoGit *git.Git, dryRun bool) (int, error) {
-	defaultBranch := repoGit.RemoteDefaultBranch()
+// pruneRemotePolecatBranches deletes the remote polecat branches whose tip is
+// covered by a merge target: the one coverage proof of the deletion rule
+// (mergeproof.CoveredByTargets: the default branch or integration/*), so
+// prune deletes exactly what the pre-push guard lets it delete (gt-pd1c.78
+// G-M5). On a fork-backed rig (the clean default base is another remote's
+// branch) the tip must also be preserved there: work counts as landed only
+// upstream.
+func pruneRemotePolecatBranches(repoGit *git.Git, defaultBranch string, dryRun bool) (int, error) {
+	if strings.TrimSpace(defaultBranch) == "" {
+		// Never the local origin/HEAD (gt-pd1c.78 N1): the remote's own HEAD.
+		if b, err := repoGit.RemoteHeadBranch("origin"); err == nil {
+			defaultBranch = strings.TrimSpace(b)
+		}
+		if defaultBranch == "" {
+			return 0, fmt.Errorf("default branch unknown: set default_branch in the rig's config.json")
+		}
+	}
+	forkBase := ""
 	target := repoGit.CleanDefaultBranchBaseRef("origin", defaultBranch)
 	if targetRemote := git.RemoteForRef(target); targetRemote != "" && targetRemote != "origin" {
 		if err := repoGit.FetchPrune(targetRemote); err != nil {
 			return 0, fmt.Errorf("refreshing %s before remote prune: %w", targetRemote, err)
 		}
+		forkBase = target
 	}
-	remoteRefs, lsErr := repoGit.ListPushRemoteRefsWithHashes("origin", "refs/heads/polecat/")
+	if err := repoGit.Fetch("origin"); err != nil {
+		return 0, fmt.Errorf("fetching origin before remote prune: %w", err)
+	}
+	tips := rigRemoteTips(repoGit, defaultBranch)
+	remoteRefs, lsErr := tips.List("refs/heads/polecat/")
 	if lsErr != nil {
 		return 0, fmt.Errorf("listing remote refs: %w", lsErr)
 	}
 
 	remotePruned := 0
 	for _, ref := range remoteRefs {
-		if !strings.HasPrefix(ref.Name, "refs/heads/") {
+		branch := strings.TrimPrefix(ref.Name, "refs/heads/")
+		if !mergeproof.CoveredByTargets(repoGit, ref.Hash, tips) {
 			continue
 		}
-		branch := strings.TrimPrefix(ref.Name, "refs/heads/")
-		status, statusErr := repoGit.PushRemoteRefTargetStatus("origin", ref, target)
-		if statusErr != nil || !status.Preserved {
-			continue
+		if forkBase != "" {
+			if st, err := repoGit.PreservedOn(ref.Hash, forkBase); err != nil || !st.Preserved {
+				continue
+			}
 		}
 
 		if dryRun {

@@ -70,6 +70,8 @@ func (g *fakeMQPostMergeGit) DeleteRemoteBranchIfAt(_, branch, expectedHash stri
 	return g.deleteErr
 }
 
+func (g *fakeMQPostMergeGit) RemoteHeadBranch(string) (string, error) { return "main", nil }
+
 func (g *fakeMQPostMergeGit) DeleteBranch(branch string, _ bool) error {
 	g.localDeleted = append(g.localDeleted, branch)
 	return nil
@@ -255,5 +257,33 @@ func TestRunVerifiedMQPostMerge_SourceTargetBranchFailsClosed(t *testing.T) {
 	}
 	if len(rigGit.deletedBranches) != 0 {
 		t.Fatalf("branch deleted when source matched target: %v", rigGit.deletedBranches)
+	}
+}
+
+// gt-pd1c.78 G-M7: post-merge proof refuses a target that is not a merge
+// target (an MR whose target was set to its own branch proves nothing).
+func TestVerifyMQPostMergeProofTrustsOnlyMergeTargets(t *testing.T) {
+	g := &fakeMQPostMergeGit{}
+	for target, ok := range map[string]bool{"main": true, "integration/epic": true, "polecat/nux": false, "develop": false} {
+		mr := &refinery.MergeRequest{ID: "gt-mr1", Branch: "polecat/x", TargetBranch: target, CommitSHA: "abc"}
+		err := verifyMQPostMergeProof(g, mr, "main")
+		if ok && err != nil && strings.Contains(err.Error(), "not a merge target") {
+			t.Errorf("%s: trusted target refused: %v", target, err)
+		}
+		if !ok && (err == nil || !strings.Contains(err.Error(), "not a merge target")) {
+			t.Errorf("%s: want not a merge target, got %v", target, err)
+		}
+	}
+}
+
+// gt-pd1c.78 N3: the MR branch is a bead field; only a plain branch name is
+// handed to git.
+func TestCleanupMQPostMergeBranchRejectsUnsafeBranch(t *testing.T) {
+	for _, b := range []string{"-x", "polecat/a b", "polecat/../main", "--delete"} {
+		mr := &refinery.MergeRequest{ID: "gt-mr1", Branch: b, CommitSHA: "abc"}
+		if _, err := cleanupMQPostMergeBranch(t.TempDir(), &fakeMQPostMergeGit{}, mr, false); err == nil ||
+			!strings.Contains(err.Error(), "MR gt-mr1 is already closed (merged); branch delete skipped") {
+			t.Errorf("branch %q: %v", b, err)
+		}
 	}
 }

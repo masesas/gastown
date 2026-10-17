@@ -59,6 +59,7 @@ func coordinatorGuard(f prePushFixture, r *prePushRig, queue func() *beads.Merge
 
 func TestPrePushGuardPolecatBranchDeletion(t *testing.T) {
 	f := newPrePushFixture(t)
+	f.archived = archiveTip(t, f, "polecat/old/gt-9", f.integrationOnTopBad)
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
 	const branch = "polecat/nux/gt-1"
 	del := func(tip string) []prePushUpdate {
@@ -77,9 +78,17 @@ func TestPrePushGuardPolecatBranchDeletion(t *testing.T) {
 			queue: mqWith(mrIssue("mr1", "open", branch, f.good, "")), wantErr: "is open"},
 		{name: "witness deletes branch landed on main: allowed", env: witness, tip: f.mainSHA, queue: unread},
 		{name: "witness deletes branch preserved on integration/*: allowed", env: witness, tip: f.epicSHA, queue: unread},
-		{name: "witness deletes branch proven not landed, no open MR: allowed", env: witness, tip: f.good,
-			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "close_reason: rejected\nlanding: not_landed\n"))},
-		{name: "witness deletes never-submitted branch: allowed", env: witness, tip: f.good, queue: mqWith()},
+		// tahap 2: HoldNone no longer frees a branch; each class has one exit.
+		{name: "witness deletes rejected work: blocked, abandon offered", env: witness, tip: f.good,
+			queue:   mqWith(mrIssue("mr1", "closed", branch, f.good, "close_reason: rejected\nlanding: not_landed\n")),
+			wantErr: "gt polecat abandon myrig/" + branch},
+		{name: "witness deletes superseded work: blocked, abandon offered", env: witness, tip: f.good,
+			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: superseded\n")), wantErr: "closed as superseded"},
+		{name: "witness deletes conflicted work: blocked, rework (no abandon)", env: witness, tip: f.good,
+			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: conflict\n")), wantErr: "rework and resubmit"},
+		{name: "witness deletes never-submitted branch: blocked, resubmit", env: witness, tip: f.good, queue: mqWith(),
+			wantErr: "no MR recorded this tip"},
+		{name: "witness deletes an archived tip: allowed", env: witness, tip: f.archived, queue: unread},
 		{name: "witness deletes unverified branch: blocked", env: witness, tip: f.good,
 			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "")), wantErr: "cannot tell"},
 		{name: "beads unreadable: blocked", env: witness, tip: f.good, queue: unread, wantErr: "cannot read the merge queue"},
@@ -88,14 +97,17 @@ func TestPrePushGuardPolecatBranchDeletion(t *testing.T) {
 			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "close_reason: merged\n")), wantErr: "git has not proven"},
 		{name: "landed only by recorded merge_commit: blocked (H2)", env: witness, tip: f.good,
 			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "merge_commit: abc\n")), wantErr: "git has not proven"},
+		{name: "recorded merged that git disproves (F7): blocked, unverified", env: witness, tip: f.good,
+			queue:   mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: merged\n")),
+			wantErr: "recorded as merged"},
 		{name: "landed only by human verdict: blocked (H2)", env: witness, tip: f.good,
-			queue: mqWith(mrIssue("mr1", "closed", branch, "", "landing: landed\n")), wantErr: "git has not proven"},
+			queue: mqWith(mrIssue("mr1", "closed", branch, f.good, "landing: landed\n")), wantErr: "git has not proven"},
 		{name: "git-proven landed MR whose commit is the tip: allowed", env: witness, tip: f.good,
 			queue: mqWithProver(gitLanded{f.good: true}, mrIssue("mr1", "closed", branch, f.good, ""))},
 		{name: "git-proven landed MR with later commits on the branch: blocked", env: witness, tip: f.bad,
 			queue: mqWithProver(gitLanded{f.good: true}, mrIssue("mr1", "closed", branch, f.good, "")), wantErr: "commits after the MR"},
-		{name: "closed by hand, git proves not landed: allowed (user decision)", env: witness, tip: f.good,
-			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, ""))},
+		{name: "closed by hand, git proves not landed: blocked (no official verdict)", env: witness, tip: f.good,
+			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "")), wantErr: "without an official verdict"},
 		{name: "mayor deletes unlanded branch with open MR: blocked", env: []string{"GT_ROLE", "mayor"}, tip: f.good,
 			queue: mqWith(mrIssue("mr1", "open", branch, f.good, "")), wantErr: "is open"},
 		{name: "refinery deletes branch landed on main: allowed", env: []string{"GT_ROLE", "myrig/refinery"}, tip: f.mainSHA, queue: unread},
@@ -103,8 +115,8 @@ func TestPrePushGuardPolecatBranchDeletion(t *testing.T) {
 			queue: mqWith(mrIssue("mr1", "open", branch, f.good, "")), wantErr: "is open"},
 		{name: "crew deletes anything: allowed", env: []string{"GT_ROLE", "myrig/crew/dom"}, tip: f.good, queue: unread},
 		{name: "human deletes anything: allowed", tip: f.good, queue: unread},
-		{name: "tip unknown locally, beads say not landed: allowed", env: witness,
-			tip: "1234567890123456789012345678901234567890", queue: mqWith()},
+		{name: "tip unknown locally, no MR: blocked", env: witness,
+			tip: "1234567890123456789012345678901234567890", queue: mqWith(), wantErr: "no MR recorded this tip"},
 		{name: "tip unknown locally, beads unreadable: blocked", env: witness,
 			tip: "1234567890123456789012345678901234567890", queue: unread, wantErr: "cannot read"},
 	}
@@ -249,5 +261,122 @@ func TestRunHooksPrePushPolecatDeletionOutsideTown(t *testing.T) {
 	setCaller(t, "GT_ROLE", "myrig/crew/dom")
 	if err := run("(delete) " + testZeroSHA + " refs/heads/polecat/nux " + f.good + "\n"); err != nil {
 		t.Fatalf("crew deletion: %v", err)
+	}
+}
+
+// archiveTip pushes commit to an archive ref for branch on the fixture's
+// remote (what gt polecat abandon does) and returns commit.
+func archiveTip(t *testing.T, f prePushFixture, branch, commit string) string {
+	t.Helper()
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", commit+":refs/gt/archive/"+branch+"/1760000000-"+commit[:12])
+	return commit
+}
+
+// gt-pd1c.78 tahap 2: the archive namespace. Agents create archives only for
+// abandonable work (MR closed as rejected or superseded) and never delete or
+// rewrite them; humans and crew are not checked.
+func TestPrePushGuardArchiveRefs(t *testing.T) {
+	f := newPrePushFixture(t)
+	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
+	const branch = "polecat/nux/gt-1"
+	ref := "refs/gt/archive/" + branch + "/1760000000-" + f.good[:12]
+	create := prePushUpd(ref, f.good, testZeroSHA)
+	mayor := []string{"GT_ROLE", "mayor"}
+	unread := func() *beads.MergeQueue { return beads.NewMergeQueue(nil, errors.New("dolt down"), nil) }
+	tests := []struct {
+		name    string
+		env     []string
+		update  prePushUpdate
+		queue   func() *beads.MergeQueue
+		wantErr string
+	}{
+		{name: "mayor archives rejected work: allowed", env: mayor, update: create,
+			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: rejected\n"))},
+		{name: "mayor archives superseded work: allowed", env: mayor, update: create,
+			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: superseded\n"))},
+		{name: "mayor archives conflicted work: blocked", env: mayor, update: create,
+			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: conflict\n")), wantErr: "closed for conflicts"},
+		{name: "mayor archives work without an MR: blocked", env: mayor, update: create, queue: mqWith(), wantErr: "no MR recorded"},
+		{name: "mayor archives work closed without verdict: blocked", env: mayor, update: create,
+			queue: mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "")), wantErr: "without an official verdict"},
+		{name: "mayor archives work with an open MR: blocked", env: mayor, update: create,
+			queue: mqWith(mrIssue("mr1", "open", branch, f.good, "")), wantErr: "is open"},
+		{name: "mayor archives unverified work: blocked", env: mayor, update: create,
+			queue: mqWith(mrIssue("mr1", "closed", branch, "", "")), wantErr: "cannot tell"},
+		{name: "unreadable queue: blocked", env: mayor, update: create, queue: unread, wantErr: "cannot read the merge queue"},
+		{name: "no queue loader: blocked", env: mayor, update: create, wantErr: "not available"},
+		{name: "stamp names another commit: blocked", env: mayor,
+			update: prePushUpd("refs/gt/archive/"+branch+"/1760000000-"+f.bad[:12], f.good, testZeroSHA),
+			queue:  mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: rejected\n")), wantErr: "is not an archive ref"},
+		{name: "malformed archive ref: blocked", env: mayor, update: prePushUpd("refs/gt/archive/x", f.good, testZeroSHA),
+			queue: mqWith(), wantErr: "is not an archive ref"},
+		{name: "agent deletes an archive: blocked", env: mayor, update: prePushUpd(ref, testZeroSHA, f.good),
+			queue: mqWith(), wantErr: "may not delete archive ref"},
+		{name: "witness rewrites an archive: blocked", env: []string{"GT_ROLE", "myrig/witness"},
+			update: prePushUpd(ref, f.bad, f.good), queue: mqWith(), wantErr: "may not rewrite archive ref"},
+		{name: "refinery deletes an archive: blocked", env: []string{"GT_ROLE", "myrig/refinery"},
+			update: prePushUpd(ref, testZeroSHA, f.good), queue: mqWith(), wantErr: "may not delete archive ref"},
+		{name: "human prunes an archive: allowed", update: prePushUpd(ref, testZeroSHA, f.good), queue: unread},
+		{name: "crew prunes an archive: allowed", env: []string{"GT_ROLE", "myrig/crew/dom"},
+			update: prePushUpd(ref, testZeroSHA, f.good), queue: unread},
+		{name: "human creates any archive: allowed", update: create, queue: unread},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := coordinatorGuard(f, plain, tt.queue, tt.env...).check([]prePushUpdate{tt.update})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want allowed, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) || !strings.Contains(err.Error(), "BLOCKED") {
+				t.Fatalf("want rejection containing %q, got %v", tt.wantErr, err)
+			}
+			if strings.Contains(err.Error(), f.remote) {
+				t.Fatalf("error leaks the push URL: %v", err)
+			}
+		})
+	}
+}
+
+// The full abandon push shape: archive created, then the branch deleted, in
+// one push or two. The deletion passes on the archive alone.
+func TestPrePushGuardAbandonSequence(t *testing.T) {
+	f := newPrePushFixture(t)
+	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
+	const branch = "polecat/nux/gt-1"
+	rejected := mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: rejected\n"))
+	ref := "refs/gt/archive/" + branch + "/1760000000-" + f.good[:12]
+	mayor := []string{"GT_ROLE", "mayor"}
+	if err := coordinatorGuard(f, plain, rejected, mayor...).check([]prePushUpdate{prePushUpd(ref, f.good, testZeroSHA)}); err != nil {
+		t.Fatalf("archive push: %v", err)
+	}
+	del := []prePushUpdate{prePushUpd("refs/heads/"+branch, testZeroSHA, f.good)}
+	if err := coordinatorGuard(f, plain, rejected, mayor...).check(del); err == nil {
+		t.Fatal("before the archive exists on the remote the delete must refuse")
+	}
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":"+ref)
+	if err := coordinatorGuard(f, plain, rejected, mayor...).check(del); err != nil {
+		t.Fatalf("delete after archive: %v", err)
+	}
+}
+
+// gt-pd1c.78 S-H1: a branch an agent named "refs/heads/integration/pwn" is
+// not a merge target, so a tip only there is not "covered".
+func TestPrePushGuardFakeIntegrationBranchIsNotATarget(t *testing.T) {
+	f := newPrePushFixture(t)
+	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":refs/heads/refs/heads/integration/pwn")
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":refs/heads/refs/heads/main")
+	del := []prePushUpdate{prePushUpd("refs/heads/polecat/nux/gt-1", testZeroSHA, f.good)}
+	err := coordinatorGuard(f, plain, mqWith(), "GT_ROLE", "myrig/witness").check(del)
+	if err == nil || !strings.Contains(err.Error(), "no MR recorded this tip") {
+		t.Fatalf("tip only on a fake integration branch must not count as covered: %v", err)
+	}
+	// Creating integration/* with new work cannot launder itself the same way.
+	create := []prePushUpdate{prePushUpd("refs/heads/integration/epic-z", f.good, testZeroSHA)}
+	if err := coordinatorGuard(f, plain, mqWith(), "GT_ROLE", "mayor").check(create); err == nil {
+		t.Fatal("integration/* with new work covered only by a fake integration branch must be refused")
 	}
 }

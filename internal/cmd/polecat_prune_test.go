@@ -19,7 +19,7 @@ func TestPruneRemotePolecatBranchesDryRunIncludesPatchEquivalentBranch(t *testin
 	}
 
 	out := captureStdout(t, func() {
-		pruned, err := pruneRemotePolecatBranches(repoGit, true)
+		pruned, err := pruneRemotePolecatBranches(repoGit, mainBranch, true)
 		if err != nil {
 			t.Fatalf("pruneRemotePolecatBranches: %v", err)
 		}
@@ -87,7 +87,7 @@ func TestPruneRemotePolecatBranchesUsesUpstreamBaseForOriginFork(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		pruned, err := pruneRemotePolecatBranches(repoGit, true)
+		pruned, err := pruneRemotePolecatBranches(repoGit, mainBranch, true)
 		if err != nil {
 			t.Fatalf("pruneRemotePolecatBranches: %v", err)
 		}

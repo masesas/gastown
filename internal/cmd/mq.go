@@ -8,11 +8,14 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/util"
 )
 
 // MQ command flags
@@ -223,6 +226,7 @@ type mqPostMergeGit interface {
 	Rev(ref string) (string, error)
 	DeleteRemoteBranchIfAt(remote, branch, expectedHash string) error
 	DeleteBranch(branch string, force bool) error
+	RemoteHeadBranch(remote string) (string, error)
 }
 
 type mqPostMergeBranchCleanup struct {
@@ -512,7 +516,7 @@ func runMQRetry(cmd *cobra.Command, args []string) error {
 
 func runMQReject(cmd *cobra.Command, args []string) error {
 	if mqRejectConfirmNotLanded {
-		return runMQConfirmLanding(args[0], args[1], false)
+		return runMQConfirmLanding(stdioHumanPrompt(), args[0], args[1], false)
 	}
 	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
 	if mqRejectStdin {
@@ -563,7 +567,7 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
 	if mqPostMergeConfirmLanded {
-		return runMQConfirmLanding(rigName, mrID, true)
+		return runMQConfirmLanding(stdioHumanPrompt(), rigName, mrID, true)
 	}
 
 	mgr, r, _, err := getRefineryManager(rigName)
@@ -620,7 +624,7 @@ func runVerifiedMQPostMerge(mgr mqPostMergeManager, rigPath string, rigGit mqPos
 	if err != nil {
 		return nil, mqPostMergeBranchCleanup{}, err
 	}
-	if err := verifyMQPostMergeProof(rigGit, mr); err != nil {
+	if err := verifyMQPostMergeProof(rigGit, mr, mqPostMergeDefaultBranch(rigPath, rigGit)); err != nil {
 		return nil, mqPostMergeBranchCleanup{}, err
 	}
 
@@ -633,13 +637,33 @@ func runVerifiedMQPostMerge(mgr mqPostMergeManager, rigPath string, rigGit mqPos
 	return result, branchCleanup, err
 }
 
-func verifyMQPostMergeProof(rigGit mqPostMergeGit, mr *refinery.MergeRequest) error {
+// mqPostMergeDefaultBranch is the rig's default branch for the post-merge
+// proof, read the way the provers read it: the configured default_branch,
+// else the remote's own HEAD (never the local origin/HEAD).
+func mqPostMergeDefaultBranch(rigPath string, rigGit mqPostMergeGit) string {
+	if b := config.RigDefaultBranch(rigPath); b != "" {
+		return b
+	}
+	b, _ := rigGit.RemoteHeadBranch("origin")
+	return strings.TrimSpace(b)
+}
+
+func verifyMQPostMergeProof(rigGit mqPostMergeGit, mr *refinery.MergeRequest, defaultBranch string) error {
 	if mr == nil {
 		return fmt.Errorf("merge proof failed: merge request is missing")
 	}
 	target := strings.TrimSpace(mr.TargetBranch)
 	if target == "" {
 		return fmt.Errorf("merge proof failed for MR %s: missing target branch", mr.ID)
+	}
+	// The same target check as the landing provers (gt-pd1c.78 G-M7): a
+	// target that is not the default branch or integration/* proves nothing.
+	if err := mergeproof.UntrustedMergeTarget(target, defaultBranch); err != nil {
+		if strings.TrimSpace(defaultBranch) == "" {
+			return fmt.Errorf("merge proof failed for MR %s: %w (the rig's default branch is unknown: set "+
+				"default_branch in <rig>/config.json, or make the remote advertise HEAD)", mr.ID, err)
+		}
+		return fmt.Errorf("merge proof failed for MR %s: %w", mr.ID, err)
 	}
 	if source := strings.TrimSpace(mr.Branch); source != "" && source == target {
 		return fmt.Errorf("merge proof failed for MR %s: source branch %s matches target branch", mr.ID, source)
@@ -664,6 +688,15 @@ func cleanupMQPostMergeBranch(rigPath string, rigGit mqPostMergeGit, mr *refiner
 	if cleanup.Branch == "" {
 		cleanup.NoBranch = true
 		return cleanup, nil
+	}
+	// The branch comes from a bead field: only a plain branch name is handed
+	// to git (gt-pd1c.78 N3).
+	if !beads.IsSafeRefName(cleanup.Branch) {
+		// Runs after the MR was closed as merged: say so, so the error is not
+		// read as a failed post-merge. Like every cleanup failure it still
+		// exits non-zero (the branch needs a human).
+		return cleanup, fmt.Errorf("MR %s is already closed (merged); branch delete skipped because the branch name %q "+
+			"is not a plain branch name (delete it by hand)", mr.ID, util.OneLine(cleanup.Branch, 120))
 	}
 	if skipBranchDelete {
 		cleanup.Skipped = true

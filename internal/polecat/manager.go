@@ -3069,12 +3069,13 @@ func setupShellCommand(command string) (string, []string) {
 	return shell, []string{"-c", command}
 }
 
-// CleanupStaleBranches removes orphaned polecat branches that are no longer in use.
-// This includes:
-// - Branches for polecats that no longer exist
-// - Old timestamped branches (keeps only the most recent per polecat name)
+// CleanupStaleBranches removes orphaned local polecat branches that are no
+// longer in use (branches of polecats that no longer exist, old timestamped
+// branches). deletable is the polecat branch deletion rule (gt-pd1c.78): a
+// branch it refuses (work not on a merge target nor archived) is kept with a
+// warning naming why. A nil deletable deletes nothing (fail closed).
 // Returns the number of branches deleted.
-func (m *Manager) CleanupStaleBranches() (int, error) {
+func (m *Manager) CleanupStaleBranches(deletable func(branch string) error) (int, error) {
 	repoGit, err := m.repoBase()
 	if err != nil {
 		return 0, fmt.Errorf("finding repo base: %w", err)
@@ -3113,6 +3114,14 @@ func (m *Manager) CleanupStaleBranches() (int, error) {
 		// (gt-pd1c.69).
 		if decision := m.ReviewOnlyWorkDecision("", branch); decision.KeepLocalBranch() {
 			style.PrintWarning("keeping branch %s: %s", branch, decision.Reason)
+			continue
+		}
+		if deletable == nil {
+			style.PrintWarning("keeping branch %s: no deletion rule (fail closed)", branch)
+			continue
+		}
+		if err := deletable(branch); err != nil {
+			style.PrintWarning("keeping branch %s: %v", branch, err)
 			continue
 		}
 		// Delete orphaned branch

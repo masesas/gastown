@@ -281,7 +281,10 @@ func formatRebaseInstructions(targetBranch string) string {
   # Resolve any conflicts
   git push -f
 
-The Refinery will retry the merge after rebase is complete.`, targetBranch, targetBranch)
+The Refinery will retry the merge after rebase is complete. The force-push
+is allowed while your MR for this branch tip is still open; if that MR was
+already closed (rejected, superseded, conflict), the pre-push guard refuses
+it: merge origin/%s instead of rebasing and resubmit with gt done.`, targetBranch, targetBranch, targetBranch)
 }
 
 // NewConvoyNeedsFeedingMessage creates a CONVOY_NEEDS_FEEDING protocol message.

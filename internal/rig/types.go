@@ -90,9 +90,8 @@ func (r *Rig) BeadsPath() string {
 // DefaultBranch returns the configured default branch for this rig.
 // Falls back to "main" if not configured or if config cannot be loaded.
 func (r *Rig) DefaultBranch() string {
-	cfg, err := LoadRigConfig(r.Path)
-	if err != nil || cfg.DefaultBranch == "" {
-		return "main"
+	if b := config.RigDefaultBranch(r.Path); b != "" {
+		return b
 	}
-	return cfg.DefaultBranch
+	return "main"
 }

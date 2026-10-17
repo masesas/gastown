@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/steveyegge/gastown/internal/beads"
 )
 
 // MergeRequest represents a branch waiting to be merged.
@@ -136,18 +138,20 @@ const DefaultClaimTTLMinutes = 30
 // CloseReason indicates why a merge request was closed.
 type CloseReason string
 
+// The values are the MR close verdicts of the beads package (the one source,
+// gt-pd1c.78 G-M6), which the merge queue reads back from MRFields.CloseReason.
 const (
 	// CloseReasonMerged means the MR was successfully merged.
-	CloseReasonMerged CloseReason = "merged"
+	CloseReasonMerged CloseReason = beads.CloseReasonMerged
 
 	// CloseReasonRejected means the MR was manually rejected.
-	CloseReasonRejected CloseReason = "rejected"
+	CloseReasonRejected CloseReason = beads.CloseReasonRejected
 
 	// CloseReasonConflict means the MR had unresolvable conflicts.
-	CloseReasonConflict CloseReason = "conflict"
+	CloseReasonConflict CloseReason = beads.CloseReasonConflict
 
 	// CloseReasonSuperseded means the MR was replaced by another.
-	CloseReasonSuperseded CloseReason = "superseded"
+	CloseReasonSuperseded CloseReason = beads.CloseReasonSuperseded
 )
 
 // QueueItem represents an item in the merge queue for display.

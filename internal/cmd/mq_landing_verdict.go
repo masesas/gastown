@@ -51,28 +51,35 @@ func humanOrCrewActor(action string) (string, error) {
 // errNotInteractive refuses a human-only action without a human at a terminal.
 var errNotInteractive = errors.New("this is a human action: run it from an interactive terminal (stdin and stdout must be a TTY)")
 
-// humanConfirmTTY reports whether stdin and stdout are terminals; tests
-// override it.
-var humanConfirmTTY = func() bool {
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+// humanPrompt is the terminal a human-only action asks: tty reports whether
+// there is a human at a terminal, in/out are the prompt streams. Commands use
+// stdioHumanPrompt; tests pass their own.
+type humanPrompt struct {
+	tty func() bool
+	in  io.Reader
+	out io.Writer
 }
 
-// humanConfirmInput/Output are the prompt streams; tests override them.
-var (
-	humanConfirmInput  io.Reader = os.Stdin
-	humanConfirmOutput io.Writer = os.Stdout
-)
+// stdioHumanPrompt is the process's terminal: a TTY when stdin and stdout
+// both are.
+func stdioHumanPrompt() humanPrompt {
+	return humanPrompt{
+		tty: func() bool { return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) },
+		in:  os.Stdin,
+		out: os.Stdout,
+	}
+}
 
-// confirmHumanInteractively is the second guard of a human-only action: a TTY
-// and the expected text typed again. There is no flag to skip it. Every error
-// names the action (e.g. "landing verdict", "gt polecat nuke --force");
-// errors.Is(err, errNotInteractive) still holds without a TTY.
-func confirmHumanInteractively(action, prompt, expected string) error {
-	if !humanConfirmTTY() {
+// confirm is the second guard of a human-only action: a TTY and the expected
+// text typed again. There is no flag to skip it. Every error names the action
+// (e.g. "landing verdict", "gt polecat nuke --force"); errors.Is(err,
+// errNotInteractive) still holds without a TTY.
+func (h humanPrompt) confirm(action, prompt, expected string) error {
+	if h.tty == nil || !h.tty() || h.in == nil || h.out == nil {
 		return fmt.Errorf("%s: %w", action, errNotInteractive)
 	}
-	_, _ = fmt.Fprint(humanConfirmOutput, prompt)
-	line, err := bufio.NewReader(humanConfirmInput).ReadString('\n')
+	_, _ = fmt.Fprint(h.out, prompt)
+	line, err := bufio.NewReader(h.in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%s: reading confirmation: %w", action, err)
 	}
@@ -84,15 +91,15 @@ func confirmHumanInteractively(action, prompt, expected string) error {
 
 // confirmLandingInteractively asks the human to type the MR ID again before a
 // landing verdict is recorded.
-func confirmLandingInteractively(mrID, verdict string) error {
+func confirmLandingInteractively(h humanPrompt, mrID, verdict string) error {
 	prompt := fmt.Sprintf("Record landing verdict %q on MR %s? This overrides what git could not decide.\nType the MR ID to confirm: ", verdict, mrID)
-	return confirmHumanInteractively("landing verdict on MR "+mrID, prompt, mrID)
+	return h.confirm("landing verdict on MR "+mrID, prompt, mrID)
 }
 
 // runMQConfirmLanding records a human verdict on an MR whose landing git
 // cannot decide and applies it (refinery.Manager.ConfirmLanding). Guards, in
-// order: the agent-role env check, then an interactive TTY confirmation.
-func runMQConfirmLanding(rigName, mrID string, landed bool) error {
+// order: the agent-role env check, then an interactive TTY confirmation at h.
+func runMQConfirmLanding(h humanPrompt, rigName, mrID string, landed bool) error {
 	actor, err := landingVerdictActor()
 	if err != nil {
 		return err
@@ -101,7 +108,7 @@ func runMQConfirmLanding(rigName, mrID string, landed bool) error {
 	if landed {
 		verdict, flag = "landed", "gt mq post-merge --confirm-landed"
 	}
-	if err := confirmLandingInteractively(mrID, verdict); err != nil {
+	if err := confirmLandingInteractively(h, mrID, verdict); err != nil {
 		return err
 	}
 	mgr, _, _, err := getRefineryManager(rigName)

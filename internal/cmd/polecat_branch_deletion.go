@@ -7,182 +7,121 @@ import (
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
-	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 )
 
 // Polecat branch deletion rule (gt-pd1c.78), shared by the pre-push guard
-// (an agent deleting or rewriting polecat/* on the remote) and gt polecat
-// nuke --force.
+// (an agent deleting or rewriting polecat/* on the remote), gt polecat nuke
+// --force / remove --force and gt polecat gc.
 //
 // A polecat branch tip may be discarded by an agent only when that loses no
 // work:
 //
-//  1. the tip is covered by a merge target (tipCoveredByTargets: preserved
-//     on the remote default branch or a remote integration/* branch, the
-//     gt polecat prune rule); or
-//  2. the merge queue (beads.MergeQueue.BranchHold, the one predicate) says
-//     HoldNone: no MR open from the branch and every MR from it definitely not
-//     landed (or none at all). An MR closed by hand that git proves did not
-//     land counts as "not landed" (user decision for gt-pd1c.78); or
-//  3. HoldLanded proven by git (HoldDetail.Evidence == EvidenceGit, which
-//     includes a rebase/squash equivalent; or, for a verdict recorded on the
-//     bead, MergeQueue.GitProvesLanded asked behind it) and the deciding MR's
-//     commit_sha is exactly the tip. A landed verdict that rests only on bead
-//     fields (close_reason/merge_commit) or a human verdict is not trusted for
-//     discarding work.
+//  1. the tip is covered by a merge target (mergeproof.CoveredByTargets:
+//     preserved on the remote default branch or a remote integration/*
+//     branch, the gt polecat prune rule); or
+//  2. the tip is archived on the remote (refs/gt/archive/*, written by gt
+//     polecat abandon, which only archives work whose MR was closed as
+//     rejected or superseded); or
+//  3. the MR whose commit is exactly the tip landed by git proof
+//     (beads.TipLanded with EvidenceGit; a landed verdict that rests only on
+//     bead fields or a human verdict is not trusted for discarding work).
 //
-// Anything else (an open MR, a landing git cannot decide, landed work with
-// later commits, an unreadable queue) is refused: fail closed. Humans and crew
-// are not subject to the rule.
-
-// polecatDeletionGit is the git surface of the landed proof.
-type polecatDeletionGit interface {
-	Rev(ref string) (string, error)
-	PreservedOn(head, base string) (git.BranchPreservationStatus, error)
-}
-
-// remoteRefLister lists refs on the remote under prefix (ls-remote, prefix*).
-type remoteRefLister func(prefix string) ([]git.RemoteRef, error)
-
-// targetTipResolver is the one reader of remote tips for the coordinator
-// guards: a branch's tip and the merge-target tips (default branch(es) and
-// integration/*). It reads the remote, never local refs.
-type targetTipResolver struct {
-	list     remoteRefLister
-	defaults []string
-}
-
-// branchTip returns the tip of refs/heads/<branch> on the remote, "" when the
-// branch does not exist there.
-func (r targetTipResolver) branchTip(branch string) (string, error) {
-	ref := "refs/heads/" + branch
-	refs, err := r.list(ref)
-	if err != nil {
-		return "", err
-	}
-	for _, x := range refs {
-		if x.Name == ref {
-			return strings.TrimSpace(x.Hash), nil
-		}
-	}
-	return "", nil
-}
-
-// targetTips lists the default branch(es) and every integration/* branch.
-func (r targetTipResolver) targetTips() ([]git.RemoteRef, error) {
-	var out []git.RemoteRef
-	for _, b := range r.defaults {
-		if b = strings.TrimSpace(b); b == "" {
-			continue
-		}
-		sha, err := r.branchTip(b)
-		if err != nil {
-			return nil, err
-		}
-		if sha != "" {
-			out = append(out, git.RemoteRef{Name: "refs/heads/" + b, Hash: sha})
-		}
-	}
-	integration, err := r.list("refs/heads/" + integrationBranchPrefix)
-	if err != nil {
-		return nil, errors.New("cannot list integration branches on the remote")
-	}
-	return append(out, integration...), nil
-}
-
-// tipCoveredByTargets is the one "is this commit already on a merge target?"
-// proof: commit is preserved (git.PreservedOn: ancestor, merge-tree no-op or
-// every patch present) on one of the resolver's target tips. Missing objects,
-// an unreadable remote or git errors mean "not proven" (false).
-func tipCoveredByTargets(g polecatDeletionGit, commit string, tips targetTipResolver) bool {
-	if commit == "" || g == nil || tips.list == nil {
-		return false
-	}
-	if _, err := g.Rev(commit + "^{commit}"); err != nil {
-		return false
-	}
-	refs, err := tips.targetTips()
-	if err != nil {
-		return false
-	}
-	for _, ref := range refs {
-		if ref.Hash == "" {
-			continue
-		}
-		if _, err := g.Rev(ref.Hash + "^{commit}"); err != nil {
-			continue
-		}
-		if st, err := g.PreservedOn(commit, ref.Hash); err == nil && st.Preserved {
-			return true
-		}
-	}
-	return false
-}
+// Anything else is refused (fail closed), with the one way out for its class
+// (beads.TipDisposition): an open MR belongs to the refinery; rejected or
+// superseded work is abandoned (gt polecat abandon); conflicts, unsubmitted
+// work and MRs closed without an official verdict are reworked or resubmitted
+// (the mayor decides, the witness reconciler reports them); an undecidable
+// landing needs an overseer verdict. A queue that cannot be read refuses.
+// Humans and crew are not subject to the rule.
 
 // polecatBranchDeletion is one polecat branch tip an agent wants to discard
 // (delete the branch, or rewrite it away from this tip).
 type polecatBranchDeletion struct {
+	rig    string // rig name for the copy-paste exits ("" or unsafe: <rig>)
 	branch string // e.g. polecat/nux/gt-1
 	tip    string // the tip being discarded; "" when absent or unknown
-	tips   targetTipResolver
-	git    polecatDeletionGit
-	// queue reads the town's merge queue; called only when the git proof
-	// fails. nil counts as unreadable.
+	tips   mergeproof.RemoteTips
+	git    mergeproof.PreservationGit
+	// queue reads the town's merge queue; called only when the git proofs
+	// fail. nil counts as unreadable.
 	queue func() *beads.MergeQueue
 	// noGitProof explains why the git proof could not run (e.g. the remote
 	// could not be listed); it is added to refusals.
 	noGitProof string
+	// owner: the owning polecat rewrites its own branch; a tip never
+	// submitted or whose MR is still open may then be rewritten too
+	// (checkPolecatUpdate).
+	owner bool
 }
 
 // polecatDeletionExits is the guidance appended to every refusal.
 const polecatDeletionExits = "Landed polecat branches are deleted by the refinery or `gt mq post-merge <rig> <mr-id>`, " +
-	"preserved ones by `gt polecat prune --remote`; anything else needs a human or crew"
+	"preserved ones by `gt polecat prune --remote`; work closed as rejected or superseded is abandoned with " +
+	"`gt polecat abandon` (it archives the tip first); anything else is reworked or resubmitted (the mayor decides) " +
+	"or deleted by a human or crew"
 
 // check returns nil when the tip may be discarded, else why not.
 func (d polecatBranchDeletion) check() error {
-	if tipCoveredByTargets(d.git, d.tip, d.tips) {
+	if mergeproof.CoveredByTargets(d.git, d.tip, d.tips) {
+		return nil
+	}
+	if archived, err := d.tips.Archived(d.tip); err == nil && archived {
 		return nil
 	}
 	if d.queue == nil {
 		return d.refuse("the merge queue is not available (fail closed)")
 	}
-	q := d.queue()
-	detail, err := q.BranchHold(d.branch)
+	disp, err := d.queue().TipDisposition(d.branch, d.tip)
 	if err != nil {
 		return d.refuse("cannot read the merge queue: " + firstLine(err.Error()) + " (fail closed)")
 	}
-	switch detail.Hold {
-	case beads.HoldNone:
+	// The owning polecat may rewrite a tip that no MR recorded or whose own
+	// MR is open (the rebase for REWORK_REQUEST / MERGE_FAILED), whatever
+	// other MRs of the branch say (per tip, N2).
+	if d.owner && (disp.Class == beads.TipNoMR || disp.Class == beads.TipOpen) {
 		return nil
-	case beads.HoldPending:
-		return d.refuse(fmt.Sprintf("MR %s from this branch is open; the refinery owns the branch until it merges", mrIDOf(detail)))
-	case beads.HoldLanded:
-		return d.checkLanded(q, detail)
-	default:
-		notLanded, landed := beads.UnverifiedExitCommands(detail.Rig, detail.MRID)
-		return d.refuse(fmt.Sprintf("MR %s from this branch is closed but git cannot tell whether its work landed (%s); "+
-			"an overseer decides with `%s` or `%s`", mrIDOf(detail), detail.Reason, notLanded, landed))
 	}
+	// Anyone else discarding the branch while an MR from it is open would
+	// take it from the refinery.
+	if disp.BranchOpen() {
+		return d.refuse(fmt.Sprintf("MR %s from this branch is open; the refinery owns the branch until it merges",
+			mrIDOfHold(disp.Hold)))
+	}
+	if disp.Class == beads.TipLanded && disp.Evidence == beads.EvidenceGit {
+		return nil
+	}
+	return d.refuse(tipRefusal(d.rig, d.branch, disp))
 }
 
-// checkLanded allows a landed branch only on git proof and an exact tip. A
-// verdict recorded on the bead (refinery close, gt mq post-merge) falls back to
-// git (q.GitProvesLanded), so the order in which the predicate reads its
-// evidence does not refuse a landed branch.
-func (d polecatBranchDeletion) checkLanded(q *beads.MergeQueue, detail beads.HoldDetail) error {
-	gitProven := detail.Evidence == beads.EvidenceGit ||
-		(detail.Evidence == beads.EvidenceRecorded && q.GitProvesLanded(detail.MR))
-	if !gitProven {
-		return d.refuse(fmt.Sprintf("MR %s from this branch is marked landed (%s), but git has not proven its tip "+
-			"is on a merge target; fetch and retry", mrIDOf(detail), detail.Evidence))
+// tipRefusal says why a tip of its class may not be discarded and what the
+// way out is (one text per beads.TipClass, shared by the deletion rule and the
+// archive guard).
+func tipRefusal(rig, branch string, disp beads.TipDisposition) string {
+	mr := mrIDOf(disp)
+	switch disp.Class {
+	case beads.TipOpen:
+		return fmt.Sprintf("MR %s from this branch is open; the refinery owns the branch until it merges", mr)
+	case beads.TipLanded:
+		return fmt.Sprintf("MR %s of this tip is marked landed (%s), but git has not proven its tip is on a merge target; "+
+			"fetch and retry", mr, disp.Evidence)
+	case beads.TipUnverified:
+		notLanded, landed := beads.UnverifiedExitCommands(disp.Hold.Rig, disp.MRID)
+		return fmt.Sprintf("MR %s from this branch is closed but git cannot tell whether its work landed (%s); "+
+			"an overseer decides with `%s` or `%s`", mr, disp.Hold.Reason, notLanded, landed)
+	case beads.TipRejected, beads.TipSuperseded:
+		return fmt.Sprintf("MR %s of this tip was closed as %s and its work is not on a merge target; "+
+			"to discard it, abandon it (archives the tip, then deletes): `%s`", mr, disp.Class, beads.AbandonCommand(rig, branch))
+	case beads.TipConflict:
+		return fmt.Sprintf("MR %s of this tip was closed for conflicts and its work is not on a merge target; "+
+			"rework and resubmit it (the mayor decides); conflicted work is not abandoned", mr)
+	case beads.TipNoVerdict:
+		return fmt.Sprintf("MR %s of this tip was closed without an official verdict (rejected or superseded) and its work "+
+			"is not on a merge target; rework and resubmit it (the mayor decides)", mr)
+	default:
+		return "no MR recorded this tip (work never submitted, or commits after the MR would be lost) and it is not on " +
+			"a merge target; resubmit it (gt done / gt mq submit) or rework it (the mayor decides)"
 	}
-	if detail.MR != nil && d.tip != "" {
-		if fields := beads.ParseMRFields(detail.MR); fields != nil && strings.TrimSpace(fields.CommitSHA) == d.tip {
-			return nil
-		}
-	}
-	return d.refuse(fmt.Sprintf("MR %s from this branch landed, but the branch tip is not on a merge target "+
-		"(commits after the MR would be lost)", mrIDOf(detail)))
 }
 
 func (d polecatBranchDeletion) refuse(why string) error {
@@ -192,9 +131,14 @@ func (d polecatBranchDeletion) refuse(why string) error {
 	return fmt.Errorf("discarding %s: %s. %s", d.branch, why, polecatDeletionExits)
 }
 
+// mrIDOfHold names the deciding MR of a branch hold (beads.IsSafeID only).
+func mrIDOfHold(h beads.HoldDetail) string {
+	return mrIDOf(beads.TipDisposition{MRID: h.MRID})
+}
+
 // mrIDOf names the deciding MR in a refusal; an ID that is not
 // beads.IsSafeID is not echoed.
-func mrIDOf(d beads.HoldDetail) string {
+func mrIDOf(d beads.TipDisposition) string {
 	if id := strings.TrimSpace(d.MRID); beads.IsSafeID(id) {
 		return id
 	}
