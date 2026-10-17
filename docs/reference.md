@@ -591,7 +591,11 @@ must not commit, push or open a merge request. The mode is stored as the
 `review_only: true` field on the bead and is sticky: a later `gt sling` of the
 same bead without the flag (including `--force`, scheduler dispatch, convoy
 re-dispatch, or after the previous polecat was nuked) keeps it and refreshes the
-assignment timestamp; detach, burn and a failed sling's rollback keep it too.
+assignment timestamp; detach and burn keep it too. A sling that fails (hook or
+session start) rolls back to the bead's state before that sling: when the bead
+was not review-only before, the rollback removes the marker it added; when it
+was, or when the prior state is unknown, or when the rollback write itself
+fails, the marker stays (fail closed).
 `gt prime` shows a REVIEW-ONLY directive. `gt done` and `gt mq submit` refuse
 commits and merge requests when the target bead (`--issue` or the branch) or
 the caller's active assignment is review-only. The active assignment is picked
@@ -611,9 +615,80 @@ polecat's hooked bead are both checked. When that status cannot be read, the
 push (and checkpoint) is skipped too, but nuke and stale-branch cleanup keep the
 local branch so its commits survive in the rig repo, and `gt doctor --fix`
 reports the push as deferred.
-Parsing fails closed: any `review_only` line with a value other than an explicit
-false (`false`, `0`, ...) marks the bead. The field is removed only by editing
-the bead description.
+
+Where the marker counts: attachment fields (`review_only`, `no_merge`,
+`attached_*`, `dispatched_by`, `convoy_id`, `merge_strategy`, `mode`,
+`formula_vars`, ...) are read from the description's header block. That is the
+first paragraph, outside fenced code blocks and not indented as code, whose
+first line is a field with a strong attachment key: any key except `mode` and
+`convoy`, which are ordinary words a prose line may start with (both are still
+read inside the header). The header ends at the first blank line or Markdown
+block (code fence, `>` quote, `#` heading, list item, table row). Inside it the
+first occurrence of a key wins. `gt sling` writes the fields at the top of the
+description; free text above them is tolerated.
+`review_only` fails closed beyond the header: a `review_only` line also counts
+in any later field paragraph (a paragraph outside fences whose first line has
+an attachment key). Other keys there are not read. A `review_only` line in a
+code block, a quote, a list item or a prose paragraph does not mark the bead.
+`gt sling`, `gt done` and `gt mq submit` warn when such a line is ignored. Use
+`gt sling --review-only` to mark a bead.
+`attached_args` is written as a one-line JSON string (`attached_args: "..."`),
+like `formula_vars` (JSON array). Older gt wrote `attached_args` and
+`formula_vars` raw, possibly over several lines (blank lines, lists, fences
+included). For such a raw value, the header continues at the first later line
+that has a key the old writer put after it, provided that line starts a run of
+field lines up to a blank line or the end. That is how the `no_merge` /
+`review_only` lines after a multi-line value are found. A `review_only` line in
+a further such run counts too (fail closed). Rewriting a bead consolidates its
+fields into the header, and `Set(Parse(description))` is stable after one pass.
+
+Without a paragraph that starts with a strong key, the first paragraph is the
+header when every line in it is an attachment field (e.g. only `mode: ralph`).
+Clearing (below) repeats until no `review_only` line counts.
+Known edge cases of this format:
+- A raw (non-JSON) `attached_args` from older gt can absorb a final body
+  paragraph made only of field lines whose keys come later in the old writer
+  order.
+- A raw `attached_args` that happens to be a valid JSON string (`"hello"`) is
+  decoded (`hello`) and does not continue.
+- A gt binary from before this change shows new `attached_args` values as
+  quoted JSON.
+- A byte order mark (BOM) at the start of a line is not recognised; that line
+  is not a field.
+
+Values: only `true` and `false` (any case) are canonical. Any other value
+(`no`, `off`, `0`, `f`, `maybe`, or an empty value) still marks the bead
+review-only (fail closed). Before gt-pd1c.75, `0`/`f` meant false. The value is
+kept exactly as written: no tool turns it into `true` or drops it. `gt sling`,
+`gt done` and `gt mq submit` warn about it; fix the value, or clear the marker.
+
+Clearing: `gt bead clear-review-only <bead> --reason "<why>"` is the one
+explicit way to remove the marker. Only a human (overseer) or crew may run it,
+from an interactive terminal, typing the bead ID again to confirm. Every agent
+is refused, the mayor included; an agent that thinks a marker is wrong
+escalates by mail. The command writes a bead comment
+`review_only clear requested by <who> at <time>: <why>` before changing the
+description. If that comment cannot be written, the marker is kept. After the
+change is verified by re-reading the bead, it adds
+`review_only cleared by <who> at <time>: <why>` and emits a
+`review_only_cleared` event (best-effort). `--reason` is one line (line breaks
+folded, URL credentials masked), at most 500 bytes, without control
+characters. A bead that is not review-only is left as it is, without a prompt.
+These are local guards against agents doing this by mistake, not an
+authentication boundary: anyone who can run `bd update` on the bead can still
+edit the description directly.
+
+`no_merge` vs `review_only`: `no_merge` (`--no-merge`) is an assignment field,
+like `attached_molecule`: detaching or burning the attached molecule (as a
+formula re-sling does) clears it with the rest of the assignment, a failed
+sling restores its value from before that sling, and no dispatch path adds it
+back unless `--no-merge` is passed again. `review_only` belongs to the bead:
+detach, burn and every later assignment keep it, with or without the flag,
+until it is cleared with `gt bead clear-review-only` (or by editing the
+description). The reason: no_merge is a delivery choice per dispatch (e.g. this
+time a human opens the PR), while review-only is a property of the work itself
+(a review leg must never commit), so a dispatcher forgetting the flag must not
+turn a review leg into normal work.
 
 Agent overrides:
 

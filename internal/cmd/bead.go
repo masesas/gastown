@@ -26,7 +26,8 @@ prefix-based routing.
 Subcommands:
   move    Move a bead from one repository to another
   show    Show details of a bead (routes by prefix)
-  read    Alias for show`,
+  read    Alias for show
+  clear-review-only  Remove the sticky review_only marker (audited)`,
 }
 
 var beadMoveCmd = &cobra.Command{

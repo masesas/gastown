@@ -1488,17 +1488,9 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 					var prBodyBuilder strings.Builder
 					prBodyBuilder.WriteString("## Summary\n\n")
 					if sourceIssueForNoMerge.Description != "" {
-						// Strip attachment metadata lines from description
-						descLines := strings.Split(sourceIssueForNoMerge.Description, "\n")
-						var cleanDesc []string
-						for _, line := range descLines {
-							trimmed := strings.TrimSpace(line)
-							if strings.HasPrefix(trimmed, "attached_") || strings.HasPrefix(trimmed, "dispatched_by:") || strings.HasPrefix(trimmed, "formula_vars:") {
-								continue
-							}
-							cleanDesc = append(cleanDesc, line)
-						}
-						desc := strings.TrimSpace(strings.Join(cleanDesc, "\n"))
+						// Strip the attachment header (same rule as every
+						// attachment reader, gt-pd1c.75); the free text stays.
+						desc := strings.TrimSpace(beads.StripAttachmentFields(sourceIssueForNoMerge.Description))
 						if desc != "" {
 							prBodyBuilder.WriteString(desc)
 							prBodyBuilder.WriteString("\n\n")

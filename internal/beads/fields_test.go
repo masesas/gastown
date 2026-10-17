@@ -204,8 +204,10 @@ func TestParseAttachmentFieldsConvoy(t *testing.T) {
 			wantMergeStrategy: "local",
 		},
 		{
+			// "convoy" is a weak key: read inside a header, but it does not
+			// start one (gt-pd1c.75).
 			name:              "convoy key alias",
-			desc:              "convoy: hq-cv-456",
+			desc:              "dispatched_by: mayor/\nconvoy: hq-cv-456",
 			wantConvoyID:      "hq-cv-456",
 			wantMergeStrategy: "",
 		},

@@ -89,7 +89,10 @@ func TestDispatchSingleBeadRawReviewOnlyHookFailureClearsMetadata(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected scheduler dispatch hook failure")
 	}
-	assertRollbackKeptOnlyReviewOnly(t, readMutableBDDescription(t, descPath))
+	// The bead was not review-only before the dispatch: rollback removes the
+	// marker; the sling context still carries review_only for the retry
+	// (gt-pd1c.75).
+	assertRollbackRestoredNonReviewBead(t, readMutableBDDescription(t, descPath))
 }
 
 func TestListBlockedWorkBeadIDStatesPartialFailureFailsClosedPerGroup(t *testing.T) {

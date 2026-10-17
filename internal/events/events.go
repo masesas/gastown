@@ -64,6 +64,9 @@ const (
 	// Dispatch readiness check outcome (rejected, warned, overridden).
 	TypeTaskReadiness = "task_readiness"
 
+	// Review-only marker events (gt-pd1c.75)
+	TypeReviewOnlyCleared = "review_only_cleared"
+
 	// Witness patrol events
 	TypePatrolStarted   = "patrol_started"
 	TypePolecatChecked  = "polecat_checked"
@@ -368,6 +371,16 @@ func TaskReadinessPayload(beadID, rig, mode, outcome string, problems []string, 
 		p["reason"] = reason
 	}
 	return p
+}
+
+// ReviewOnlyClearedPayload creates a payload for review_only_cleared events:
+// who removed the sticky review_only marker from beadID and why.
+func ReviewOnlyClearedPayload(beadID, actor, reason string) map[string]interface{} {
+	return map[string]interface{}{
+		"bead":   beadID,
+		"actor":  actor,
+		"reason": reason,
+	}
 }
 
 // MassDeathPayload creates a payload for mass death events.
