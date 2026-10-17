@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -219,5 +220,27 @@ func TestPatrolScanZombieItemSerialization(t *testing.T) {
 	}
 	if parsed.Error != "restart failed: tmux error" {
 		t.Errorf("Error = %q, want %q", parsed.Error, "restart failed: tmux error")
+	}
+}
+
+// gt-pd1c.82: the parked-bead scan is part of the patrol scan JSON.
+func TestPatrolScanParkedOutput(t *testing.T) {
+	if patrolScanParkedOutput(nil) != nil {
+		t.Fatal("no scan must yield no parked section")
+	}
+	out := patrolScanParkedOutput(&witness.ScanParkedBeadsResult{
+		Checked:  2,
+		Closed:   []string{"gt-a"},
+		Notified: []string{"gt-b"},
+		Errors:   []error{errors.New("mailing the overseer: down")},
+	})
+	data, err := json.Marshal(PatrolScanOutput{Rig: "gastown", Parked: out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"parked":{"checked":2`, `"closed":["gt-a"]`, `"notified":["gt-b"]`, `"errors":["mailing the overseer: down"]`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("JSON missing %s: %s", want, data)
+		}
 	}
 }

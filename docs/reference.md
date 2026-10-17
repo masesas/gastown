@@ -700,9 +700,18 @@ gt hooks pre-push <remote> [<url>]  # Git pre-push guard (stdin = git pre-push l
 The two `--confirm-*` flags are the only manual exit for an issue held as
 *unverified* by the merge queue: its MR is closed but git cannot decide whether
 the work landed (no git prover for the rig, no `commit_sha`/`target` on the
-MR, or a git error other than "commit not on the target"). `gt doctor`
-(`null-assignee-steps`) lists such issues with the MR, the reason and both
-commands. The verdict is written on the MR (`landing: landed|not_landed`,
+MR, or a git error other than "commit not on the target"). The overseer does
+not have to look for them: every witness patrol (`gt patrol scan`, parked-bead
+phase) mails the overseer (`High`, subject `UNVERIFIED_HOLD: <issue> (MR <mr>)
+needs an overseer verdict`) with the issue, MR, rig, reason, age since the MR
+closed and both commands. It is sent once per MR: after a successful send the
+MR records `unverified_notified_at: <RFC3339>`, and a `REMINDER` follows while
+the hold lasts, every `operational.witness.unverified_reminder_interval` in
+`settings/config.json` (default `24h`; zero, negative or unparsable values use
+the default). A failed send marks nothing, so the next patrol retries; a
+failed mark after a good send means the next patrol repeats the notice.
+`gt doctor` (`null-assignee-steps`) lists the same issues with the MR, the
+reason and both commands. The verdict is written on the MR (`landing: landed|not_landed`,
 `landing_by: <identity> via tty`), recorded as a comment on the issue, and then
 the normal rule acts on it. Guards: agent roles (polecat, refinery, witness,
 deacon, mayor) and a polecat `BD_ACTOR` are refused; stdin and stdout must be

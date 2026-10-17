@@ -499,6 +499,11 @@ type WitnessThresholds struct {
 	// possibly stuck at startup (e.g., auth 401 blocking initialization, default "5m").
 	// The witness exposes the signal; patrol formula decides whether to escalate.
 	HeartbeatStartupGrace string `json:"heartbeat_startup_grace,omitempty"`
+
+	// UnverifiedReminderInterval is how long after the last overseer notice
+	// about a bead held as unverified (MR closed, landing not decidable by
+	// git) the witness patrol sends a reminder (default "24h", gt-pd1c.82).
+	UnverifiedReminderInterval string `json:"unverified_reminder_interval,omitempty"`
 }
 
 // DefaultOperationalConfig returns an OperationalConfig with all defaults.

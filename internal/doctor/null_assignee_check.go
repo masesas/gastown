@@ -136,8 +136,9 @@ func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, 
 		if rig == "" {
 			rig = row.RigDB
 		}
-		details = append(details, fmt.Sprintf("[%s] %s — UNVERIFIED: MR %s is closed but its landing cannot be decided (%s; updated: %s). Not fixed automatically; an overseer decides: `gt mq reject %s %s --confirm-not-landed` (reopen for rework) or `gt mq post-merge %s %s --confirm-landed` (close)",
-			row.RigDB, row.ID, row.MRID, row.Reason, row.UpdatedAt, rig, row.MRID, rig, row.MRID))
+		notLanded, landed := beads.UnverifiedExitCommands(rig, row.MRID)
+		details = append(details, fmt.Sprintf("[%s] %s — UNVERIFIED: MR %s is closed but its landing cannot be decided (%s; updated: %s). Not fixed automatically; an overseer decides: `%s` (reopen for rework) or `%s` (close)",
+			row.RigDB, row.ID, row.MRID, row.Reason, row.UpdatedAt, notLanded, landed))
 	}
 	if len(pending) > 0 {
 		details = append(details, fmt.Sprintf("%d more held by a pending MR (awaiting merge) — not touched", len(pending)))

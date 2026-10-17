@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,11 +36,16 @@ Detections:
     stuck done-intent, closed beads with live sessions
   - Stalls: Agents stuck at startup prompts
   - Completions: Agent bead metadata indicating gt done was called
+  - Parked beads: in_progress beads with no assignee, held by the merge queue
 
 Actions taken automatically:
   - Zombie restart: Sessions are restarted (not nuked) to preserve worktrees
   - Cleanup wisps: Created for dirty state tracking
   - Completion routing: MR cleanup wisps created, refinery nudged
+  - Parked beads: closed when their MR landed; when held as unverified (MR
+    closed, git cannot prove it landed) the overseer is mailed once per MR,
+    with a reminder every operational.witness.unverified_reminder_interval
+    (default 24h) while the hold lasts
 
 Use --notify to send mail when zombies with active work are detected.
 Long-running scan phases emit progress diagnostics to stderr so JSON stdout
@@ -71,7 +77,18 @@ type PatrolScanOutput struct {
 	Zombies     *PatrolScanZombieOutput   `json:"zombies"`
 	Stalls      *PatrolScanStallOutput    `json:"stalls,omitempty"`
 	Completions *PatrolScanCompleteOutput `json:"completions,omitempty"`
+	Parked      *PatrolScanParkedOutput   `json:"parked,omitempty"`
 	Receipts    []witness.PatrolReceipt   `json:"receipts,omitempty"`
+}
+
+// PatrolScanParkedOutput holds the parked-bead scan (witness.ScanParkedBeads):
+// beads closed because their MR landed, and unverified beads the overseer was
+// mailed about this patrol.
+type PatrolScanParkedOutput struct {
+	Checked  int      `json:"checked"`
+	Closed   []string `json:"closed,omitempty"`
+	Notified []string `json:"notified,omitempty"`
+	Errors   []string `json:"errors,omitempty"`
 }
 
 // PatrolScanZombieOutput holds zombie detection results.
@@ -167,6 +184,9 @@ func runPatrolScan(cmd *cobra.Command, args []string) error {
 	completionResult := runPatrolScanPhase(diagnostics, "completion discovery", func() *witness.DiscoverCompletionsResult {
 		return witness.DiscoverCompletions(bd, workDir, rigName, router)
 	})
+	parkedResult := runPatrolScanPhase(diagnostics, "parked beads", func() *witness.ScanParkedBeadsResult {
+		return witness.ScanParkedBeads(bd, filepath.Join(townRoot, rigName), rigName, router)
+	})
 
 	// Build patrol receipts for zombies
 	receipts := witness.BuildPatrolReceipts(rigName, zombieResult)
@@ -183,10 +203,10 @@ func runPatrolScan(cmd *cobra.Command, args []string) error {
 	}
 
 	if patrolScanJSON {
-		return outputPatrolScanJSON(rigName, timestamp, zombieResult, stallResult, completionResult, receipts)
+		return outputPatrolScanJSON(rigName, timestamp, zombieResult, stallResult, completionResult, parkedResult, receipts)
 	}
 
-	return outputPatrolScanHuman(rigName, zombieResult, stallResult, completionResult, receipts)
+	return outputPatrolScanHuman(rigName, zombieResult, stallResult, completionResult, parkedResult, receipts)
 }
 
 func runPatrolScanPhase[T any](diagnostics io.Writer, name string, fn func() T) T {
@@ -285,7 +305,7 @@ func sendZombieNotification(router *mail.Router, rigName string, result *witness
 	_ = router.Send(mayorMsg)
 }
 
-func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, receipts []witness.PatrolReceipt) error {
+func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, parkedResult *witness.ScanParkedBeadsResult, receipts []witness.PatrolReceipt) error {
 	output := PatrolScanOutput{
 		Rig:       rigName,
 		Timestamp: timestamp,
@@ -360,13 +380,45 @@ func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.Detec
 		}
 		output.Completions = co
 	}
+	output.Parked = patrolScanParkedOutput(parkedResult)
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(output)
 }
 
-func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, _ []witness.PatrolReceipt) error {
+// patrolScanParkedOutput converts the parked-bead scan for JSON output.
+func patrolScanParkedOutput(r *witness.ScanParkedBeadsResult) *PatrolScanParkedOutput {
+	if r == nil {
+		return nil
+	}
+	out := &PatrolScanParkedOutput{Checked: r.Checked, Closed: r.Closed, Notified: r.Notified}
+	for _, e := range r.Errors {
+		out.Errors = append(out.Errors, e.Error())
+	}
+	return out
+}
+
+// printPatrolScanParked prints the parked-bead scan. Errors are always shown:
+// a notice that failed to go out must be visible.
+func printPatrolScanParked(r *witness.ScanParkedBeadsResult) {
+	if r == nil || (r.Checked == 0 && len(r.Errors) == 0 && !patrolScanVerbose) {
+		return
+	}
+	fmt.Printf("%s Parked Beads: checked %d\n", style.Bold.Render("📌"), r.Checked)
+	for _, id := range r.Closed {
+		fmt.Printf("  ● %s: MR landed → closed\n", id)
+	}
+	for _, id := range r.Notified {
+		fmt.Printf("  ⚠ %s: held as unverified → overseer mailed\n", id)
+	}
+	for _, e := range r.Errors {
+		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("Error: %v", e)))
+	}
+	fmt.Println()
+}
+
+func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, parkedResult *witness.ScanParkedBeadsResult, _ []witness.PatrolReceipt) error {
 	fmt.Printf("%s Patrol scan: %s\n\n", style.Bold.Render("🔍"), rigName)
 
 	// Zombies
@@ -451,6 +503,8 @@ func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePol
 		}
 		fmt.Println()
 	}
+
+	printPatrolScanParked(parkedResult)
 
 	// Summary
 	zombieCount := 0

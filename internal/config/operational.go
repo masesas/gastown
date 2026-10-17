@@ -113,6 +113,10 @@ const (
 	DefaultWitnessDoneIntentStuckTimeout    = 60 * time.Second
 	DefaultWitnessDoneIntentRecentGrace     = 30 * time.Second
 	DefaultWitnessHeartbeatStartupGrace     = 5 * time.Minute
+	// DefaultWitnessUnverifiedReminderInterval is how long the witness waits
+	// before mailing the overseer again about a bead still held as
+	// beads.HoldUnverified (gt-pd1c.82).
+	DefaultWitnessUnverifiedReminderInterval = 24 * time.Hour
 )
 
 // LoadOperationalConfig loads operational config from a town root.
@@ -752,4 +756,18 @@ func (wt *WitnessThresholds) HeartbeatStartupGraceD() time.Duration {
 		return ParseDurationOrDefault(wt.HeartbeatStartupGrace, DefaultWitnessHeartbeatStartupGrace)
 	}
 	return DefaultWitnessHeartbeatStartupGrace
+}
+
+// UnverifiedReminderIntervalD returns the configured or default interval
+// between overseer notices about a bead still held as unverified
+// (gt-pd1c.82). A non-positive value falls back to the default: a reminder on
+// every patrol would be spam.
+func (wt *WitnessThresholds) UnverifiedReminderIntervalD() time.Duration {
+	if wt == nil {
+		return DefaultWitnessUnverifiedReminderInterval
+	}
+	if d := ParseDurationOrDefault(wt.UnverifiedReminderInterval, DefaultWitnessUnverifiedReminderInterval); d > 0 {
+		return d
+	}
+	return DefaultWitnessUnverifiedReminderInterval
 }

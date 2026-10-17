@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // MergeQueueHold is the merge queue's verdict on a work (source) bead. It is
@@ -193,6 +194,45 @@ func (q *MergeQueue) Unverified(issueID string) (mrID, rig, reason string) {
 	return id, "", "deciding MR not found"
 }
 
+// UnverifiedExitCommands are the only two ways out of a HoldUnverified hold,
+// for the MR mrID in rig ("" shows a <rig> placeholder): the overseer's
+// verdict that the work did not land (reopen for rework) or did land (close).
+// Shared by every place that tells a human how to decide (gt-pd1c.82).
+func UnverifiedExitCommands(rig, mrID string) (notLanded, landed string) {
+	rig = strings.TrimSpace(rig)
+	if rig == "" {
+		rig = "<rig>"
+	}
+	return fmt.Sprintf("gt mq reject %s %s --confirm-not-landed", rig, mrID),
+		fmt.Sprintf("gt mq post-merge %s %s --confirm-landed", rig, mrID)
+}
+
+// MarkUnverifiedNotified records on MR mrID (routed to its own DB) that the
+// overseer was told about its unverified hold at time at
+// (MRFields.UnverifiedNotifiedAt, RFC3339 UTC). The MR is re-read first so a
+// concurrent field change is not overwritten with a stale snapshot. Callers
+// mark only after the notice was delivered (fail closed: an unsent notice is
+// retried, never recorded).
+func (b *Beads) MarkUnverifiedNotified(mrID string, at time.Time) error {
+	issue, err := b.Show(mrID)
+	if err != nil {
+		return fmt.Errorf("reading MR %s: %w", mrID, err)
+	}
+	if issue == nil {
+		return fmt.Errorf("reading MR %s: %w", mrID, ErrNotFound)
+	}
+	fields := ParseMRFields(issue)
+	if fields == nil {
+		fields = &MRFields{}
+	}
+	fields.UnverifiedNotifiedAt = at.UTC().Format(time.RFC3339)
+	desc := SetMRFields(issue, fields)
+	if err := b.Update(mrID, UpdateOptions{Description: &desc}); err != nil {
+		return fmt.Errorf("recording unverified notice on MR %s: %w", mrID, err)
+	}
+	return nil
+}
+
 // MergeRequests returns the MRs (any status) whose source is issueID.
 func (q *MergeQueue) MergeRequests(issueID string) []*Issue {
 	if q == nil {
@@ -227,7 +267,8 @@ func (q *MergeQueue) CheckSubmission(issueID, branch string) error {
 		}
 		if mrBranch != branch {
 			if hold == HoldUnverified {
-				return fmt.Errorf("%s is held by the merge queue: MR %s from branch %q is closed but git cannot tell whether its work landed; an overseer must decide with `gt mq reject <rig> %s --confirm-not-landed` or `gt mq post-merge <rig> %s --confirm-landed`", issueID, mr.ID, mrBranch, mr.ID, mr.ID)
+				notLanded, landed := UnverifiedExitCommands("", mr.ID)
+				return fmt.Errorf("%s is held by the merge queue: MR %s from branch %q is closed but git cannot tell whether its work landed; an overseer must decide with `%s` or `%s`", issueID, mr.ID, mrBranch, notLanded, landed)
 			}
 			return fmt.Errorf("%s is held by the merge queue: MR %s (%s) from branch %q; the refinery owns it until the MR merges or is rejected", issueID, mr.ID, hold, mrBranch)
 		}

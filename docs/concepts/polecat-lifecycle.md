@@ -256,7 +256,7 @@ reset, reopen or re-dispatch held work:
 | MR pending | held: parked, left for the Refinery |
 | MR landed (merged, or its commit is on the target) | closed |
 | Only MRs closed without landing, proven by git (commit not on the target) | free: reopened for rework |
-| MRs closed, landing not decidable (no prover, no recorded commit, git error) | held (unverified): parked, never reopened; reported by `gt doctor`, decided by an overseer |
+| MRs closed, landing not decidable (no prover, no recorded commit, git error) | held (unverified): parked, never reopened; the overseer is mailed by the witness patrol and it is listed by `gt doctor`; decided by an overseer |
 | Merge queue unreadable | fail closed: nothing is reset or dispatched |
 
 The merge queue is always read town-wide (every beads DB): an MR lives in the
@@ -264,8 +264,11 @@ submitting polecat's rig DB, its issue may live in another (`hq-`, another
 rig). While the queue holds an issue through an MR from one branch, `gt done`
 and `gt mq submit` from any other branch are refused; the owner's own branch
 may resubmit (FIX_NEEDED). `gt mq reject` reopens a parked issue, and repeating
-it repeats the release. A parked issue whose MR landed but was closed by hand
-(bare `bd close`) is closed by the witness orphan scan, or by `gt doctor --fix`.
+it repeats the release. Parked issues are settled on every witness patrol
+(`gt patrol scan`) and by the orphan recovery of `gt up`, with one rule: one
+whose MR landed but was closed by hand (bare `bd close`) is closed (also by
+`gt doctor --fix`), and one held as *unverified* is announced to the overseer
+(see below).
 
 "Not landed" must be definite: git fetched the target and the commit is not
 reachable from it. An absent commit object after the fetch counts only in a
@@ -277,6 +280,14 @@ complete clone; in a shallow or partial clone (gastown's `.repo.git` is
 interactive terminal and the MR ID typed again, are refused for agent roles,
 record `landing:` on the MR plus a comment on the issue, and never override a
 definite git answer (see `docs/reference.md`).
+
+The overseer learns about an unverified issue without running `gt doctor`:
+the witness patrol mails `overseer` (the `gt mail send --human` mailbox) once
+per deciding MR with the issue, MR, rig, reason, age and both commands, and
+sends a reminder every 24h (`operational.witness.unverified_reminder_interval`)
+while the hold lasts. Detection is the merge queue's own
+(`MergeQueue.Unverified`); the dedup mark is `unverified_notified_at` on the
+MR, written only after the mail was sent.
 
 Known limitation: reachability compares the commit recorded at submit. A
 rebase or squash merge rewrites that commit, so such an MR closed by a bare
