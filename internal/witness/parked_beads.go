@@ -16,22 +16,13 @@ import (
 // overseerAddress is the human operator's mailbox (`gt mail send --human`).
 const overseerAddress = "overseer"
 
+// unverifiedMarkSkew is how far in the future an unverified_notified_at mark
+// may lie (clock skew between hosts) and still count. A mark further ahead is
+// invalid, so it can never silence the overseer.
+const unverifiedMarkSkew = 5 * time.Minute
+
 // errNoMailRouter: a notice that cannot be sent is an error, never a silent skip.
 var errNoMailRouter = errors.New("no mail router")
-
-// sendOverseerMail delivers a notice to the overseer. Tests override it.
-var sendOverseerMail = func(router *mail.Router, msg *mail.Message) error {
-	if router == nil {
-		return errNoMailRouter
-	}
-	return router.Send(msg)
-}
-
-// markUnverifiedNotified records on the MR that the overseer was notified
-// (beads.MRFields.UnverifiedNotifiedAt). Tests override it.
-var markUnverifiedNotified = func(workDir, mrID string, at time.Time) error {
-	return beads.New(workDir).MarkUnverifiedNotified(mrID, at)
-}
 
 // ScanParkedBeadsResult is what ScanParkedBeads did.
 type ScanParkedBeadsResult struct {
@@ -47,8 +38,16 @@ type ScanParkedBeadsResult struct {
 // the overseer (once per MR, then a reminder per
 // WitnessThresholds.UnverifiedReminderInterval), pending and free beads are
 // left alone. It runs on every witness patrol (`gt patrol scan`); the merge
-// queue is read only when a parked bead exists.
+// queue is read only when a parked bead exists. rigName must be
+// beads.IsSafeID.
 func ScanParkedBeads(bd *BdCli, workDir, rigName string, router *mail.Router) *ScanParkedBeadsResult {
+	if !beads.IsSafeID(rigName) {
+		return &ScanParkedBeadsResult{Errors: []error{fmt.Errorf("refusing rig name %q: not a valid rig name", rigName)}}
+	}
+	return scanParkedBeads(bd, workDir, newOverseerNotice(workDir, rigName, router))
+}
+
+func scanParkedBeads(bd *BdCli, workDir string, notice overseerNotice) *ScanParkedBeadsResult {
 	result := &ScanParkedBeadsResult{}
 	output, err := bd.Exec(workDir, "list", "--status=in_progress", "--json", "--limit=0")
 	if err != nil {
@@ -66,7 +65,6 @@ func ScanParkedBeads(bd *BdCli, workDir, rigName string, router *mail.Router) *S
 		}
 	}
 
-	notice := newOverseerNotice(workDir, rigName, router)
 	var queue *beads.MergeQueue // read once, for the first parked bead
 	for _, bead := range listed {
 		if strings.TrimSpace(bead.Assignee) != "" {
@@ -91,24 +89,25 @@ func ScanParkedBeads(bd *BdCli, workDir, rigName string, router *mail.Router) *S
 }
 
 // settleParkedBead applies the merge queue's verdict to one parked bead
-// (in_progress, no assignee): beads.HoldLanded closes it (its MR landed but
-// was closed by hand, so nothing else closes it), beads.HoldUnverified mails
-// the overseer when a notice is due, pending and free beads are left alone.
-// An unreadable merge queue is reported, never acted on.
+// (in_progress, no assignee), computed once (beads.MergeQueue.Detail):
+// beads.HoldLanded closes it (its MR landed but was closed by hand, so
+// nothing else closes it), beads.HoldUnverified mails the overseer when a
+// notice is due, pending and free beads are left alone. An unreadable merge
+// queue is reported, never acted on.
 func settleParkedBead(bd *BdCli, workDir, beadID string, queue *beads.MergeQueue, notice overseerNotice) (closed, notified bool, err error) {
-	hold, mrID, err := queue.Hold(beadID)
+	d, err := queue.Detail(beadID)
 	if err != nil {
 		return false, false, fmt.Errorf("merge queue unreadable, not settling %s: %w", beadID, err)
 	}
-	switch hold {
+	switch d.Hold {
 	case beads.HoldLanded:
-		reason := fmt.Sprintf("Merged in %s (settled by witness)", mrID)
+		reason := fmt.Sprintf("Merged in %s (settled by witness)", d.MRID)
 		if err := bd.Run(workDir, "close", beadID, "--force", "-r", reason); err != nil {
-			return false, false, fmt.Errorf("closing parked bead %s (MR %s landed): %w", beadID, mrID, err)
+			return false, false, fmt.Errorf("closing parked bead %s (MR %s landed): %w", beadID, d.MRID, err)
 		}
 		return true, false, nil
 	case beads.HoldUnverified:
-		notified, err := notice.notify(queue, beadID)
+		notified, err := notice.notify(beadID, d)
 		return false, notified, err
 	default:
 		return false, false, nil
@@ -118,78 +117,92 @@ func settleParkedBead(bd *BdCli, workDir, beadID string, queue *beads.MergeQueue
 // overseerNotice mails the overseer about beads held as beads.HoldUnverified
 // (gt-pd1c.82): only a human verdict releases them, so without a notice they
 // sit parked until someone happens to run `gt doctor`.
+//
+// Delivery is at least once: the MR is marked only after a successful send,
+// so a mark that fails (or two patrols notifying the same MR at the same
+// time) repeats the notice; it is never lost.
 type overseerNotice struct {
-	workDir  string        // rig work dir (routes the MR mark to the MR's DB)
-	rig      string        // witness rig: sender, and the rig shown when the MR records none
-	router   *mail.Router  // nil: every notice fails (and nothing is marked)
+	rig      string        // witness rig: sender, and the rig shown when the MR's is unusable
 	interval time.Duration // reminder interval (WitnessThresholds.UnverifiedReminderIntervalD)
 	now      time.Time
+	send     func(*mail.Message) error             // delivers the notice
+	mark     func(mrID string, at time.Time) error // records beads.MRFields.UnverifiedNotifiedAt
 }
 
+// newOverseerNotice wires the notice to router (nil: every send fails and
+// nothing is marked) and to the MR's own DB, routed from workDir.
 func newOverseerNotice(workDir, rig string, router *mail.Router) overseerNotice {
 	townRoot, err := workspace.Find(workDir)
 	if err != nil || townRoot == "" {
 		townRoot = workDir
 	}
 	return overseerNotice{
-		workDir:  workDir,
 		rig:      rig,
-		router:   router,
 		interval: config.LoadOperationalConfig(townRoot).GetWitnessConfig().UnverifiedReminderIntervalD(),
 		now:      time.Now(),
+		send: func(msg *mail.Message) error {
+			if router == nil {
+				return errNoMailRouter
+			}
+			return router.Send(msg)
+		},
+		mark: func(mrID string, at time.Time) error {
+			return beads.New(workDir).MarkUnverifiedNotified(mrID, at)
+		},
 	}
 }
 
-// notify mails the overseer about beadID when the merge queue holds it as
-// unverified (beads.MergeQueue.Unverified, the one detection) and its
-// deciding MR was never notified, or was last notified at least n.interval
-// ago. The MR is marked only after the mail was sent: a failed send is
-// retried on the next patrol. sent reports whether a mail went out.
-func (n overseerNotice) notify(queue *beads.MergeQueue, beadID string) (sent bool, err error) {
-	mrID, mrRig, reason := queue.Unverified(beadID)
-	if mrID == "" {
+// notify mails the overseer about beadID, held as unverified per d (the
+// merge queue's one verdict), when its deciding MR was never notified or was
+// last notified at least n.interval ago. The MR is marked only after the
+// mail was sent: a failed send is retried on the next patrol. sent reports
+// whether a mail went out.
+func (n overseerNotice) notify(beadID string, d beads.HoldDetail) (sent bool, err error) {
+	if d.Hold != beads.HoldUnverified || d.MRID == "" {
 		return false, nil
 	}
-	mr := mergeRequestByID(queue.MergeRequests(beadID), mrID)
-	last, due := n.due(mr)
+	last, due := n.due(d.MR)
 	if !due {
 		return false, nil
 	}
-	if strings.TrimSpace(mrRig) == "" {
-		mrRig = n.rig
+	if err := n.send(n.message(beadID, d, last)); err != nil {
+		return false, fmt.Errorf("mailing the overseer about unverified %s (MR %s): %w", beadID, d.MRID, err)
 	}
-	msg := n.message(beadID, mrID, mrRig, reason, mr, last)
-	if err := sendOverseerMail(n.router, msg); err != nil {
-		return false, fmt.Errorf("mailing the overseer about unverified %s (MR %s): %w", beadID, mrID, err)
-	}
-	if err := markUnverifiedNotified(n.workDir, mrID, n.now); err != nil {
-		return true, fmt.Errorf("overseer mailed about unverified %s, but MR %s was not marked (the next patrol repeats the notice): %w", beadID, mrID, err)
+	if err := n.mark(d.MRID, n.now); err != nil {
+		return true, fmt.Errorf("overseer mailed about unverified %s, but MR %s was not marked (the next patrol repeats the notice): %w", beadID, d.MRID, err)
 	}
 	return true, nil
 }
 
-// due reports whether a notice is due for mr and when the last one went out
-// (zero: never, or the mark is unreadable, which never silences the notice).
+// due reports whether a notice is due for mr and when the last one went out.
+// last is zero when there was none or the mark is invalid (unparsable, or
+// more than unverifiedMarkSkew in the future): an invalid mark never
+// silences the notice.
 func (n overseerNotice) due(mr *beads.Issue) (last time.Time, due bool) {
 	fields := beads.ParseMRFields(mr)
 	if fields == nil || strings.TrimSpace(fields.UnverifiedNotifiedAt) == "" {
 		return time.Time{}, true
 	}
 	last, err := time.Parse(time.RFC3339, strings.TrimSpace(fields.UnverifiedNotifiedAt))
-	if err != nil {
+	if err != nil || last.After(n.now.Add(unverifiedMarkSkew)) {
 		return time.Time{}, true
 	}
 	return last, n.now.Sub(last) >= n.interval
 }
 
-func (n overseerNotice) message(beadID, mrID, rig, reason string, mr *beads.Issue, last time.Time) *mail.Message {
-	subject := fmt.Sprintf("UNVERIFIED_HOLD: %s (MR %s) needs an overseer verdict", beadID, mrID)
+func (n overseerNotice) message(beadID string, d beads.HoldDetail, last time.Time) *mail.Message {
+	rig := d.Rig
+	if !beads.IsSafeID(rig) {
+		rig = n.rig // the witness rig, or a placeholder when that is unusable too
+	}
+	bead, mr := displayID(beadID), displayID(d.MRID)
+	subject := fmt.Sprintf("UNVERIFIED_HOLD: %s (MR %s) needs an overseer verdict", bead, mr)
 	lastLine := ""
 	if !last.IsZero() {
 		subject = "REMINDER " + subject
 		lastLine = fmt.Sprintf("Last notice: %s\n", last.UTC().Format(time.RFC3339))
 	}
-	notLanded, landed := beads.UnverifiedExitCommands(rig, mrID)
+	notLanded, landed := beads.UnverifiedExitCommands(rig, d.MRID)
 	body := fmt.Sprintf(`Work bead %s is held by the merge queue as unverified: its MR is closed,
 but git cannot prove whether the work landed. It stays parked (not in bd ready)
 and nothing reopens or closes it until an overseer decides.
@@ -207,7 +220,7 @@ Decide from an interactive terminal (the MR ID must be typed again):
     %s
 
 A reminder follows every %s while the hold lasts.`,
-		beadID, beadID, mrID, rig, reason, n.holdAge(mr), lastLine, notLanded, landed, shortDuration(n.interval))
+		bead, bead, mr, displayID(rig), d.Reason, n.holdAge(d.MR), lastLine, notLanded, landed, shortDuration(n.interval))
 	return &mail.Message{
 		From:     fmt.Sprintf("%s/witness", n.rig),
 		To:       overseerAddress,
@@ -215,6 +228,14 @@ A reminder follows every %s while the hold lasts.`,
 		Body:     body,
 		Priority: mail.PriorityHigh,
 	}
+}
+
+// displayID shows an identifier in the notice only when it is beads.IsSafeID.
+func displayID(id string) string {
+	if beads.IsSafeID(id) {
+		return id
+	}
+	return "<invalid id>"
 }
 
 // holdAge is how long the MR has been closed (the hold starts when the MR
@@ -225,7 +246,7 @@ func (n overseerNotice) holdAge(mr *beads.Issue) string {
 	}
 	closedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(mr.ClosedAt))
 	if err != nil {
-		return fmt.Sprintf("unknown (MR closed_at %q)", mr.ClosedAt)
+		return "unknown (MR closed_at is not a valid time)"
 	}
 	return fmt.Sprintf("%s (MR closed %s)", shortDuration(n.now.Sub(closedAt)), closedAt.UTC().Format(time.RFC3339))
 }
@@ -239,13 +260,4 @@ func shortDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh", int(d.Hours()))
-}
-
-func mergeRequestByID(mrs []*beads.Issue, id string) *beads.Issue {
-	for _, mr := range mrs {
-		if mr != nil && mr.ID == id {
-			return mr
-		}
-	}
-	return nil
 }

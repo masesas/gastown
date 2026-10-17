@@ -117,6 +117,9 @@ const (
 	// before mailing the overseer again about a bead still held as
 	// beads.HoldUnverified (gt-pd1c.82).
 	DefaultWitnessUnverifiedReminderInterval = 24 * time.Hour
+	// MinWitnessUnverifiedReminderInterval is the floor for a configured
+	// reminder interval: shorter values are raised to it.
+	MinWitnessUnverifiedReminderInterval = time.Hour
 )
 
 // LoadOperationalConfig loads operational config from a town root.
@@ -760,14 +763,19 @@ func (wt *WitnessThresholds) HeartbeatStartupGraceD() time.Duration {
 
 // UnverifiedReminderIntervalD returns the configured or default interval
 // between overseer notices about a bead still held as unverified
-// (gt-pd1c.82). A non-positive value falls back to the default: a reminder on
-// every patrol would be spam.
+// (gt-pd1c.82). A non-positive or unparsable value falls back to the default
+// and a positive value below MinWitnessUnverifiedReminderInterval is raised to
+// it: a reminder on every patrol would be spam.
 func (wt *WitnessThresholds) UnverifiedReminderIntervalD() time.Duration {
 	if wt == nil {
 		return DefaultWitnessUnverifiedReminderInterval
 	}
-	if d := ParseDurationOrDefault(wt.UnverifiedReminderInterval, DefaultWitnessUnverifiedReminderInterval); d > 0 {
-		return d
+	d := ParseDurationOrDefault(wt.UnverifiedReminderInterval, DefaultWitnessUnverifiedReminderInterval)
+	switch {
+	case d <= 0:
+		return DefaultWitnessUnverifiedReminderInterval
+	case d < MinWitnessUnverifiedReminderInterval:
+		return MinWitnessUnverifiedReminderInterval
 	}
-	return DefaultWitnessUnverifiedReminderInterval
+	return d
 }

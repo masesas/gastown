@@ -520,6 +520,9 @@ func TestWitnessThresholds_UnverifiedReminderInterval(t *testing.T) {
 		"0s":    DefaultWitnessUnverifiedReminderInterval, // never "remind every patrol"
 		"-1h":   DefaultWitnessUnverifiedReminderInterval,
 		"bogus": DefaultWitnessUnverifiedReminderInterval,
+		"1m":    time.Hour, // floor
+		"59m":   time.Hour,
+		"1h":    time.Hour,
 	} {
 		op := &OperationalConfig{Witness: &WitnessThresholds{UnverifiedReminderInterval: in}}
 		if got := op.GetWitnessConfig().UnverifiedReminderIntervalD(); got != want {

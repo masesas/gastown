@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
@@ -60,9 +59,6 @@ const nullAssigneeSelectQuery = `SELECT id, title, updated_at FROM issues WHERE 
 
 // nullAssigneeMergeQueueFn reads the town-wide merge queue; tests override it.
 var nullAssigneeMergeQueueFn = mergeproof.TownMergeQueue
-
-// validBeadID is the shape of a bead ID the fix may put into SQL.
-var validBeadID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Run queries each rig database for in_progress beads with NULL/empty assignee.
 func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
@@ -172,15 +168,15 @@ func (c *NullAssigneeCheck) okResult() *CheckResult {
 // and only a human verdict can decide).
 func splitMergeQueueHeld(rows []nullAssigneeRow, queue *beads.MergeQueue) (reopen, landed, pending, unverified []nullAssigneeRow) {
 	for _, row := range rows {
-		hold, mrID, _ := queue.Hold(row.ID)
-		switch hold {
+		d, _ := queue.Detail(row.ID)
+		switch d.Hold {
 		case beads.HoldLanded:
-			row.MRID = mrID
+			row.MRID = d.MRID
 			landed = append(landed, row)
 		case beads.HoldPending:
 			pending = append(pending, row)
 		case beads.HoldUnverified:
-			row.MRID, row.MRRig, row.Reason = queue.Unverified(row.ID)
+			row.MRID, row.MRRig, row.Reason = d.MRID, d.Rig, d.Reason
 			unverified = append(unverified, row)
 		default:
 			reopen = append(reopen, row)
@@ -190,11 +186,11 @@ func splitMergeQueueHeld(rows []nullAssigneeRow, queue *beads.MergeQueue) (reope
 }
 
 // nullAssigneeFixQueryFor resets exactly the given beads (still in_progress
-// with no assignee) to open. Every ID must match validBeadID.
+// with no assignee) to open. Every ID must be beads.IsSafeID.
 func nullAssigneeFixQueryFor(ids []string) (string, error) {
 	quoted := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if !validBeadID.MatchString(id) {
+		if !beads.IsSafeID(id) {
 			return "", fmt.Errorf("refusing bead ID %q: not a valid bead ID", id)
 		}
 		quoted = append(quoted, "'"+id+"'")
@@ -213,7 +209,7 @@ func (c *NullAssigneeCheck) Fix(ctx *CheckContext) error {
 	var errs []string
 	// Landed work: close through the shared settle (gt-pd1c.59).
 	for _, row := range c.landed {
-		if !validBeadID.MatchString(row.ID) {
+		if !beads.IsSafeID(row.ID) {
 			errs = append(errs, fmt.Sprintf("%s: refusing bead ID %q: not a valid bead ID", row.RigDB, row.ID))
 			continue
 		}

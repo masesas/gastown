@@ -287,7 +287,15 @@ per deciding MR with the issue, MR, rig, reason, age and both commands, and
 sends a reminder every 24h (`operational.witness.unverified_reminder_interval`)
 while the hold lasts. Detection is the merge queue's own
 (`MergeQueue.Unverified`); the dedup mark is `unverified_notified_at` on the
-MR, written only after the mail was sent.
+MR, written only after the mail was sent, so delivery is at least once (a
+failed mark, or two patrols at the same moment, repeats the notice; it is
+never lost). Errors of the parked-bead pass are printed by `gt patrol scan`
+and, on stderr, by `gt up`.
+
+Known limitation: the structured merged signal (`close_reason: merged` or a
+`merge_commit` on a closed MR) is trusted without a git cross-check, so a
+value written by hand with `bd update` makes the patrol close the issue as
+landed (cross-check planned in gt-pd1c.78, stage 2).
 
 Known limitation: reachability compares the commit recorded at submit. A
 rebase or squash merge rewrites that commit, so such an MR closed by a bare

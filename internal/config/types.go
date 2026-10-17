@@ -502,7 +502,8 @@ type WitnessThresholds struct {
 
 	// UnverifiedReminderInterval is how long after the last overseer notice
 	// about a bead held as unverified (MR closed, landing not decidable by
-	// git) the witness patrol sends a reminder (default "24h", gt-pd1c.82).
+	// git) the witness patrol sends a reminder (default "24h", minimum "1h",
+	// gt-pd1c.82).
 	UnverifiedReminderInterval string `json:"unverified_reminder_interval,omitempty"`
 }
 

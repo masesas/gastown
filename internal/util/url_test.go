@@ -26,3 +26,16 @@ func TestRedactURL(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactURLCredentials(t *testing.T) {
+	for in, want := range map[string]string{
+		"fatal: unable to access 'https://x-access-token:ghp_abc@github.com/o/r.git/': 403": "fatal: unable to access 'https://***@github.com/o/r.git/': 403",
+		"fetch https://alice@host/repo and ssh://bob:pw@h2/x":                               "fetch https://***@host/repo and ssh://***@h2/x",
+		"git@github.com:org/repo.git not found":                                             "git@github.com:org/repo.git not found",
+		"https://github.com/o/r has no creds":                                               "https://github.com/o/r has no creds",
+	} {
+		if got := RedactURLCredentials(in); got != want {
+			t.Errorf("RedactURLCredentials(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

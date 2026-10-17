@@ -310,11 +310,11 @@ func TestMergeQueue_UnverifiedExplainsAndGuardPointsToExit(t *testing.T) {
 	installMergedMRBDStub(t, pendingMRRows, closedMRRows)
 	idx, _ := New(t.TempDir()).MergeRequestsBySource()
 	q := NewMergeQueue(idx, nil, nil)
-	mrID, rig, reason := q.Unverified("gt-work4")
-	if mrID != "gt-wisp-bare" || rig != "gastown" || !strings.Contains(reason, "no git prover") {
-		t.Fatalf("Unverified = (%q, %q, %q)", mrID, rig, reason)
+	d, _ := q.Detail("gt-work4")
+	if d.Hold != HoldUnverified || d.MRID != "gt-wisp-bare" || d.Rig != "gastown" || !strings.Contains(d.Reason, "no git prover") {
+		t.Fatalf("Detail = %+v", d)
 	}
-	if mrID, _, _ := q.Unverified("gt-work3"); mrID != "" {
+	if d, _ := q.Detail("gt-work3"); d.Hold == HoldUnverified || d.Reason != "" {
 		t.Fatal("a pending hold is not unverified")
 	}
 	err := q.CheckSubmission("gt-work4", "polecat/x/gt-work4")

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/witness"
@@ -162,6 +163,11 @@ func runPatrolScan(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("could not determine rig: %w\nUse --rig to specify", err)
 			}
 		}
+	}
+
+	// The rig name becomes a path segment (<town>/<rig>) and a mail address.
+	if !beads.IsSafeID(rigName) {
+		return fmt.Errorf("invalid rig name %q", rigName)
 	}
 
 	bd := witness.DefaultBdCli()

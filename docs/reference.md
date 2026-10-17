@@ -708,8 +708,15 @@ closed and both commands. It is sent once per MR: after a successful send the
 MR records `unverified_notified_at: <RFC3339>`, and a `REMINDER` follows while
 the hold lasts, every `operational.witness.unverified_reminder_interval` in
 `settings/config.json` (default `24h`; zero, negative or unparsable values use
-the default). A failed send marks nothing, so the next patrol retries; a
-failed mark after a good send means the next patrol repeats the notice.
+the default, values below `1h` are raised to `1h`). A mark more than 5 minutes
+in the future is invalid and does not silence the notice. Delivery is at least
+once: a failed send marks nothing, so the next patrol retries; a failed mark
+after a good send, or two patrols (`gt patrol scan`, `gt up`) notifying the
+same MR at the same moment, repeats the notice. There is no in-memory backoff:
+each `gt patrol scan` is a new process. Identifiers that are not plain IDs
+(`^[A-Za-z0-9][A-Za-z0-9._-]*$`) never go into the copy-paste commands (the
+witness rig or `<rig>`/`<mr-id>` is shown instead), and the reason is one
+line, at most 300 bytes, with URL credentials masked (`://***@`).
 `gt doctor` (`null-assignee-steps`) lists the same issues with the MR, the
 reason and both commands. The verdict is written on the MR (`landing: landed|not_landed`,
 `landing_by: <identity> via tty`), recorded as a comment on the issue, and then

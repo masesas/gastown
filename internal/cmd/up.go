@@ -1173,6 +1173,11 @@ func recoverOrphanedBeads(townRoot string, rigs []string, prefetchedRigs map[str
 
 		rigPath := filepath.Join(townRoot, rigName)
 		result := witness.DetectOrphanedBeads(bd, rigPath, rigName, router)
+		// Report every error, also when there is no orphan: a failed overseer
+		// notice or an unreadable merge queue must be visible (gt-pd1c.82).
+		for _, err := range result.Errors {
+			fmt.Fprintf(os.Stderr, "[orphan-recovery] %s: %v\n", rigName, err)
+		}
 
 		if len(result.Orphans) == 0 {
 			continue // No orphans in this rig

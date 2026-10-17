@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/steveyegge/gastown/internal/util"
 )
 
 // MergeQueueHold is the merge queue's verdict on a work (source) bead. It is
@@ -61,34 +64,74 @@ func (h MergeQueueHold) String() string {
 // decide makes it HoldUnverified. HoldNone needs every MR definitely not
 // landed: only then may the bead be dispatched again.
 func MergeQueueHoldOf(mrs []*Issue, resolve ProverResolver) (MergeQueueHold, string) {
+	d := mergeQueueHoldDetail(mrs, resolve)
+	return d.Hold, d.MRID
+}
+
+// HoldDetail is the merge queue's verdict on a bead with its deciding MR,
+// computed once (MergeQueueHoldOf). Rig and Reason explain a HoldUnverified
+// hold: the MR's rig and why git cannot decide whether its work landed
+// (one line, at most maxHoldReasonLen bytes, URL credentials masked).
+type HoldDetail struct {
+	Hold   MergeQueueHold
+	MRID   string // deciding MR ("" for HoldNone)
+	MR     *Issue // deciding MR (nil for HoldNone)
+	Rig    string // HoldUnverified only
+	Reason string // HoldUnverified only
+}
+
+// mergeQueueHoldDetail is the one implementation of MergeQueueHoldOf.
+func mergeQueueHoldDetail(mrs []*Issue, resolve ProverResolver) HoldDetail {
 	for _, mr := range mrs {
 		if mr != nil && !IssueStatus(strings.TrimSpace(mr.Status)).IsTerminal() {
-			return HoldPending, mr.ID
+			return HoldDetail{Hold: HoldPending, MRID: mr.ID, MR: mr}
 		}
 	}
-	unverified := ""
+	var unverified *HoldDetail
 	for _, mr := range mrs {
 		if mr == nil {
 			continue
 		}
 		fields := ParseMRFields(mr)
 		var prover MergeProver
-		if fields != nil && resolve != nil {
-			prover = resolve(strings.TrimSpace(fields.Rig))
+		rig := ""
+		if fields != nil {
+			rig = strings.TrimSpace(fields.Rig)
+			if resolve != nil {
+				prover = resolve(rig)
+			}
 		}
-		switch mrLandingVerdict(IssueStatus(strings.TrimSpace(mr.Status)), fields, prover) {
+		verdict, reason := mrLandingVerdictReason(IssueStatus(strings.TrimSpace(mr.Status)), fields, prover)
+		switch verdict {
 		case verdictLanded:
-			return HoldLanded, mr.ID
+			return HoldDetail{Hold: HoldLanded, MRID: mr.ID, MR: mr}
 		case verdictUnknown:
-			if unverified == "" {
-				unverified = mr.ID
+			if unverified == nil {
+				unverified = &HoldDetail{Hold: HoldUnverified, MRID: mr.ID, MR: mr, Rig: rig, Reason: holdReason(reason)}
 			}
 		}
 	}
-	if unverified != "" {
-		return HoldUnverified, unverified
+	if unverified != nil {
+		return *unverified
 	}
-	return HoldNone, ""
+	return HoldDetail{Hold: HoldNone}
+}
+
+// maxHoldReasonLen bounds HoldDetail.Reason (it may carry git error text).
+const maxHoldReasonLen = 300
+
+// holdReason makes a landing reason safe to show to a human: one line, URL
+// credentials masked, bounded length.
+func holdReason(reason string) string {
+	reason = strings.Join(strings.Fields(util.RedactURLCredentials(reason)), " ")
+	if len(reason) > maxHoldReasonLen {
+		cut := maxHoldReasonLen
+		for cut > 0 && !utf8.RuneStart(reason[cut]) {
+			cut--
+		}
+		reason = reason[:cut] + "…"
+	}
+	return reason
 }
 
 // MergeQueueIndex holds the merge requests of one or more beads DBs grouped
@@ -163,45 +206,35 @@ func (q *MergeQueue) Err() error {
 // Hold classifies issueID (MergeQueueHoldOf) and returns the deciding MR. An
 // unread queue is an error.
 func (q *MergeQueue) Hold(issueID string) (MergeQueueHold, string, error) {
-	if err := q.Err(); err != nil {
-		return HoldNone, "", err
-	}
-	hold, mrID := q.index.Hold(issueID, q.resolve)
-	return hold, mrID, nil
+	d, err := q.Detail(issueID)
+	return d.Hold, d.MRID, err
 }
 
-// Unverified explains a HoldUnverified bead: the deciding MR, its rig, and why
-// git cannot decide whether its work landed. Empty mrID when the bead is not
-// held as unverified.
-func (q *MergeQueue) Unverified(issueID string) (mrID, rig, reason string) {
-	hold, id, err := q.Hold(issueID)
-	if err != nil || hold != HoldUnverified {
-		return "", "", ""
+// Detail classifies issueID like Hold and also returns the deciding MR and,
+// for HoldUnverified, its rig and why git cannot decide (one computation:
+// callers that act on the hold and explain it use Detail once). An unread
+// queue is an error.
+func (q *MergeQueue) Detail(issueID string) (HoldDetail, error) {
+	if err := q.Err(); err != nil {
+		return HoldDetail{Hold: HoldNone}, err
 	}
-	for _, mr := range q.MergeRequests(issueID) {
-		if mr.ID != id {
-			continue
-		}
-		var prover MergeProver
-		if fields := ParseMRFields(mr); fields != nil {
-			rig = strings.TrimSpace(fields.Rig)
-			if q.resolve != nil {
-				prover = q.resolve(rig)
-			}
-		}
-		return id, rig, UnverifiedReason(mr, prover)
-	}
-	return id, "", "deciding MR not found"
+	return mergeQueueHoldDetail(q.index[strings.TrimSpace(issueID)], q.resolve), nil
 }
 
 // UnverifiedExitCommands are the only two ways out of a HoldUnverified hold,
-// for the MR mrID in rig ("" shows a <rig> placeholder): the overseer's
+// for the MR mrID in rig: the overseer's
 // verdict that the work did not land (reopen for rework) or did land (close).
 // Shared by every place that tells a human how to decide (gt-pd1c.82).
+// Values that are not IsSafeID are never inserted: rig becomes "<rig>" and
+// mrID "<mr-id>", so the copy-paste commands cannot carry injected text.
 func UnverifiedExitCommands(rig, mrID string) (notLanded, landed string) {
 	rig = strings.TrimSpace(rig)
-	if rig == "" {
+	if !IsSafeID(rig) {
 		rig = "<rig>"
+	}
+	mrID = strings.TrimSpace(mrID)
+	if !IsSafeID(mrID) {
+		mrID = "<mr-id>"
 	}
 	return fmt.Sprintf("gt mq reject %s %s --confirm-not-landed", rig, mrID),
 		fmt.Sprintf("gt mq post-merge %s %s --confirm-landed", rig, mrID)
