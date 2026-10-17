@@ -16,9 +16,11 @@ var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // external:<rig>:<id> references must be unwrapped with ExtractIssueID first.
 func IsSafeID(s string) bool { return safeIDPattern.MatchString(s) }
 
-// objectNamePattern is a hex git object name, abbreviated (7) up to SHA-256
+// objectNamePattern is a full hex git object name, SHA-1 (40) or SHA-256
 // (64): the only commit_sha / base_sha values the landing proof hands to git.
-var objectNamePattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+// gt done and gt mq submit always record full names (git rev-parse), so an
+// abbreviated or otherwise shaped value was not written by them.
+var objectNamePattern = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 
 // IsGitObjectName reports whether s matches objectNamePattern.
 func IsGitObjectName(s string) bool { return objectNamePattern.MatchString(s) }

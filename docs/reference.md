@@ -734,7 +734,8 @@ Git proof (`git.(*Git).VerifyPushedCommitReachableFromPushTarget` and
 `PatchEquivalentOnPushTarget`, used through `beads.MergeProver` /
 `beads.PatchProver`) answers in this order:
 
-0. Only a hex `commit_sha`/`base_sha` (7 to 64 characters) and a plain
+0. Only a full hex `commit_sha`/`base_sha` (40 or 64 characters, as `gt done`
+   and `gt mq submit` record them) and a plain
    `target` (segments of `^[A-Za-z0-9][A-Za-z0-9._-]*$` separated by `/`)
    are handed to git; any other value is unverified without running git.
 1. The recorded `commit_sha` is reachable from `origin/<target>` (or from the
@@ -762,11 +763,14 @@ landed"):
 - more than 2000 commits would have to be compared;
 - the prover has no patch check.
 
-Every git command of the patch check runs with a 60 s timeout and at most
-16 MiB of output, and local commands run with `GIT_NO_LAZY_FETCH=1`, so a
-partial clone never fetches a missing object; any of these limits makes the
-answer unverified. The reachability check itself is unchanged and has no
-timeout.
+Every git command of the merge-queue prover (reachability and patch check)
+runs with a 60 s timeout and at most 16 MiB of output. On timeout the whole
+git process group is killed (ssh and remote helpers included), and output
+pipes are waited for at most 5 s more. Local patch-check commands also run
+with `GIT_NO_LAZY_FETCH=1`, so a partial clone never fetches a missing
+object. Hitting any of these limits makes the answer unverified. The
+refinery's and `gt done`'s own post-push verification keeps running without
+these bounds.
 
 In a shallow clone (gastown's `.repo.git` is cloned with `--depth 1`) "not
 reachable" counts only when every shallow boundary that is reachable from the

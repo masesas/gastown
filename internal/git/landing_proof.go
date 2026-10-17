@@ -44,12 +44,32 @@ func (g *Git) proofRun(args ...string) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
+// proofRemoteOptions bound a git command of the landing proof that may use
+// the network (ls-remote, fetch, and every command of a WithProofLimits Git).
+func proofRemoteOptions() runOptions {
+	return runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: []string{"GIT_TERMINAL_PROMPT=0"}}
+}
+
 // proofRemote runs a network git command of the landing proof (ls-remote,
 // fetch): bounded like proofRun, but objects may be fetched.
 func (g *Git) proofRemote(args ...string) (string, error) {
-	out, err := g.runCmd(runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: []string{"GIT_TERMINAL_PROMPT=0"}}, args...)
+	out, err := g.runCmd(proofRemoteOptions(), args...)
 	return strings.TrimSpace(out), err
 }
+
+// WithProofLimits returns a copy of g whose every command runs under the
+// landing proof's bounds (proofTimeout, proofMaxOutput, no terminal prompt):
+// the merge-queue provers use it so that a patrol can never hang on git,
+// including in VerifyPushedCommitReachableFromPushTarget. Callers that verify
+// their own push (refinery, gt done) keep using an unbounded Git.
+func (g *Git) WithProofLimits() *Git {
+	c := *g
+	c.limits = proofRemoteOptions()
+	return &c
+}
+
+// HasProofLimits reports whether g was made by WithProofLimits.
+func (g *Git) HasProofLimits() bool { return g.limits.timeout > 0 }
 
 // proofIsAncestor is IsAncestor under the proof limits.
 func (g *Git) proofIsAncestor(ancestor, descendant string) (bool, error) {
@@ -66,7 +86,7 @@ func (g *Git) proofIsAncestor(ancestor, descendant string) (bool, error) {
 // proofObjectExists is commitObjectExists under the proof limits (no lazy
 // fetch: in a partial clone a missing object reads as absent).
 func (g *Git) proofObjectExists(commit string) (bool, error) {
-	_, err := g.proofRun("cat-file", "-e", "--end-of-options", commit)
+	_, err := g.proofRun("cat-file", "-e", "--end-of-options", commit+"^{commit}")
 	if err == nil {
 		return true, nil
 	}

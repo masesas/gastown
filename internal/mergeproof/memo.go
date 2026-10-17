@@ -8,6 +8,9 @@ import "sync"
 type memo[V any] struct {
 	mu    sync.Mutex
 	calls map[string]*memoCall[V]
+	// waitHook, when set (tests), runs when a caller joins an in-flight
+	// computation, just before it waits for the result.
+	waitHook func()
 }
 
 type memoCall[V any] struct {
@@ -26,7 +29,11 @@ func (m *memo[V]) do(key string, fn func() V, aborted V) V {
 		m.calls = make(map[string]*memoCall[V])
 	}
 	if c, found := m.calls[key]; found {
+		hook := m.waitHook
 		m.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
 		<-c.done
 		if !c.ok {
 			return aborted

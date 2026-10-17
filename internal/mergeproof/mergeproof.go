@@ -15,7 +15,8 @@ import (
 )
 
 // RigGit returns a Git object for the rig's repository. It prefers .repo.git
-// (bare repo) and falls back to mayor/rig.
+// (bare repo) and falls back to mayor/rig. It is unbounded (also used for
+// merges and pushes); the provers bound their copy (ForRigPath).
 func RigGit(rigPath string) (*git.Git, error) {
 	bareRepoPath := filepath.Join(rigPath, ".repo.git")
 	if info, err := os.Stat(bareRepoPath); err == nil && info.IsDir() {
@@ -115,7 +116,9 @@ func ForRigPath(rigPath string) beads.MergeProver {
 	if err != nil {
 		return nil
 	}
-	return &memoProver{g: g}
+	// Patrol paths must never hang on git: every command of the prover,
+	// reachability included, runs under the proof bounds.
+	return &memoProver{g: g.WithProofLimits()}
 }
 
 // Resolver returns a ProverResolver for rigs under townRoot (<town>/<rig>).

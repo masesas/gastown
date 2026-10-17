@@ -34,7 +34,7 @@ var notLandedResolver beads.ProverResolver = func(string) beads.MergeProver { re
 var doctorTestIndex = beads.MergeQueueIndex{
 	"gt-parked": {{ID: "gt-wisp-mr1", Status: "open", Description: "source_issue: gt-parked\n"}},
 	"gt-landed": {{ID: "gt-wisp-mr2", Status: "closed", Description: "source_issue: gt-landed\nclose_reason: merged\n"}},
-	"gt-broken": {{ID: "gt-wisp-mr3", Status: "closed", Description: "source_issue: gt-broken\ntarget: main\ncommit_sha: c3c3c3c\nclose_reason: rejected\n"}},
+	"gt-broken": {{ID: "gt-wisp-mr3", Status: "closed", Description: "source_issue: gt-broken\ntarget: main\ncommit_sha: c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\nclose_reason: rejected\n"}},
 }
 
 // gt-pd1c.59: gt done parks the source of a submitted MR as in_progress with
@@ -117,7 +117,7 @@ func TestNullAssigneeCheck_FixRefusesInvalidLandedID(t *testing.T) {
 // round 4 (B1): a bead whose MR landing cannot be decided is never reopened,
 // and it is reported on its own, with the MR, the reason and the exit.
 func TestNullAssigneeCheck_ReportsUnverifiedSeparately(t *testing.T) {
-	idx := beads.MergeQueueIndex{"gt-bare": {{ID: "gt-wisp-mr4", Status: "closed", Description: "source_issue: gt-bare\nrig: gastown\ntarget: main\ncommit_sha: c4c4c4c\n"}}}
+	idx := beads.MergeQueueIndex{"gt-bare": {{ID: "gt-wisp-mr4", Status: "closed", Description: "source_issue: gt-bare\nrig: gastown\ntarget: main\ncommit_sha: c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4\n"}}}
 	reopen, landed, pending, unverified := splitMergeQueueHeld([]nullAssigneeRow{{ID: "gt-bare"}}, beads.NewMergeQueue(idx, nil, nil))
 	if len(reopen) != 0 || len(landed) != 0 || len(pending) != 0 || len(unverified) != 1 {
 		t.Fatalf("reopen=%v landed=%v pending=%v unverified=%v, want one unverified", reopen, landed, pending, unverified)

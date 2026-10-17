@@ -3,6 +3,7 @@ package git
 import (
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -120,5 +121,49 @@ func TestRunCmdLimits(t *testing.T) {
 	}
 	if out, err := g.runCmd(runOptions{env: []string{"GIT_AUTHOR_NAME=limits"}}, "var", "GIT_AUTHOR_IDENT"); err != nil || !strings.HasPrefix(out, "limits ") {
 		t.Fatalf("env: got %q %v", out, err)
+	}
+}
+
+// gt-pd1c.81 review round 2: on timeout the whole process group dies, so a
+// child that keeps git's stdout open (ssh, remote helper, alias shell) cannot
+// hold runCmd past the deadline.
+func TestRunCmdTimeoutKillsChildProcesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are unix-only here")
+	}
+	_, work := lpOrigin(t)
+	g := NewGit(work)
+	start := time.Now()
+	_, err := g.runCmd(runOptions{timeout: 300 * time.Millisecond}, "-c", "alias.hang=!sleep 30", "hang")
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("runCmd returned after %v: the child kept the pipe open past the timeout", elapsed)
+	}
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("want a timed-out error, got %v", err)
+	}
+}
+
+func TestWithProofLimits(t *testing.T) {
+	g := NewGitWithDir("/x.git", "")
+	b := g.WithProofLimits()
+	if g.HasProofLimits() || !b.HasProofLimits() {
+		t.Fatal("WithProofLimits must bound a copy, not the original")
+	}
+	if b.limits.timeout != proofTimeout || b.limits.maxOutput != proofMaxOutput || b.gitDir != "/x.git" {
+		t.Fatalf("unexpected limits %+v", b.limits)
+	}
+	got := b.limits.under(runOptions{timeout: time.Second, env: []string{"A=1"}})
+	if got.timeout != time.Second || got.maxOutput != proofMaxOutput || len(got.env) != 2 || got.env[1] != "A=1" {
+		t.Fatalf("explicit options must win, defaults fill the rest: %+v", got)
+	}
+	if (runOptions{}).under(runOptions{}).timeout != 0 {
+		t.Fatal("an unbounded Git must stay unbounded")
+	}
+	// Limits apply to every command of the bounded copy.
+	_, work := lpOrigin(t)
+	small := NewGit(work).WithProofLimits()
+	small.limits.maxOutput = 8
+	if _, err := small.runCmd(runOptions{}, "log"); !errors.Is(err, ErrGitOutputTooLarge) {
+		t.Fatalf("bounded Git: want ErrGitOutputTooLarge, got %v", err)
 	}
 }

@@ -309,8 +309,9 @@ undecided when a target commit message carries one of the MR's commit
 subjects. If the subject was reworded too, the MR still reads as not landed
 when it was closed by a bare `bd close` without `merge_commit`, and its issue
 is reopened. If only some of the MR's commits match, the MR stays undecided.
-Patch checks are bounded (60 s per git command, 16 MiB of output, no lazy
-fetch in partial clones); hitting a bound leaves the MR undecided. Gastown
+Git proof commands are bounded (60 s per git command with the whole process
+group killed on timeout, 16 MiB of output, no lazy fetch in partial clones);
+hitting a bound leaves the MR undecided. Gastown
 never deepens the shallow `.repo.git` on its own (see `docs/reference.md` for
 the one-time `fetch --unshallow`).
 

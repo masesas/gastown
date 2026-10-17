@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
 )
@@ -261,7 +260,8 @@ func TestMemoSingleFlightPerKey(t *testing.T) {
 // A computation that panics never hands a zero value (nil error = "landed")
 // to its waiters.
 func TestMemoPanicFailsClosed(t *testing.T) {
-	var m memo[error]
+	joined := make(chan struct{})
+	m := memo[error]{waitHook: func() { close(joined) }}
 	started := make(chan struct{})
 	release := make(chan struct{})
 	waiter := make(chan error, 1)
@@ -275,10 +275,26 @@ func TestMemoPanicFailsClosed(t *testing.T) {
 	}()
 	<-started
 	go func() { waiter <- m.do("k", func() error { return nil }, errProofAborted) }()
-	// Give the waiter time to join the in-flight call before it panics.
-	time.Sleep(50 * time.Millisecond)
+	<-joined // the waiter is attached to the in-flight call
 	close(release)
 	if err := <-waiter; err == nil {
 		t.Fatal("waiter of a panicked computation got nil (would read as landed)")
+	}
+}
+
+// Patrol paths: the prover's git, reachability included, is bounded, while
+// RigGit (merges, pushes) stays unbounded.
+func TestProverGitIsBounded(t *testing.T) {
+	rig := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rig, ".repo.git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := ForRigPath(rig).(*memoProver)
+	if !ok || !p.g.HasProofLimits() {
+		t.Fatal("prover git must run under the proof limits")
+	}
+	g, err := RigGit(rig)
+	if err != nil || g.HasProofLimits() {
+		t.Fatalf("RigGit must stay unbounded (err %v)", err)
 	}
 }

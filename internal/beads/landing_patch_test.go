@@ -36,7 +36,7 @@ func (reachOnlyProver) VerifyPushedCommitReachableFromPushTarget(remote, branch,
 // gt-pd1c.81: "commit not on the target" is only a definite not-landed once git
 // also found no equivalent patch (rebase/squash merges rewrite the commit).
 func TestGitLandingVerdictPatchEquivalence(t *testing.T) {
-	fields := &MRFields{Target: "main", CommitSHA: "c1c1c1c", Rig: "gastown"}
+	fields := &MRFields{Target: "main", CommitSHA: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", Rig: "gastown"}
 	cases := []struct {
 		name   string
 		prover MergeProver
@@ -65,7 +65,7 @@ func TestGitLandingVerdictPatchEquivalence(t *testing.T) {
 // The patch check runs only after a definite "not reachable": a reachable
 // commit or an uncertain reachability answer never pays for it.
 func TestGitLandingVerdictPatchCheckOnlyAfterDefiniteNotOnTarget(t *testing.T) {
-	fields := &MRFields{Target: "main", CommitSHA: "c1c1c1c"}
+	fields := &MRFields{Target: "main", CommitSHA: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"}
 	calls := 0
 	gitLandingVerdict(fields, patchProver{reach: nil, calls: &calls})
 	gitLandingVerdict(fields, patchProver{reach: os.ErrDeadlineExceeded, calls: &calls})
@@ -82,7 +82,7 @@ func TestGitLandingVerdictPatchCheckOnlyAfterDefiniteNotOnTarget(t *testing.T) {
 // and the git patch proof outranks a recorded verdict.
 func TestMRLandingVerdictPatchProofVsHumanVerdict(t *testing.T) {
 	uncertain := patchProver{reach: notOnTarget{}, patchErr: os.ErrDeadlineExceeded}
-	fields := &MRFields{Target: "main", CommitSHA: "c1c1c1c", Landing: LandingNotLanded}
+	fields := &MRFields{Target: "main", CommitSHA: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", Landing: LandingNotLanded}
 	if got := mrLandingVerdict(StatusClosed, fields, uncertain); got != verdictNotLanded {
 		t.Fatalf("human verdict should decide when git cannot, got %v", got)
 	}
@@ -114,7 +114,7 @@ func (p recordingProver) PatchEquivalentOnPushTarget(remote, branch, commit, bas
 func TestGitLandingVerdictValidatesInputs(t *testing.T) {
 	cases := map[string]*MRFields{
 		"option as commit":   {Target: "main", CommitSHA: "--upload-pack=x"},
-		"short commit":       {Target: "main", CommitSHA: "abc12"},
+		"short commit":       {Target: "main", CommitSHA: "abc1234abc12"},
 		"non-hex commit":     {Target: "main", CommitSHA: "HEAD~1aaaa"},
 		"option as target":   {Target: "-main", CommitSHA: "c1c1c1c1"},
 		"traversal target":   {Target: "main/../x", CommitSHA: "c1c1c1c1"},
@@ -130,8 +130,8 @@ func TestGitLandingVerdictValidatesInputs(t *testing.T) {
 	}
 
 	calls, base := 0, ""
-	ok := &MRFields{Target: "integration/gt-epic", CommitSHA: "C1C1C1C1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", BaseSHA: "b1b1b1b"}
-	if got, reason := gitLandingVerdict(ok, recordingProver{&calls, &base}); got != verdictNotLanded || base != "b1b1b1b" {
+	ok := &MRFields{Target: "integration/gt-epic", CommitSHA: "C1C1C1C1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", BaseSHA: "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"}
+	if got, reason := gitLandingVerdict(ok, recordingProver{&calls, &base}); got != verdictNotLanded || base != "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1" {
 		t.Fatalf("valid fields: verdict %v (%q), base passed %q; want not_landed with base_sha forwarded", got, reason, base)
 	}
 }
@@ -147,7 +147,12 @@ func TestSafeRefAndObjectNames(t *testing.T) {
 			t.Errorf("IsSafeRefName(%q) = true", s)
 		}
 	}
-	if !IsGitObjectName("abcdef0") || IsGitObjectName("abcdef") || IsGitObjectName("abcdefg") || IsGitObjectName(strings.Repeat("a", 65)) {
-		t.Error("IsGitObjectName: want hex of 7..64 characters only")
+	if !IsGitObjectName(strings.Repeat("a", 40)) || !IsGitObjectName(strings.Repeat("F", 64)) {
+		t.Error("IsGitObjectName: full SHA-1 and SHA-256 names must pass")
+	}
+	for _, s := range []string{"abcdef0", strings.Repeat("a", 12), strings.Repeat("a", 39), strings.Repeat("a", 41), strings.Repeat("a", 65), strings.Repeat("g", 40)} {
+		if IsGitObjectName(s) {
+			t.Errorf("IsGitObjectName(%q) = true, want only full hex names", s)
+		}
 	}
 }

@@ -13,11 +13,11 @@ const (
 	// (bare `bd close`, no close_reason) with its commit on the target; gt-work2
 	// was rejected and never landed.
 	closedMRRows = `[` +
-		`{"id":"gt-wisp-merged","status":"closed","description":"branch: polecat/a/gt-work1\ntarget: integration/gt-epic\nsource_issue: gt-work1\nrig: gastown\ncommit_sha: c1c1c1c\nclose_reason: merged\n"},` +
-		`{"id":"gt-wisp-bare","status":"closed","description":"branch: polecat/d/gt-work4\ntarget: integration/gt-epic\nsource_issue: gt-work4\nrig: gastown\ncommit_sha: c4c4c4c\n"},` +
-		`{"id":"gt-wisp-rejected","status":"closed","description":"branch: polecat/b/gt-work2\ntarget: main\nsource_issue: gt-work2\nrig: gastown\ncommit_sha: c2c2c2c\nclose_reason: rejected\n"}` +
+		`{"id":"gt-wisp-merged","status":"closed","description":"branch: polecat/a/gt-work1\ntarget: integration/gt-epic\nsource_issue: gt-work1\nrig: gastown\ncommit_sha: c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1\nclose_reason: merged\n"},` +
+		`{"id":"gt-wisp-bare","status":"closed","description":"branch: polecat/d/gt-work4\ntarget: integration/gt-epic\nsource_issue: gt-work4\nrig: gastown\ncommit_sha: c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4\n"},` +
+		`{"id":"gt-wisp-rejected","status":"closed","description":"branch: polecat/b/gt-work2\ntarget: main\nsource_issue: gt-work2\nrig: gastown\ncommit_sha: c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2\nclose_reason: rejected\n"}` +
 		`]`
-	pendingMRRows = `[{"id":"gt-wisp-open","status":"open","description":"branch: polecat/c/gt-work3\ntarget: main\nsource_issue: gt-work3\nrig: gastown\ncommit_sha: c3c3c3c\n"}]`
+	pendingMRRows = `[{"id":"gt-wisp-open","status":"open","description":"branch: polecat/c/gt-work3\ntarget: main\nsource_issue: gt-work3\nrig: gastown\ncommit_sha: c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\n"}]`
 )
 
 // fakeProver reports commits in landed as reachable from any target.
@@ -135,7 +135,7 @@ func readCalls(t *testing.T, logPath string) string {
 func TestReleaseWorkBead_ClosesWorkWhoseMRMerged(t *testing.T) {
 	log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
 	// Pilot shape: MR closed via bare bd close, commit already on the target.
-	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work4", queueFor(t, "c4c4c4c"))
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work4", queueFor(t, "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4"))
 	if err != nil || outcome != ReleaseClosed {
 		t.Fatalf("ReleaseWorkBead = (%v, %v), want closed", outcome, err)
 	}
@@ -210,23 +210,23 @@ func (a ancestorProver) IsAncestor(ancestor, descendant string) (bool, error) {
 // An MR whose commit was already in the target at submit (base_sha) carried no
 // new work: being reachable from the target must not read as "landed".
 func TestMRFieldsLanded_CommitAlreadyInBaseIsNotLanded(t *testing.T) {
-	fields := &MRFields{Target: "main", CommitSHA: "c1c1c1c", BaseSHA: "b1b1b1c"}
-	if MRFieldsLanded(StatusClosed, fields, ancestorProver{fakeProver{"c1c1c1c": true}, true}) {
+	fields := &MRFields{Target: "main", CommitSHA: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", BaseSHA: "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"}
+	if MRFieldsLanded(StatusClosed, fields, ancestorProver{fakeProver{"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1": true}, true}) {
 		t.Fatal("commit that is an ancestor of base_sha must not count as landed")
 	}
-	if !MRFieldsLanded(StatusClosed, fields, ancestorProver{fakeProver{"c1c1c1c": true}, false}) {
+	if !MRFieldsLanded(StatusClosed, fields, ancestorProver{fakeProver{"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1": true}, false}) {
 		t.Fatal("new commit reachable from target must count as landed")
 	}
-	noBase := &MRFields{Target: "main", CommitSHA: "c1c1c1c"}
-	if !MRFieldsLanded(StatusClosed, noBase, ancestorProver{fakeProver{"c1c1c1c": true}, true}) {
+	noBase := &MRFields{Target: "main", CommitSHA: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"}
+	if !MRFieldsLanded(StatusClosed, noBase, ancestorProver{fakeProver{"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1": true}, true}) {
 		t.Fatal("without base_sha the guard does not apply (older MRs)")
 	}
 }
 
 func TestMRFields_BaseSHARoundTrip(t *testing.T) {
-	in := &MRFields{Branch: "b", Target: "main", SourceIssue: "gt-1", CommitSHA: "c1c1c1c", BaseSHA: "b1b1b1c"}
+	in := &MRFields{Branch: "b", Target: "main", SourceIssue: "gt-1", CommitSHA: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", BaseSHA: "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"}
 	out := ParseMRFields(&Issue{Description: FormatMRFields(in)})
-	if out == nil || out.BaseSHA != "b1b1b1c" {
+	if out == nil || out.BaseSHA != "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1" {
 		t.Fatalf("round trip lost base_sha: %+v", out)
 	}
 }

@@ -65,6 +65,9 @@ func moveDir(src, dest string) error {
 type Git struct {
 	workDir string
 	gitDir  string // Optional: explicit git directory (for bare repos)
+	// limits are applied to every command this Git runs (see
+	// WithProofLimits); the zero value adds none.
+	limits runOptions
 }
 
 // ErrUnsafeTownRootGitMutation is returned when a mutating git operation would
@@ -143,6 +146,25 @@ type runOptions struct {
 	maxOutput int           // stdout byte limit; 0 = unlimited
 }
 
+// runWaitDelay bounds how long runCmd waits for git's output pipes after a
+// timed-out command was killed.
+const runWaitDelay = 5 * time.Second
+
+// under returns opts with the defaults of base filled in: an explicit timeout
+// or output limit wins, base's environment comes first.
+func (base runOptions) under(opts runOptions) runOptions {
+	if opts.timeout == 0 {
+		opts.timeout = base.timeout
+	}
+	if opts.maxOutput == 0 {
+		opts.maxOutput = base.maxOutput
+	}
+	if len(base.env) > 0 {
+		opts.env = append(append([]string(nil), base.env...), opts.env...)
+	}
+	return opts
+}
+
 // ErrGitOutputTooLarge is returned (wrapped) when a git command's stdout
 // exceeds runOptions.maxOutput; git is stopped and its output discarded.
 var ErrGitOutputTooLarge = errors.New("git output exceeds the size limit")
@@ -170,6 +192,7 @@ func (g *Git) runCmd(opts runOptions, args ...string) (string, error) {
 	if err := g.guardUnsafeTownRootMutation(args); err != nil {
 		return "", err
 	}
+	opts = g.limits.under(opts)
 	subcommand, _ := gitSubcommand(args)
 
 	// If gitDir is set (bare repo), prepend --git-dir flag
@@ -184,7 +207,14 @@ func (g *Git) runCmd(opts runOptions, args ...string) (string, error) {
 		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	util.SetDetachedProcessGroup(cmd)
+	if opts.timeout > 0 {
+		// On timeout kill git's whole process group (ssh, remote helpers,
+		// alias shells), and stop waiting for pipes a straggler still holds.
+		util.SetProcessGroup(cmd)
+		cmd.WaitDelay = runWaitDelay
+	} else {
+		util.SetDetachedProcessGroup(cmd)
+	}
 	if g.workDir != "" {
 		cmd.Dir = g.workDir
 	}
