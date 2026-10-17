@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
@@ -1685,9 +1686,7 @@ func runPolecatGC(cmd *cobra.Command, args []string) error {
 	// One deletion rule for both runs (gt-pd1c.78): a branch whose work is
 	// not on a merge target nor archived is kept.
 	repoGit := getRepoGitForRig(r.Path)
-	deletable := func(branch string) error {
-		return polecatRepoBranchDeletable(repoGit, r.Name, branch, r.DefaultBranch(), townMergeQueueFor(r.Path))
-	}
+	deletable := newRigBranchRule(repoGit, r.Name, r.DefaultBranch(), townMergeQueueFor(r.Path)).deletable
 
 	if polecatGCDryRun {
 		return printPolecatGCDryRun(mgr, repoGit, deletable)
@@ -2305,7 +2304,7 @@ func runPolecatPrune(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 		fmt.Println("Pruning remote polecat branches...")
 
-		remotePruned, remoteErr := pruneRemotePolecatBranches(repoGit, polecatPruneDryRun)
+		remotePruned, remoteErr := pruneRemotePolecatBranches(repoGit, r.DefaultBranch(), polecatPruneDryRun)
 		if remoteErr != nil {
 			return remoteErr
 		}
@@ -2324,28 +2323,44 @@ func runPolecatPrune(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func pruneRemotePolecatBranches(repoGit *git.Git, dryRun bool) (int, error) {
-	defaultBranch := repoGit.RemoteDefaultBranch()
+// pruneRemotePolecatBranches deletes the remote polecat branches whose tip is
+// covered by a merge target: the one coverage proof of the deletion rule
+// (mergeproof.CoveredByTargets: the default branch or integration/*), so
+// prune deletes exactly what the pre-push guard lets it delete (gt-pd1c.78
+// G-M5). On a fork-backed rig (the clean default base is another remote's
+// branch) the tip must also be preserved there: work counts as landed only
+// upstream.
+func pruneRemotePolecatBranches(repoGit *git.Git, defaultBranch string, dryRun bool) (int, error) {
+	if strings.TrimSpace(defaultBranch) == "" {
+		defaultBranch = repoGit.RemoteDefaultBranch()
+	}
+	forkBase := ""
 	target := repoGit.CleanDefaultBranchBaseRef("origin", defaultBranch)
 	if targetRemote := git.RemoteForRef(target); targetRemote != "" && targetRemote != "origin" {
 		if err := repoGit.FetchPrune(targetRemote); err != nil {
 			return 0, fmt.Errorf("refreshing %s before remote prune: %w", targetRemote, err)
 		}
+		forkBase = target
 	}
-	remoteRefs, lsErr := repoGit.ListPushRemoteRefsWithHashes("origin", "refs/heads/polecat/")
+	if err := repoGit.Fetch("origin"); err != nil {
+		return 0, fmt.Errorf("fetching origin before remote prune: %w", err)
+	}
+	tips := rigRemoteTips(repoGit, defaultBranch)
+	remoteRefs, lsErr := tips.List("refs/heads/polecat/")
 	if lsErr != nil {
 		return 0, fmt.Errorf("listing remote refs: %w", lsErr)
 	}
 
 	remotePruned := 0
 	for _, ref := range remoteRefs {
-		if !strings.HasPrefix(ref.Name, "refs/heads/") {
+		branch := strings.TrimPrefix(ref.Name, "refs/heads/")
+		if !mergeproof.CoveredByTargets(repoGit, ref.Hash, tips) {
 			continue
 		}
-		branch := strings.TrimPrefix(ref.Name, "refs/heads/")
-		status, statusErr := repoGit.PushRemoteRefTargetStatus("origin", ref, target)
-		if statusErr != nil || !status.Preserved {
-			continue
+		if forkBase != "" {
+			if st, err := repoGit.PreservedOn(ref.Hash, forkBase); err != nil || !st.Preserved {
+				continue
+			}
 		}
 
 		if dryRun {

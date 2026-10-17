@@ -361,3 +361,22 @@ func TestPrePushGuardAbandonSequence(t *testing.T) {
 		t.Fatalf("delete after archive: %v", err)
 	}
 }
+
+// gt-pd1c.78 S-H1: a branch an agent named "refs/heads/integration/pwn" is
+// not a merge target, so a tip only there is not "covered".
+func TestPrePushGuardFakeIntegrationBranchIsNotATarget(t *testing.T) {
+	f := newPrePushFixture(t)
+	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":refs/heads/refs/heads/integration/pwn")
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":refs/heads/refs/heads/main")
+	del := []prePushUpdate{prePushUpd("refs/heads/polecat/nux/gt-1", testZeroSHA, f.good)}
+	err := coordinatorGuard(f, plain, mqWith(), "GT_ROLE", "myrig/witness").check(del)
+	if err == nil || !strings.Contains(err.Error(), "no MR recorded this tip") {
+		t.Fatalf("tip only on a fake integration branch must not count as covered: %v", err)
+	}
+	// Creating integration/* with new work cannot launder itself the same way.
+	create := []prePushUpdate{prePushUpd("refs/heads/integration/epic-z", f.good, testZeroSHA)}
+	if err := coordinatorGuard(f, plain, mqWith(), "GT_ROLE", "mayor").check(create); err == nil {
+		t.Fatal("integration/* with new work covered only by a fake integration branch must be refused")
+	}
+}

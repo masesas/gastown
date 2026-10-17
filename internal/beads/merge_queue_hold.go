@@ -260,12 +260,18 @@ func (b *Beads) MarkUnverifiedNotified(mrID string, at time.Time) error {
 	return nil
 }
 
+// ErrMRTerminal: SupersedeMR found the MR already closed (e.g. the refinery
+// merged it meanwhile); nothing was changed.
+var ErrMRTerminal = errors.New("merge request is already closed")
+
 // SupersedeMR closes MR mrID as replaced by MR byID with the official
 // verdict recorded on the MR (MRFields.CloseReason "superseded"), the one way
 // gt done and gt mq submit retire an older open MR of the same source. The
 // merge queue reads that verdict (TipDisposition): only rejected and
-// superseded work may be abandoned. The MR is re-read first so concurrent
-// field changes are kept.
+// superseded work may be abandoned. The MR is re-read first: an MR that is
+// already terminal (merged or closed meanwhile) is left alone
+// (ErrMRTerminal), so a supersede never overwrites a merged verdict; bd has
+// no conditional update, so the re-read narrows but cannot close that window.
 func (b *Beads) SupersedeMR(mrID, byID string) error {
 	issue, err := b.Show(mrID)
 	if err != nil {
@@ -274,11 +280,14 @@ func (b *Beads) SupersedeMR(mrID, byID string) error {
 	if issue == nil {
 		return fmt.Errorf("reading MR %s: %w", mrID, ErrNotFound)
 	}
+	if IssueStatus(strings.TrimSpace(issue.Status)).IsTerminal() {
+		return fmt.Errorf("superseding MR %s: %w", mrID, ErrMRTerminal)
+	}
 	fields := ParseMRFields(issue)
 	if fields == nil {
 		fields = &MRFields{}
 	}
-	fields.CloseReason = string(TipSuperseded)
+	fields.CloseReason = CloseReasonSuperseded
 	desc := SetMRFields(issue, fields)
 	if err := b.Update(mrID, UpdateOptions{Description: &desc}); err != nil {
 		return fmt.Errorf("recording superseded verdict on MR %s: %w", mrID, err)

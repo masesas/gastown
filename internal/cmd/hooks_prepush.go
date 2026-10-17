@@ -14,10 +14,10 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/pushguard"
-	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -32,7 +32,8 @@ import (
 //     slowed down.
 //   - Polecat branch tips (gt-pd1c.78, agents other than crew): a deletion,
 //     or a rewrite (not a fast-forward) by an agent other than the refinery
-//     and the owning polecat, discards the remote tip and is allowed only
+//     (the owning polecat may also rewrite a tip never submitted or whose MR
+//     is open), discards the remote tip and is allowed only
 //     when that loses no work (polecatBranchDeletion): the old tip is
 //     preserved on the remote default branch or a remote integration/*
 //     branch, or archived under refs/gt/archive/* on the push remote, or the
@@ -97,7 +98,8 @@ pre-push hook runs this with git's arguments and pipes git's pre-push input
 Rules (agent = GT_ROLE, BD_ACTOR, GT_POLECAT or GT_CREW is set):
   - Pushes to polecat/*, other branches, tags: allowed, not checked.
   - Agent (not crew) deletion of polecat/*, or a non-fast-forward update by
-    an agent other than the refinery and the owning polecat: allowed only
+    an agent other than the refinery (the owning polecat may also rewrite a
+    tip never submitted or whose MR is still open): allowed only
     when the old tip is preserved on the remote default branch or
     integration/*, archived under refs/gt/archive/*, or the MR of that tip
     landed by git proof. Rejected/superseded work is abandoned with
@@ -292,10 +294,7 @@ func resolvePrePushRig(townRoot, path string) (*prePushRig, error) {
 	if _, err := os.Stat(filepath.Join(rigPath, "config.json")); err != nil {
 		return nil, nil
 	}
-	r := &prePushRig{name: name, autoLand: loadAutoLandSetting(rigPath)}
-	if cfg, err := rig.LoadRigConfig(rigPath); err == nil {
-		r.defaultBranch = strings.TrimSpace(cfg.DefaultBranch)
-	}
+	r := &prePushRig{name: name, autoLand: loadAutoLandSetting(rigPath), defaultBranch: config.RigDefaultBranch(rigPath)}
 	r.allowed, r.allowedErr = loadMergeScope(rigPath)
 	r.mergeQueueOff = !rigMergeQueueActive(townRoot, name)
 	return r, nil
@@ -303,13 +302,12 @@ func resolvePrePushRig(townRoot, path string) (*prePushRig, error) {
 
 // prePushGit is the git surface the guard needs.
 type prePushGit interface {
+	mergeproof.PreservationGit // Rev, PreservedOn: the coverage proof
 	ListRemoteRefsWithHashes(remote, prefix string) ([]git.RemoteRef, error)
 	ListLocalRefsWithHashes(prefix string) ([]git.RemoteRef, error)
 	IsAncestor(ancestor, descendant string) (bool, error)
-	Rev(ref string) (string, error)
 	MergeBase(a, b string) (string, error)
 	DiffNameOnlyRange(from, to string) ([]string, error)
-	PreservedOn(head, base string) (git.BranchPreservationStatus, error)
 	RemoteDefaultBranch() string
 }
 

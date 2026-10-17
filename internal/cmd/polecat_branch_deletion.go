@@ -49,6 +49,10 @@ type polecatBranchDeletion struct {
 	// noGitProof explains why the git proof could not run (e.g. the remote
 	// could not be listed); it is added to refusals.
 	noGitProof string
+	// owner: the owning polecat rewrites its own branch; a tip never
+	// submitted or whose MR is still open may then be rewritten too
+	// (checkPolecatUpdate).
+	owner bool
 }
 
 // polecatDeletionExits is the guidance appended to every refusal.
@@ -73,6 +77,9 @@ func (d polecatBranchDeletion) check() error {
 		return d.refuse("cannot read the merge queue: " + firstLine(err.Error()) + " (fail closed)")
 	}
 	if disp.Class == beads.TipLanded && disp.Evidence == beads.EvidenceGit {
+		return nil
+	}
+	if d.owner && (disp.Class == beads.TipNoMR || disp.Class == beads.TipOpen) {
 		return nil
 	}
 	return d.refuse(tipRefusal(d.rig, d.branch, disp))

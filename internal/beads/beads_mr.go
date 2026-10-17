@@ -276,9 +276,9 @@ func mrLandingVerdictReason(status IssueStatus, fields *MRFields, prover MergePr
 	if fields == nil {
 		return verdictUnknown, "MR has no merge-request fields", EvidenceNone
 	}
-	recorded := status.IsTerminal() && (strings.EqualFold(strings.TrimSpace(fields.CloseReason), "merged") ||
+	recorded := status.IsTerminal() && (strings.EqualFold(strings.TrimSpace(fields.CloseReason), CloseReasonMerged) ||
 		strings.TrimSpace(fields.MergeCommit) != "")
-	gitVerdict, reason := gitLandingVerdict(fields, prover)
+	gitVerdict, reason := gitLandingVerdict(fields, prover, recorded)
 	switch {
 	case gitVerdict == verdictLanded || (gitVerdict == verdictNotLanded && !recorded):
 		return gitVerdict, "", EvidenceGit
@@ -298,8 +298,10 @@ func mrLandingVerdictReason(status IssueStatus, fields *MRFields, prover MergePr
 	return verdictUnknown, reason, EvidenceNone
 }
 
-// gitLandingVerdict is the git part of the landing decision.
-func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, string) {
+// gitLandingVerdict is the git part of the landing decision. recorded: the MR
+// records a merge; its commit already being in base_sha (no new work) then
+// is no contradiction, so reachability decides (F7, round 1).
+func gitLandingVerdict(fields *MRFields, prover MergeProver, recorded bool) (landingVerdict, string) {
 	target := strings.TrimSpace(fields.Target)
 	commit := strings.TrimSpace(fields.CommitSHA)
 	switch {
@@ -317,8 +319,9 @@ func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, st
 		return verdictUnknown, "base_sha is not a hex git object name"
 	}
 	// A commit already in the target when the MR was submitted carried no new
-	// work; reachability would then be a false positive.
-	if base != "" {
+	// work; reachability would then be a false positive. For an MR that
+	// records a merge, reachability is what confirms the record.
+	if base != "" && !recorded {
 		if a, ok := prover.(ancestorChecker); ok {
 			isAnc, err := a.IsAncestor(commit, base)
 			if err != nil {

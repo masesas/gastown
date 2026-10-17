@@ -228,11 +228,11 @@ func TestScanParkedBeads_NotifiesOncePerMR(t *testing.T) {
 		func(args []string) error { return nil },
 	)
 	dir := t.TempDir()
-	first := scanParkedBeads(bd, dir, notice)
+	first := scanParkedBeads(bd, dir, notice, passMergeQueue(dir))
 	if len(first.Errors) != 0 || len(first.Notified) != 1 || first.Notified[0] != "gt-parked1" || first.Checked != 1 {
 		t.Fatalf("first scan = %+v, want gt-parked1 notified", first)
 	}
-	second := scanParkedBeads(bd, dir, notice)
+	second := scanParkedBeads(bd, dir, notice, passMergeQueue(dir))
 	if len(second.Notified) != 0 || len(rec.sent) != 1 {
 		t.Fatalf("second scan notified %v (mails %d), want dedup", second.Notified, len(rec.sent))
 	}

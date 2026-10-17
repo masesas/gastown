@@ -129,18 +129,10 @@ if [[ "$is_agent" == "1" ]]; then
   fi
 fi
 
-# owns_branch: the caller is the polecat whose branch this is (polecat/<name>,
-# polecat/<name>/..., or polecat/<name>-<suffix>), as gtCaller.ownsPolecatBranch.
-owns_branch() {
-  local b="$1" rest
-  [[ "$caller_role" == "polecat" && -n "$caller_name" ]] || return 1
-  [[ "$b" == "polecat/$caller_name" || "$b" == "polecat/$caller_name/"* ]] && return 0
-  rest="${b#polecat/}"
-  [[ "$rest" != */* && "$rest" == *-* && "${rest%-*}" == "$caller_name" ]]
-}
-
 # tip_archived: an archive ref (refs/gt/archive/*, gt polecat abandon) on the
-# push remote points at the commit, as mergeproof.RemoteTips.Archived. An
+# push remote points at the commit, as mergeproof.RemoteTips.Archived. Only
+# refs whose full name starts with refs/gt/archive/ count (ls-remote matches
+# name tails, so refs/heads/x/refs/gt/archive/... is listed too). An
 # unreadable remote is "not archived" (fail closed).
 push_remote="${2:-${1:-origin}}"
 tip_archived() {
@@ -258,15 +250,16 @@ while read local_ref local_sha remote_ref remote_sha; do
     echo "anything else is reworked or resubmitted (the mayor decides) or needs a human or crew."
     exit 1
   fi
-  # A rewrite (not a fast-forward) of polecat/* by an agent other than crew,
-  # the refinery and the owning polecat discards the old tip like a deletion
-  # (gt-pd1c.78 round 1, H1); without gt it cannot be proven safe unless the
-  # old tip is archived.
+  # A rewrite (not a fast-forward) of polecat/* by an agent other than crew
+  # and the refinery discards the old tip like a deletion (gt-pd1c.78 round 1,
+  # H1). The owning polecat may rewrite a tip never submitted or whose MR is
+  # open, which only the merge queue can tell (tahap 2, S-M2); without gt no
+  # rewrite can be proven safe unless the old tip is archived.
   if [[ "$is_exempt" == "0" && "$caller_role" != "refinery" && "$branch" == polecat/* && \
-        "$local_sha" != "$zero" && "$remote_sha" != "$zero" ]] && ! owns_branch "$branch" && ! tip_archived "$remote_sha"; then
+        "$local_sha" != "$zero" && "$remote_sha" != "$zero" ]] && ! tip_archived "$remote_sha"; then
     if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
-      echo "BLOCKED: agent rewrite (not a fast-forward) of $branch, a polecat branch it does not own"
-      echo "(no gt with 'hooks pre-push' on PATH): the old tip cannot be proven safe to discard."
+      echo "BLOCKED: agent rewrite (not a fast-forward) of $branch (no gt with 'hooks pre-push' on PATH):"
+      echo "the old tip cannot be proven safe to discard (never submitted, MR open, or archived)."
       exit 1
     fi
   fi
@@ -317,7 +310,10 @@ while read local_ref local_sha remote_ref remote_sha; do
     fi
     exit 1
   }
-  for ref in $(echo "$integration_refs" | awk '{print $1}'); do
+  # ls-remote matches the pattern against ref-name tails: keep only refs whose
+  # full name starts with refs/heads/integration/ (gt-pd1c.78 S-H1), as the
+  # Go reader (git.ListRemoteRefsWithHashes) does.
+  for ref in $(echo "$integration_refs" | awk '$2 ~ /^refs\/heads\/integration\// {print $1}'); do
     if git merge-base --is-ancestor "$ref" "$local_sha" 2>/dev/null && \
        ! git merge-base --is-ancestor "$ref" "$remote_sha" 2>/dev/null; then
       echo "BLOCKED: Push to $default_branch introduces integration branch content."

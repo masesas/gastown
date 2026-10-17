@@ -9,7 +9,7 @@ import (
 // gt-pd1c.78: the merge queue's verdict on a polecat branch is the same
 // predicate (MergeQueueHoldOf) over the MRs submitted from that branch, in any
 // source bead's group.
-func TestMergeQueueBranchHold(t *testing.T) {
+func TestMergeQueuebranchHold(t *testing.T) {
 	mr := func(id, status, desc string) *Issue { return &Issue{ID: id, Status: status, Description: desc} }
 	idx := MergeQueueIndex{
 		"gt-a": {
@@ -43,32 +43,32 @@ func TestMergeQueueBranchHold(t *testing.T) {
 		{" polecat/a/gt-a ", HoldPending, "mr-open"},
 	}
 	for _, c := range cases {
-		d, err := q.BranchHold(c.branch)
+		d, err := q.branchHold(c.branch)
 		if err != nil {
 			t.Fatalf("%s: %v", c.branch, err)
 		}
 		if d.Hold != c.want || d.MRID != c.mrID || (c.mrID != "" && (d.MR == nil || d.MR.ID != c.mrID)) {
-			t.Errorf("BranchHold(%q) = (%v, %q), want (%v, %q)", c.branch, d.Hold, d.MRID, c.want, c.mrID)
+			t.Errorf("branchHold(%q) = (%v, %q), want (%v, %q)", c.branch, d.Hold, d.MRID, c.want, c.mrID)
 		}
 		if d.Hold == HoldUnverified && d.Reason == "" {
-			t.Errorf("BranchHold(%q): an unverified hold must explain itself", c.branch)
+			t.Errorf("branchHold(%q): an unverified hold must explain itself", c.branch)
 		}
 	}
-	if _, err := q.BranchHold(""); err == nil {
+	if _, err := q.branchHold(""); err == nil {
 		t.Error("an empty branch must be an error (fail closed)")
 	}
-	if _, err := NewMergeQueue(nil, os.ErrPermission, nil).BranchHold("polecat/a/gt-a"); err == nil {
+	if _, err := NewMergeQueue(nil, os.ErrPermission, nil).branchHold("polecat/a/gt-a"); err == nil {
 		t.Error("an unreadable queue must be an error (fail closed)")
 	}
 	var nilQueue *MergeQueue
-	if _, err := nilQueue.BranchHold("polecat/a/gt-a"); err == nil {
+	if _, err := nilQueue.branchHold("polecat/a/gt-a"); err == nil {
 		t.Error("a nil queue must be an error (fail closed)")
 	}
 }
 
 // gt-pd1c.78 round 1 (H2): the predicate says what decided a landed verdict,
 // so callers that discard work can insist on git proof.
-func TestMergeQueueBranchHoldEvidence(t *testing.T) {
+func TestMergeQueuebranchHoldEvidence(t *testing.T) {
 	mr := func(id, desc string) *Issue { return &Issue{ID: id, Status: "closed", Description: desc} }
 	idx := MergeQueueIndex{
 		"gt-r": {mr("mr-rec", "branch: polecat/r\ntarget: main\nsource_issue: gt-r\nrig: gastown\ncommit_sha: cr\nclose_reason: merged\n")},
@@ -85,9 +85,9 @@ func TestMergeQueueBranchHoldEvidence(t *testing.T) {
 		"polecat/h":            EvidenceHumanVerdict,
 	}
 	for branch, want := range cases {
-		d, err := q.BranchHold(branch)
+		d, err := q.branchHold(branch)
 		if err != nil || d.Hold != HoldLanded || d.Evidence != want {
-			t.Errorf("BranchHold(%q) = (%v, %q, %v), want landed by %q", branch, d.Hold, d.Evidence, err, want)
+			t.Errorf("branchHold(%q) = (%v, %q, %v), want landed by %q", branch, d.Hold, d.Evidence, err, want)
 		}
 	}
 }
@@ -112,13 +112,13 @@ func TestMergeQueueGitEvidence(t *testing.T) {
 	recorded := &Issue{ID: "mr-rec", Status: "closed", Description: "branch: polecat/r\ntarget: main\nsource_issue: gt-r\nrig: gastown\ncommit_sha: " + sha + "\nclose_reason: merged\n"}
 	idx := MergeQueueIndex{"gt-s": {squashed}, "gt-r": {recorded}}
 	q := NewMergeQueue(idx, nil, func(string) MergeProver { return patchOnly{} })
-	if d, err := q.BranchHold("polecat/s"); err != nil || d.Hold != HoldLanded || d.Evidence != EvidenceGit {
+	if d, err := q.branchHold("polecat/s"); err != nil || d.Hold != HoldLanded || d.Evidence != EvidenceGit {
 		t.Fatalf("squash-landed MR: %+v %v, want landed by git", d, err)
 	}
-	if d, _ := q.BranchHold("polecat/r"); d.Hold != HoldLanded || d.Evidence != EvidenceGit {
+	if d, _ := q.branchHold("polecat/r"); d.Hold != HoldLanded || d.Evidence != EvidenceGit {
 		t.Fatalf("recorded MR confirmed by git: %+v", d)
 	}
-	if d, _ := NewMergeQueue(idx, nil, nil).BranchHold("polecat/r"); d.Hold != HoldLanded || d.Evidence != EvidenceRecorded {
+	if d, _ := NewMergeQueue(idx, nil, nil).branchHold("polecat/r"); d.Hold != HoldLanded || d.Evidence != EvidenceRecorded {
 		t.Fatalf("recorded MR without a prover: %+v", d)
 	}
 }

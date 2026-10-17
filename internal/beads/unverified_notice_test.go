@@ -145,4 +145,11 @@ func TestSupersedeMR_RecordsVerdictAndCloses(t *testing.T) {
 	if err := newTestBeads(newMockStorage()).SupersedeMR("test-404", "x"); err == nil {
 		t.Fatal("superseding a missing MR must fail")
 	}
+	// G-M6: an MR that is already terminal (merged meanwhile) is left alone.
+	if err := b.SupersedeMR("test-1", "gt-wisp-other"); !errors.Is(err, ErrMRTerminal) {
+		t.Fatalf("superseding a closed MR: %v, want ErrMRTerminal", err)
+	}
+	if again, _ := b.Show("test-1"); !strings.Contains(again.Description, "close_reason: superseded") {
+		t.Fatalf("the closed MR must be unchanged: %q", again.Description)
+	}
 }

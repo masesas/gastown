@@ -165,33 +165,79 @@ func polecatTargetBranchDeletable(p polecatTarget) error {
 		p.r.DefaultBranch(), townMergeQueueFor(p.r.Path))
 }
 
-// polecatRepoBranchDeletable applies the deletion rule to branch in the rig
-// repository repoGit (remote "origin"): the remote tip and, when different,
-// the local tip must both pass. A branch that is on neither (origin read,
-// no local ref) holds no work to lose; when origin cannot be read and there
-// is no local tip, nothing is known and the deletion is refused.
+// polecatRepoBranchDeletable applies the deletion rule to one branch of the
+// rig repository repoGit (newRigBranchRule; one-shot callers).
 func polecatRepoBranchDeletable(repoGit *git.Git, rigName, branch, defaultBranch string, queue func() *beads.MergeQueue) error {
-	_ = repoGit.Fetch("origin") // best effort: remote target tips become local objects
-	tips := rigRemoteTips(repoGit, defaultBranch)
-	noGitProof := ""
-	remoteTip, err := tips.BranchTip(branch)
-	if err != nil {
-		// Without the remote neither its tip nor the target tips are known:
-		// the merge queue decides on the local tip alone.
-		noGitProof = "cannot list origin: " + gitErrLine(err)
-		tips = mergeproof.RemoteTips{}
+	return newRigBranchRule(repoGit, rigName, defaultBranch, queue).deletable(branch)
+}
+
+// rigBranchRule is the polecat branch deletion rule bound to one rig
+// repository (remote "origin"), read once for many branches (gt polecat gc):
+// one fetch, one ls-remote of polecat/*, one cached reader of targets and
+// archives, one merge queue (gt-pd1c.78 G-M2).
+type rigBranchRule struct {
+	rig, defaultBranch string
+	repo               *git.Git
+	tips               mergeproof.RemoteTips
+	proofGit           mergeproof.PreservationGit // nil: no coverage proof (fetch failed)
+	branchTips         map[string]string          // remote polecat/* tips; nil: origin unreadable
+	noGitProof         string
+	queue              func() *beads.MergeQueue
+}
+
+// newRigBranchRule fetches origin and lists its polecat branches. A failed
+// fetch disables the coverage proof (stale local target objects prove
+// nothing, fail closed, G-M1); archives are matched by object name and still
+// count. An unreadable origin leaves only the merge queue and the local tip.
+func newRigBranchRule(repoGit *git.Git, rigName, defaultBranch string, queue func() *beads.MergeQueue) *rigBranchRule {
+	r := &rigBranchRule{rig: rigName, defaultBranch: defaultBranch, repo: repoGit, queue: queue, proofGit: repoGit,
+		tips: rigRemoteTips(repoGit, defaultBranch)}
+	if err := repoGit.Fetch("origin"); err != nil {
+		r.noGitProof = "cannot fetch origin: " + gitErrLine(err)
+		r.proofGit = nil
 	}
-	localTip, _ := repoGit.Rev("refs/heads/" + branch + "^{commit}")
+	refs, err := r.tips.List("refs/heads/polecat/")
+	if err != nil {
+		// Without the remote neither its tips nor the target tips are known:
+		// the merge queue decides on the local tip alone.
+		r.noGitProof = "cannot list origin: " + gitErrLine(err)
+		r.tips, r.proofGit = mergeproof.RemoteTips{}, nil
+		return r
+	}
+	r.branchTips = map[string]string{}
+	for _, ref := range refs {
+		r.branchTips[strings.TrimPrefix(ref.Name, "refs/heads/")] = strings.TrimSpace(ref.Hash)
+	}
+	return r
+}
+
+// deletable applies the rule to branch: its remote tip and, when different,
+// its local tip must both pass. A branch that is on neither (origin read, no
+// local ref) holds no work to lose; when origin cannot be read and there is
+// no local tip, nothing is known and the deletion is refused.
+func (r *rigBranchRule) deletable(branch string) error {
+	remoteTip := r.branchTips[branch]
+	if r.branchTips != nil && !strings.HasPrefix(branch, "polecat/") {
+		// Not in the polecat/* listing: read this branch's tip itself.
+		tip, err := r.tips.BranchTip(branch)
+		if err != nil {
+			return polecatBranchDeletion{rig: r.rig, branch: branch, noGitProof: "cannot list origin: " + gitErrLine(err)}.
+				refuse("its remote tip is unknown")
+		}
+		remoteTip = tip
+	}
+	localTip, _ := r.repo.Rev("refs/heads/" + branch + "^{commit}")
 	candidates := uniqueNonEmpty(remoteTip, strings.TrimSpace(localTip))
+	base := polecatBranchDeletion{rig: r.rig, branch: branch, tips: r.tips, git: r.proofGit, queue: r.queue, noGitProof: r.noGitProof}
 	if len(candidates) == 0 {
-		if noGitProof == "" {
+		if r.branchTips != nil {
 			return nil // the branch exists nowhere: nothing to discard
 		}
-		return polecatBranchDeletion{rig: rigName, branch: branch, queue: queue, noGitProof: noGitProof}.refuse(
-			"its tip is unknown (no local branch, origin unreadable)")
+		return base.refuse("its tip is unknown (no local branch, origin unreadable)")
 	}
 	for _, tip := range candidates {
-		d := polecatBranchDeletion{rig: rigName, branch: branch, tip: tip, tips: tips, git: repoGit, queue: queue, noGitProof: noGitProof}
+		d := base
+		d.tip = tip
 		if err := d.check(); err != nil {
 			return err
 		}
@@ -199,13 +245,14 @@ func polecatRepoBranchDeletable(repoGit *git.Git, rigName, branch, defaultBranch
 	return nil
 }
 
-// rigRemoteTips reads origin (its push URL) of a rig repository.
+// rigRemoteTips reads origin (its push URL) of a rig repository, each prefix
+// once.
 func rigRemoteTips(repoGit *git.Git, defaultBranch string) mergeproof.RemoteTips {
 	return mergeproof.RemoteTips{
 		Defaults: []string{defaultBranch},
-		List: func(prefix string) ([]git.RemoteRef, error) {
+		List: mergeproof.CachedLister(func(prefix string) ([]git.RemoteRef, error) {
 			return repoGit.ListPushRemoteRefsWithHashes("origin", prefix)
-		},
+		}),
 	}
 }
 

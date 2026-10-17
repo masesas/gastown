@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
@@ -223,6 +224,7 @@ type mqPostMergeGit interface {
 	Rev(ref string) (string, error)
 	DeleteRemoteBranchIfAt(remote, branch, expectedHash string) error
 	DeleteBranch(branch string, force bool) error
+	RemoteHeadBranch(remote string) (string, error)
 }
 
 type mqPostMergeBranchCleanup struct {
@@ -620,7 +622,7 @@ func runVerifiedMQPostMerge(mgr mqPostMergeManager, rigPath string, rigGit mqPos
 	if err != nil {
 		return nil, mqPostMergeBranchCleanup{}, err
 	}
-	if err := verifyMQPostMergeProof(rigGit, mr); err != nil {
+	if err := verifyMQPostMergeProof(rigGit, mr, mqPostMergeDefaultBranch(rigPath, rigGit)); err != nil {
 		return nil, mqPostMergeBranchCleanup{}, err
 	}
 
@@ -633,13 +635,29 @@ func runVerifiedMQPostMerge(mgr mqPostMergeManager, rigPath string, rigGit mqPos
 	return result, branchCleanup, err
 }
 
-func verifyMQPostMergeProof(rigGit mqPostMergeGit, mr *refinery.MergeRequest) error {
+// mqPostMergeDefaultBranch is the rig's default branch for the post-merge
+// proof, read the way the provers read it: the configured default_branch,
+// else the remote's own HEAD (never the local origin/HEAD).
+func mqPostMergeDefaultBranch(rigPath string, rigGit mqPostMergeGit) string {
+	if b := config.RigDefaultBranch(rigPath); b != "" {
+		return b
+	}
+	b, _ := rigGit.RemoteHeadBranch("origin")
+	return strings.TrimSpace(b)
+}
+
+func verifyMQPostMergeProof(rigGit mqPostMergeGit, mr *refinery.MergeRequest, defaultBranch string) error {
 	if mr == nil {
 		return fmt.Errorf("merge proof failed: merge request is missing")
 	}
 	target := strings.TrimSpace(mr.TargetBranch)
 	if target == "" {
 		return fmt.Errorf("merge proof failed for MR %s: missing target branch", mr.ID)
+	}
+	// The same target check as the landing provers (gt-pd1c.78 G-M7): a
+	// target that is not the default branch or integration/* proves nothing.
+	if err := mergeproof.UntrustedMergeTarget(target, defaultBranch); err != nil {
+		return fmt.Errorf("merge proof failed for MR %s: %w", mr.ID, err)
 	}
 	if source := strings.TrimSpace(mr.Branch); source != "" && source == target {
 		return fmt.Errorf("merge proof failed for MR %s: source branch %s matches target branch", mr.ID, source)

@@ -19,20 +19,24 @@ func (g *prePushGuard) tipResolver(defaults []string) mergeproof.RemoteTips {
 
 // checkPolecatUpdate applies the polecat branch deletion rule to an update of
 // polecat/* that discards the remote tip: a deletion by any agent other than
-// crew, or a rewrite (not a fast-forward) by an agent other than crew, the
-// refinery and the polecat that owns the branch (round 1, H1: a force-push
-// onto a landed commit followed by a delete must not launder unlanded work).
-// Creations and fast-forwards lose nothing and pass without I/O beyond git.
+// crew, or a rewrite (not a fast-forward) by an agent other than crew and the
+// refinery (round 1, H1: a force-push onto a landed commit followed by a
+// delete must not launder unlanded work). The owning polecat's rewrite is the
+// same rule with one more allowance (round 1 of tahap 2, S-M2): an old tip
+// that was never submitted (work in progress, a rebase before gt done) or
+// whose MR is still open (the rebase that REWORK_REQUEST and MERGE_FAILED ask
+// for before resubmitting). A tip whose MR was decided (rejected, superseded,
+// conflict, closed) is not rewritten away by its owner either: abandon it
+// first. Creations and fast-forwards lose nothing and pass without I/O beyond
+// git.
 func (g *prePushGuard) checkPolecatUpdate(u prePushUpdate, branch string) error {
 	c := gtCallerFrom(g.getenv)
 	if c.exempt() || u.RemoteSHA == prePushZeroSHA {
 		return nil
 	}
 	deletion := u.LocalSHA == prePushZeroSHA
-	if !deletion {
-		if c.role == RoleRefinery || c.ownsPolecatBranch(branch) || g.fastForward(u) {
-			return nil
-		}
+	if !deletion && (c.role == RoleRefinery || g.fastForward(u)) {
+		return nil
 	}
 	r, err := g.loadRigOnce()
 	if err != nil {
@@ -46,12 +50,18 @@ func (g *prePushGuard) checkPolecatUpdate(u prePushUpdate, branch string) error 
 		tips:   g.tipResolver(g.defaultBranches(r, true)),
 		git:    g.git,
 		queue:  g.loadQueue,
+		owner:  !deletion && c.ownsPolecatBranch(branch),
 	}
 	if err := d.check(); err != nil {
-		if deletion {
+		switch {
+		case deletion:
 			return fmt.Errorf("BLOCKED: agent deletion: %w", err)
+		case d.owner:
+			return fmt.Errorf("BLOCKED: rewrite (not a fast-forward) of your own polecat branch over a tip whose MR "+
+				"was already decided; push without rewriting (merge instead of rebase) or have it abandoned first: %w", err)
+		default:
+			return fmt.Errorf("BLOCKED: agent rewrite (not a fast-forward) of a polecat branch it does not own: %w", err)
 		}
-		return fmt.Errorf("BLOCKED: agent rewrite (not a fast-forward) of a polecat branch it does not own: %w", err)
 	}
 	return nil
 }

@@ -165,6 +165,11 @@ func TestPolecatRepoBranchDeletable(t *testing.T) {
 	if err := deletable("polecat/gone", unread); err != nil {
 		t.Fatalf("no branch anywhere: %v", err)
 	}
+	// A polecat branch outside polecat/* is still read from the remote.
+	push(f.good, "custom/nux")
+	if err := deletable("custom/nux", mqWith()); err == nil {
+		t.Fatal("an unlanded branch outside polecat/* must not count as absent")
+	}
 	// An archived tip (gt polecat abandon) is preserved: no beads needed.
 	push(f.integrationOnTopBad, "polecat/abandoned")
 	archiveTip(t, f, "polecat/abandoned", f.integrationOnTopBad)

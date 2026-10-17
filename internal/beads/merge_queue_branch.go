@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// BranchHold classifies the work on a source branch (e.g. polecat/<name>/...)
+// branchHold classifies the work on a source branch (e.g. polecat/<name>/...)
 // with the one merge-queue predicate (mergeQueueHoldDetail, as Detail does for
 // a bead) over every MR in the town submitted from that branch, whatever
 // source bead it belongs to (gt-pd1c.78). TipDisposition builds on it to
@@ -16,7 +16,7 @@ import (
 // An unread (or nil) queue and an empty branch are errors, so callers fail
 // closed. MRs without a source_issue are not in the index (TownMergeQueueIndex)
 // and therefore not seen here.
-func (q *MergeQueue) BranchHold(branch string) (HoldDetail, error) {
+func (q *MergeQueue) branchHold(branch string) (HoldDetail, error) {
 	if err := q.Err(); err != nil {
 		return HoldDetail{Hold: HoldNone}, err
 	}
@@ -51,6 +51,16 @@ func (q *MergeQueue) mergeRequestsFromBranch(branch string) []*Issue {
 	return out
 }
 
+// MR close verdicts (MRFields.CloseReason), the one source of these values:
+// written by the refinery (refinery.CloseReason*, closeTerminalMR) and
+// SupersedeMR, read by the landing predicate and TipDisposition.
+const (
+	CloseReasonMerged     = "merged"
+	CloseReasonRejected   = "rejected"
+	CloseReasonConflict   = "conflict"
+	CloseReasonSuperseded = "superseded"
+)
+
 // TipClass is what the merge queue says about one polecat branch tip that is
 // not already on a merge target (gt-pd1c.78 tahap 2): who decides what may
 // happen to it. Only TipRejected and TipSuperseded may be abandoned (archived
@@ -69,11 +79,11 @@ const (
 	// last MR): the work must be resubmitted or reworked.
 	TipNoMR TipClass = "no_mr"
 	// TipRejected: the MR of this tip was closed with the verdict rejected.
-	TipRejected TipClass = "rejected"
+	TipRejected TipClass = CloseReasonRejected
 	// TipSuperseded: the MR of this tip was replaced by another MR.
-	TipSuperseded TipClass = "superseded"
+	TipSuperseded TipClass = CloseReasonSuperseded
 	// TipConflict: the MR of this tip was closed for conflicts: rework.
-	TipConflict TipClass = "conflict"
+	TipConflict TipClass = CloseReasonConflict
 	// TipNoVerdict: the MR of this tip was closed without an official verdict
 	// (bare bd close, a human not-landed verdict): rework.
 	TipNoVerdict TipClass = "closed_without_verdict"
@@ -82,7 +92,7 @@ const (
 // TipDisposition is the merge queue's classification of a branch tip.
 type TipDisposition struct {
 	Class TipClass
-	// Hold is the branch's hold over every MR from it (BranchHold).
+	// Hold is the branch's hold over every MR from it (branchHold).
 	Hold HoldDetail
 	// MRID/MR: the deciding MR (the open, landed or unverified MR, or the MR
 	// of this tip whose verdict decided); empty for TipNoMR.
@@ -104,14 +114,14 @@ func (d TipDisposition) Abandonable() bool {
 var tipVerdictRank = map[TipClass]int{TipSuperseded: 1, TipRejected: 2, TipNoVerdict: 3, TipConflict: 4}
 
 // TipDisposition classifies the tip of branch with the one predicate
-// (BranchHold for the branch, mergeQueueHoldDetail for the MRs that recorded
+// (branchHold for the branch, mergeQueueHoldDetail for the MRs that recorded
 // exactly this commit). An open MR or an undecidable landing anywhere on the
 // branch wins; a landed MR counts only when its commit is the tip; otherwise
 // the official close verdicts (MRFields.CloseReason, written by
 // closeTerminalMR and SupersedeMR) of the MRs whose commit_sha is the tip
 // decide, strictest first. An unread queue or an empty branch is an error.
 func (q *MergeQueue) TipDisposition(branch, tip string) (TipDisposition, error) {
-	hold, err := q.BranchHold(branch)
+	hold, err := q.branchHold(branch)
 	if err != nil {
 		return TipDisposition{}, err
 	}
@@ -174,11 +184,11 @@ func closeVerdictClass(mr *Issue) TipClass {
 		return TipNoVerdict
 	}
 	switch strings.ToLower(strings.TrimSpace(fields.CloseReason)) {
-	case string(TipRejected):
+	case CloseReasonRejected:
 		return TipRejected
-	case string(TipSuperseded):
+	case CloseReasonSuperseded:
 		return TipSuperseded
-	case string(TipConflict):
+	case CloseReasonConflict:
 		return TipConflict
 	default:
 		return TipNoVerdict

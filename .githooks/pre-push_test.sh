@@ -329,8 +329,10 @@ GT_ROLE=gastown/witness assert_pass "Witness push of polecat/* allowed" run_hook
 # Round 1 (H1): rewriting polecat/* (not a fast-forward) discards its old tip.
 GT_ROLE=gastown/witness assert_block "Witness force-push over polecat/* blocked" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
 GT_ROLE=gastown/polecats/max assert_block "Other polecat force-push over polecat/nux blocked" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
-GT_ROLE=gastown/polecats/nux GT_POLECAT=nux assert_pass "Owning polecat force-push allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
-GT_ROLE=gastown/polecats/nux assert_pass "Owning polecat force-push of polecat/nux/gt-1 allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux/gt-1" "$pc_sha"
+# tahap 2 S-M2: whether the owner's old tip was submitted needs the merge
+# queue; without gt the owner's rewrite is refused too (unless archived).
+GT_ROLE=gastown/polecats/nux GT_POLECAT=nux assert_block "Owning polecat force-push blocked without gt" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/polecats/nux assert_block "Owning polecat force-push of polecat/nux/gt-1 blocked without gt" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux/gt-1" "$pc_sha"
 GT_ROLE=gastown/refinery assert_pass "Refinery force-push over polecat/* allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
 GT_ROLE=gastown/crew/max assert_pass "Crew force-push over polecat/* allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
 GT_ROLE=gastown/witness assert_pass "Witness fast-forward of polecat/* allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$base_sha"
@@ -342,6 +344,10 @@ GT_ROLE=gastown/refinery BD_ACTOR=mayor assert_block "Conflicting agent roles ca
 GT_ROLE=gastown/refinery GT_CREW=max assert_pass "Refinery GT_ROLE with GT_CREW is the refinery" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
 # gt-pd1c.78 tahap 2: archives (refs/gt/archive/*, gt polecat abandon).
 archive_ref="refs/gt/archive/polecat/nux/1760000000-${pc_sha:0:12}"
+# S-H1: a branch whose name merely ends in an archive ref is not an archive.
+# (created in the bare remote directly: this repo's own hook refuses feature branches)
+git -C "$TMPDIR/remote.git" update-ref "refs/heads/x/$archive_ref" "$pc_sha"
+GT_ROLE=gastown/witness assert_block "Branch named like an archive is not an archive" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
 GT_ROLE=mayor assert_block "Agent archive creation blocked without gt" run_hook_nogt "HEAD" "$pc_sha" "$archive_ref" "$zero15"
 GT_ROLE=gastown/witness assert_block "Agent delete of polecat/* with unarchived tip blocked" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
 git push origin "$pc_sha:$archive_ref" >/dev/null 2>&1
@@ -353,6 +359,31 @@ GT_ROLE=gastown/witness assert_block "Agent rewrite of an archive ref blocked" r
 GT_ROLE=gastown/crew/max assert_pass "Crew prune of an archive ref allowed" run_hook_nogt "(delete)" "$zero15" "$archive_ref" "$pc_sha"
 assert_pass "Human prune of an archive ref allowed" run_hook_nogt "(delete)" "$zero15" "$archive_ref" "$pc_sha"
 assert_pass "Human archive creation allowed" run_hook_nogt "HEAD" "$pc_sha" "$archive_ref" "$zero15"
+cleanup
+
+# Test 16 (gt-pd1c.78 S-H1): a branch named "refs/heads/integration/x" (full
+# name refs/heads/refs/heads/integration/x) is not an integration branch: a
+# human merging it into the default branch is not landing integration work.
+echo "Test 16: Fallback ignores branches named like integration branches"
+setup_repos
+cd "$TMPDIR/local"
+nogt="$TMPDIR/nogt-bin"
+mkdir -p "$nogt"
+for tool in git sed awk cat; do
+  ln -s "$(command -v "$tool")" "$nogt/$tool"
+done
+git checkout -b fake >/dev/null 2>&1
+echo "fake" >> file.txt
+git add file.txt && git commit -m "fake" >/dev/null 2>&1
+git push origin "HEAD:refs/heads/polecat/fake" >/dev/null 2>&1
+git -C "$TMPDIR/remote.git" update-ref "refs/heads/refs/heads/integration/fake" "$(get_sha HEAD)"
+git checkout "$DEFAULT_BRANCH" >/dev/null 2>&1
+remote_sha=$(get_sha HEAD)
+git merge --no-ff fake -m "merge fake" >/dev/null 2>&1
+local_sha=$(get_sha HEAD)
+assert_pass "Branch named refs/heads/integration/* is not a land" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha"
+git -C "$TMPDIR/remote.git" update-ref "refs/heads/integration/real" "$(get_sha fake)"
+assert_block "A real integration branch is still a land" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha"
 cleanup
 
 echo ""

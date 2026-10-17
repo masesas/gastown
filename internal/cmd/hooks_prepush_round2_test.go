@@ -117,7 +117,11 @@ func TestOwnershipMatrixGo(t *testing.T) {
 	}
 }
 
-func TestOwnershipMatrixBashParity(t *testing.T) {
+// tahap 2 S-M2: the bash fallback cannot read the merge queue, so it cannot
+// tell whether the owner's old tip was submitted: every polecat's rewrite of
+// an unarchived tip is refused without gt, owner or not (ownership is a Go
+// rule only, TestOwnershipMatrixGo).
+func TestOwnerRewriteBashFallbackRefuses(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not available")
@@ -138,18 +142,36 @@ func TestOwnershipMatrixBashParity(t *testing.T) {
 		}
 	}
 	for _, c := range ownershipMatrix {
-		// A rewrite (f.good is not an ancestor of main) passes only for the owner.
 		cmd := exec.Command(bash, hook, "origin")
 		cmd.Dir = f.repo
 		cmd.Env = []string{"PATH=" + nogt, "HOME=" + t.TempDir(), "GT_ROLE=gastown/polecats/" + c.polecat, "GT_POLECAT=" + c.polecat}
 		cmd.Stdin = strings.NewReader("HEAD " + f.mainSHA + " refs/heads/" + c.branch + " " + f.good + "\n")
 		out, runErr := cmd.CombinedOutput()
-		if got := runErr == nil; got != c.owner {
-			var exitErr *exec.ExitError
-			if runErr != nil && !errors.As(runErr, &exitErr) {
-				t.Fatalf("running the hook: %v", runErr)
-			}
-			t.Errorf("bash, polecat %s, branch %s: allowed=%v, want %v\n%s", c.polecat, c.branch, got, c.owner, out)
+		var exitErr *exec.ExitError
+		if runErr == nil {
+			t.Errorf("bash, polecat %s, branch %s: rewrite allowed without gt\n%s", c.polecat, c.branch, out)
+		} else if !errors.As(runErr, &exitErr) {
+			t.Fatalf("running the hook: %v", runErr)
 		}
+	}
+}
+
+// gt-pd1c.78 G-M1: a failed fetch (origin's fetch URL broken, its push URL
+// still listable) disables the coverage proof: a tip on main is not proven
+// covered from stale local objects; an archived tip still counts.
+func TestPolecatRepoBranchDeletableFetchFailureFailsClosed(t *testing.T) {
+	f := newPrePushFixture(t)
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.mainSHA+":refs/heads/polecat/landed")
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.integrationOnTopBad+":refs/heads/polecat/kept")
+	archiveTip(t, f, "polecat/kept", f.integrationOnTopBad)
+	runGitForMQSubmitTest(t, f.repo, "config", "remote.origin.pushurl", f.remote)
+	runGitForMQSubmitTest(t, f.repo, "config", "remote.origin.url", filepath.Join(t.TempDir(), "missing.git"))
+	repo := gitpkg.NewGit(f.repo)
+	err := polecatRepoBranchDeletable(repo, "gastown", "polecat/landed", "main", mqWith())
+	if err == nil || !strings.Contains(err.Error(), "cannot fetch origin") {
+		t.Fatalf("fetch failed: coverage must not be proven: %v", err)
+	}
+	if err := polecatRepoBranchDeletable(repo, "gastown", "polecat/kept", "main", mqWith()); err != nil {
+		t.Fatalf("an archived tip needs no fetch: %v", err)
 	}
 }

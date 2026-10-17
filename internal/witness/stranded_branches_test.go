@@ -1,6 +1,7 @@
 package witness
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/lock"
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/mergeproof"
 )
@@ -230,10 +232,26 @@ func TestReconcileStrandedBranchesGraceAndDedup(t *testing.T) {
 	if res := r.run(); len(rec.sent) != 1 || len(res.Reported) != 0 {
 		t.Fatalf("second patrol within the interval: sent=%d reported=%v", len(rec.sent), res.Reported)
 	}
-	// Reminder after the interval.
+	// Reminder after the interval, then backoff 3x and 7x, then silence.
 	r.now = strandedNow.Add(25 * time.Hour)
 	if res := r.run(); len(rec.sent) != 2 || len(res.Reported) != 5 || !strings.Contains(rec.sent[1].Subject, "REMINDER") {
 		t.Fatalf("reminder: sent=%d reported=%v", len(rec.sent), res.Reported)
+	}
+	r.now = strandedNow.Add(25*time.Hour + 48*time.Hour)
+	if r.run(); len(rec.sent) != 2 {
+		t.Fatalf("second reminder must wait 3x the interval, sent=%d", len(rec.sent))
+	}
+	r.now = strandedNow.Add(25*time.Hour + 73*time.Hour)
+	if r.run(); len(rec.sent) != 3 {
+		t.Fatalf("second reminder after 3x the interval, sent=%d", len(rec.sent))
+	}
+	r.now = r.now.Add(7 * 24 * time.Hour)
+	if r.run(); len(rec.sent) != 4 || !strings.Contains(rec.sent[3].Body, "last reminder") {
+		t.Fatalf("last reminder after 7x the interval, sent=%d", len(rec.sent))
+	}
+	r.now = r.now.Add(365 * 24 * time.Hour)
+	if res := r.run(); len(rec.sent) != 4 || res.Pending != 5 {
+		t.Fatalf("no report after the last reminder: sent=%d pending=%d", len(rec.sent), res.Pending)
 	}
 
 	// A new tip restarts the grace (the polecat pushed more work).
@@ -300,21 +318,33 @@ func TestStrandedLineSanitizes(t *testing.T) {
 func TestBranchReportStateFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "witness", "stranded-branches-testrig.json")
-	if st := loadBranchReportState(path); len(st) != 0 {
-		t.Fatalf("missing file: %v", st)
+	if st, err := loadBranchReportState(path); len(st) != 0 || err != nil {
+		t.Fatalf("missing file: %v %v", st, err)
 	}
 	st := branchReportState{"polecat/a": {Tip: tipRej, Class: "rejected", FirstSeen: strandedNow}}
 	if err := saveBranchReportState(path, st); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadBranchReportState(path); got["polecat/a"].Tip != tipRej || !got["polecat/a"].FirstSeen.Equal(strandedNow) {
+	if got, err := loadBranchReportState(path); err != nil || got["polecat/a"].Tip != tipRej || !got["polecat/a"].FirstSeen.Equal(strandedNow) {
 		t.Fatalf("round trip: %+v", got)
 	}
 	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if st := loadBranchReportState(path); len(st) != 0 {
-		t.Fatalf("corrupt file must load empty (re-report, never silence): %v", st)
+	if st, err := loadBranchReportState(path); len(st) != 0 || err == nil {
+		t.Fatalf("corrupt file must load empty with an error (re-report, never silence): %v %v", st, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil { // unreadable as a file
+		t.Fatal(err)
+	}
+	if _, err := loadBranchReportState(path); err == nil {
+		t.Fatal("an unreadable state must be an error")
+	}
+	if err := saveBranchReportState(path, st); err == nil {
+		t.Fatal("a save that cannot replace the file must be an error")
 	}
 }
 
@@ -365,9 +395,14 @@ func TestReconcileStrandedBranchesWiring(t *testing.T) {
 		return beads.NewMergeQueue(beads.MergeQueueIndex{"gt-src1": {mr}}, nil, func(string) beads.MergeProver { return notLandedProver{} })
 	}
 	t.Cleanup(func() { witnessMergeQueue = old })
-	bd, _ := mockBd(func([]string) (string, error) { return "[]", nil }, func([]string) error { return nil })
+	bd, _ := mockBd(func(args []string) (string, error) {
+		if len(args) > 1 && args[0] == "show" && args[1] == "gt-src1" {
+			return `[{"status":"open"}]`, nil // the source bead waits for rework
+		}
+		return "[]", nil
+	}, func([]string) error { return nil })
 
-	r, statePath, err := newBranchReconciler(bd, rigPath, "testrig", nil)
+	r, statePath, err := newBranchReconciler(context.Background(), bd, rigPath, "testrig", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +414,7 @@ func TestReconcileStrandedBranchesWiring(t *testing.T) {
 	if len(res.Errors) != 0 || res.Checked != 1 || res.Pending != 1 {
 		t.Fatalf("first patrol: %+v", res)
 	}
-	st := loadBranchReportState(statePath)
+	st, _ := loadBranchReportState(statePath)
 	if st["polecat/nux/gt-1"].Tip != tip || st["polecat/nux/gt-1"].Class != "rejected" {
 		t.Fatalf("state after first patrol: %+v", st)
 	}
@@ -392,7 +427,7 @@ func TestReconcileStrandedBranchesWiring(t *testing.T) {
 	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Error(), "no mail router") || len(res.Reported) != 0 {
 		t.Fatalf("no router: %+v", res)
 	}
-	if !loadBranchReportState(statePath)["polecat/nux/gt-1"].NotifiedAt.IsZero() {
+	if st, _ := loadBranchReportState(statePath); !st["polecat/nux/gt-1"].NotifiedAt.IsZero() {
 		t.Fatal("an unsent report must not be marked")
 	}
 	if res := ReconcileStrandedBranches(bd, rigPath, "bad rig", nil); len(res.Errors) != 1 {
@@ -439,4 +474,111 @@ func runGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// G-H1: a decided MR whose source bead is terminal, or whose source the merge
+// queue still holds through another MR (rework running, landed), is not
+// stranded: "leave it" or the rework already decided it.
+func TestReconcileStrandedBranchesSourceSettled(t *testing.T) {
+	rec := &strandedRecorder{}
+	r := rec.reconciler(seenLongAgo())
+	r.terminal = func(id string) (bool, error) { return id == "gt-src1", nil } // rejected work: source closed
+	base := strandedQueue
+	r.queue = func() *beads.MergeQueue {
+		q := base()
+		// The conflict MR's source has a new open MR from another branch.
+		idx := beads.MergeQueueIndex{}
+		for _, src := range []string{"gt-src1", "gt-src2", "gt-src3", "gt-src4", "gt-src5"} {
+			idx[src] = q.MergeRequests(src)
+		}
+		idx["gt-src3"] = append(idx["gt-src3"], strandedMR("mr-9", "open", "polecat/other/gt-9", tipOpen, "source_issue: gt-src3\n"))
+		return beads.NewMergeQueue(idx, nil, func(string) beads.MergeProver { return notLandedProver{} })
+	}
+	res := r.run()
+	if containsStr(res.Reported, "polecat/rej/gt-1") || containsStr(res.Reported, "polecat/con/gt-3") {
+		t.Fatalf("settled sources must not be reported: %v", res.Reported)
+	}
+	if !containsStr(res.Reported, "polecat/sup/gt-2") || !containsStr(res.Reported, "polecat/raw/gt-4") {
+		t.Fatalf("open sources are still reported: %v", res.Reported)
+	}
+	r = rec.reconciler(seenLongAgo())
+	r.terminal = func(string) (bool, error) { return false, errors.New("bd down") }
+	if res := r.run(); len(res.Errors) == 0 || containsStr(res.Reported, "polecat/rej/gt-1") {
+		t.Fatalf("unreadable source: %+v", res)
+	}
+	if _, kept := r.state["polecat/rej/gt-1"]; !kept {
+		t.Fatal("an unknown answer must keep the branch's state (its backoff)")
+	}
+}
+
+// G-M1/G-M3: a failed fetch or an exhausted budget reports nothing; no
+// polecat branch means no fetch; a branch with nothing due is not
+// re-classified.
+func TestReconcileStrandedBranchesFetchBudgetReuse(t *testing.T) {
+	rec := &strandedRecorder{}
+	r := rec.reconciler(seenLongAgo())
+	r.fetch = func() error { return errors.New("fatal: unable to access 'https://u:tok@host/x'") }
+	res := r.run()
+	if len(rec.sent) != 0 || len(res.Errors) != 1 || strings.Contains(res.Errors[0].Error(), "tok") {
+		t.Fatalf("fetch failure: sent=%d errors=%v", len(rec.sent), res.Errors)
+	}
+
+	fetched := false
+	r = rec.reconciler(branchReportState{})
+	r.tips = fakeRemote(map[string]string{"refs/heads/main": tipMain}, nil)
+	r.fetch = func() error { fetched = true; return nil }
+	r.run()
+	if fetched {
+		t.Fatal("no polecat branch: no fetch")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r = rec.reconciler(seenLongAgo())
+	r.ctx = ctx
+	if res := r.run(); len(rec.sent) != 0 || len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Error(), "budget") {
+		t.Fatalf("budget: sent=%d %+v", len(rec.sent), res)
+	}
+
+	// All stranded branches reported a minute ago: the next patrol reads
+	// neither the merge queue nor git for them.
+	r = rec.reconciler(seenLongAgo())
+	r.run()
+	queueReads := 0
+	r.queue = func() *beads.MergeQueue { queueReads++; return strandedQueue() }
+	r.now = r.now.Add(time.Minute)
+	if res := r.run(); queueReads != 1 || res.Pending != 5 {
+		// One read is for branches without state (open, alive): those are classified.
+		t.Fatalf("reuse: queue reads=%d pending=%d", queueReads, res.Pending)
+	}
+}
+
+// G-M4: concurrent patrols of a rig serialize on the state lock; the second
+// one does nothing and says so.
+func TestReconcileStrandedBranchesLockBusy(t *testing.T) {
+	town := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(town, "mayor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(town, "mayor", "town.json"), []byte(`{"type":"town","name":"t"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rigPath := filepath.Join(town, "testrig")
+	if err := os.MkdirAll(filepath.Join(rigPath, "mayor", "rig"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, filepath.Join(rigPath, "mayor", "rig"), "init", "-q")
+	statePath := branchReportStatePath(town, "testrig")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unlock, ok, err := lock.FlockTryAcquire(statePath + ".flock")
+	if err != nil || !ok {
+		t.Fatalf("lock: %v %v", ok, err)
+	}
+	defer unlock()
+	bd, _ := mockBd(func([]string) (string, error) { return "[]", nil }, func([]string) error { return nil })
+	if res := ReconcileStrandedBranches(bd, rigPath, "testrig", nil); !res.Busy || len(res.Errors) != 0 {
+		t.Fatalf("busy: %+v", res)
+	}
 }

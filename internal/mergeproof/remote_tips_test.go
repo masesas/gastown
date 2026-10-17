@@ -3,6 +3,7 @@ package mergeproof
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -209,5 +210,84 @@ func TestCachedLister(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("calls = %d, want 3 (errors are not cached, each prefix read once)", calls)
+	}
+}
+
+// gt-pd1c.78 S-M1: the local refs/remotes/origin/HEAD symref is not trusted
+// (an agent in the shared repository can repoint it); the remote's own HEAD
+// is. A configured default_branch is the only trusted default.
+func TestProverDefaultBranchNotFromLocalOriginHead(t *testing.T) {
+	f := newRemoteFixture(t)
+	rigPath := filepath.Dir(filepath.Dir(f.repo))
+	run(t, f.repo, "push", "-q", "origin", f.unlanded+":refs/heads/evil")
+	run(t, f.repo, "fetch", "-q", "origin")
+	run(t, f.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/evil")
+	p := ForRigPath(rigPath)
+	if err := p.VerifyPushedCommitReachableFromPushTarget("origin", "evil", f.unlanded); err == nil ||
+		!strings.Contains(err.Error(), "not a merge target") {
+		t.Fatalf("a repointed local origin/HEAD must not make the polecat branch a target: %v", err)
+	}
+	if err := p.VerifyPushedCommitReachableFromPushTarget("origin", "main", f.main); err != nil {
+		t.Fatalf("the remote's HEAD (main) is the default branch: %v", err)
+	}
+
+	writeFile(t, rigPath, "config.json", `{"type":"rig","default_branch":"integration-only"}`)
+	cfg := ForRigPath(rigPath)
+	if err := cfg.VerifyPushedCommitReachableFromPushTarget("origin", "main", f.main); err == nil ||
+		!strings.Contains(err.Error(), "not a merge target") {
+		t.Fatalf("with a configured default branch, main is not trusted: %v", err)
+	}
+	if UntrustedMergeTarget("integration/", "main") == nil || UntrustedMergeTarget("main", "") == nil {
+		t.Fatal("an empty integration name or an unknown default branch is not a target")
+	}
+}
+
+// F7 round 1 against real git: the refinery merges the polecat branch with
+// --no-ff and resolves a conflict in the merge commit. The recorded merge is
+// confirmed by git (the submitted commit is reachable), not held as a
+// contradiction.
+func TestRecordedMergeWithConflictResolutionIsLanded(t *testing.T) {
+	f := newRemoteFixture(t)
+	rigPath := filepath.Dir(filepath.Dir(f.repo))
+	run(t, f.repo, "checkout", "-q", "-b", "polecat/c/gt-7", f.main)
+	writeFile(t, f.repo, "a.txt", "polecat change\n")
+	run(t, f.repo, "commit", "-q", "-am", "polecat edits a")
+	submitted := run(t, f.repo, "rev-parse", "HEAD")
+	run(t, f.repo, "push", "-q", "origin", "polecat/c/gt-7")
+	run(t, f.repo, "checkout", "-q", "main")
+	run(t, f.repo, "reset", "-q", "--hard", f.main)
+	writeFile(t, f.repo, "a.txt", "main change\n")
+	run(t, f.repo, "commit", "-q", "-am", "main edits a")
+	cmd := exec.Command("git", "merge", "--no-ff", "-m", "merge polecat", "polecat/c/gt-7")
+	cmd.Dir = f.repo
+	_ = cmd.Run() // conflicts
+	writeFile(t, f.repo, "a.txt", "resolved\n")
+	run(t, f.repo, "add", "a.txt")
+	run(t, f.repo, "commit", "-q", "--no-edit")
+	merge := run(t, f.repo, "rev-parse", "HEAD")
+	run(t, f.repo, "push", "-q", "origin", "HEAD:main")
+
+	mr := &beads.Issue{ID: "gt-wisp-c", Status: "closed", Description: "branch: polecat/c/gt-7\ntarget: main\nsource_issue: gt-c\nrig: gastown\ncommit_sha: " +
+		submitted + "\nbase_sha: " + f.main + "\nclose_reason: merged\nmerge_commit: " + merge + "\n"}
+	q := beads.NewMergeQueue(beads.MergeQueueIndex{"gt-c": {mr}}, nil, func(string) beads.MergeProver { return ForRigPath(rigPath) })
+	d, err := q.Detail("gt-c")
+	if err != nil || d.Hold != beads.HoldLanded || d.Evidence != beads.EvidenceGit {
+		t.Fatalf("conflict-resolved --no-ff merge: %+v %v, want landed by git", d, err)
+	}
+}
+
+func TestRigDefaultBranch(t *testing.T) {
+	f := newRemoteFixture(t)
+	rigPath := filepath.Dir(filepath.Dir(f.repo))
+	g := git.NewGit(f.repo)
+	if got := RigDefaultBranch(rigPath, g); got != "main" {
+		t.Fatalf("remote HEAD: %q", got)
+	}
+	writeFile(t, rigPath, "config.json", `{"default_branch":"develop"}`)
+	if got := RigDefaultBranch(rigPath, g); got != "develop" {
+		t.Fatalf("configured: %q", got)
+	}
+	if got := RigDefaultBranch(t.TempDir(), nil); got != "" {
+		t.Fatalf("nothing known: %q", got)
 	}
 }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	gitpkg "github.com/steveyegge/gastown/internal/git"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,18 +64,68 @@ func TestPrePushGuardPolecatRewrite(t *testing.T) {
 	}
 }
 
-// The owning polecat's pushes need no rig or beads I/O.
-func TestPrePushGuardOwnerRewriteDoesNoRigIO(t *testing.T) {
+// tahap 2 S-M2: the owner's rewrite reads the merge queue; an unreadable
+// queue or rig refuses (fail closed).
+func TestPrePushGuardOwnerRewriteFailsClosed(t *testing.T) {
 	g := &prePushGuard{
 		remote: "origin",
 		getenv: prePushEnv("GT_ROLE", "myrig/polecats/nux", "GT_POLECAT", "nux"),
+		git:    gitpkg.NewGit(t.TempDir()),
 		loadRig: func() (*prePushRig, error) {
-			return nil, errors.New("must not be called")
+			return nil, errors.New("rig unreadable")
 		},
 	}
 	u := prePushUpd("refs/heads/polecat/nux/gt-1", strings.Repeat("a", 40), strings.Repeat("b", 40))
-	if err := g.check([]prePushUpdate{u}); err != nil {
-		t.Fatalf("owner rewrite: %v", err)
+	if err := g.check([]prePushUpdate{u}); err == nil {
+		t.Fatal("owner rewrite with an unreadable rig must refuse")
+	}
+}
+
+// tahap 2 S-M2: the owning polecat may rewrite a tip never submitted or whose
+// MR is still open (rebase for REWORK_REQUEST / MERGE_FAILED), not one whose
+// MR was decided.
+func TestPrePushGuardOwnerRewrite(t *testing.T) {
+	f := newPrePushFixture(t)
+	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
+	const branch = "polecat/nux/gt-1"
+	rewrite := []prePushUpdate{prePushUpd("refs/heads/"+branch, f.mainSHA, f.good)}
+	owner := []string{"GT_ROLE", "myrig/polecats/nux", "GT_POLECAT", "nux"}
+	verdict := func(extra string) func() *beads.MergeQueue {
+		return mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, extra))
+	}
+	cases := []struct {
+		name    string
+		queue   func() *beads.MergeQueue
+		wantErr string
+	}{
+		{"never submitted (rebase before gt done)", mqWith(), ""},
+		{"MR still open (rebase for rework)", mqWith(mrIssue("mr1", "open", branch, f.good, "")), ""},
+		{"later commits after a landed MR are unsubmitted work", mqWithProver(gitLanded{f.bad: true}, mrIssue("mr1", "closed", branch, f.bad, "")), ""},
+		{"MR rejected", verdict("close_reason: rejected\n"), "already decided"},
+		{"MR superseded", verdict("close_reason: superseded\n"), "gt polecat abandon"},
+		{"MR closed for conflict", verdict("close_reason: conflict\n"), "closed for conflicts"},
+		{"MR closed without verdict", verdict(""), "without an official verdict"},
+		{"MR unverified", mqWith(mrIssue("mr1", "closed", branch, f.good, "")), "cannot tell"},
+		{"queue unreadable", func() *beads.MergeQueue { return beads.NewMergeQueue(nil, errors.New("dolt down"), nil) }, "cannot read"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := coordinatorGuard(f, plain, c.queue, owner...).check(rewrite)
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want allowed: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("want %q, got %v", c.wantErr, err)
+			}
+		})
+	}
+	// An archived decided tip may be rewritten (nothing is lost).
+	archiveTip(t, f, "polecat/nux/gt-1", f.good)
+	if err := coordinatorGuard(f, plain, verdict("close_reason: rejected\n"), owner...).check(rewrite); err != nil {
+		t.Fatalf("archived tip: %v", err)
 	}
 }
 

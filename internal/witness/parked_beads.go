@@ -49,12 +49,27 @@ func ScanParkedBeads(bd *BdCli, workDir, rigName string, router *mail.Router) *S
 	if !beads.IsSafeID(rigName) {
 		return &ScanParkedBeadsResult{Errors: []error{fmt.Errorf("refusing rig name %q: not a valid rig name", rigName)}}
 	}
-	res := scanParkedBeads(bd, workDir, newOverseerNotice(workDir, rigName, router))
-	res.Branches = ReconcileStrandedBranches(bd, workDir, rigName, router)
+	// One merge queue (and one set of memoized git provers) for the whole
+	// phase (gt-pd1c.78 G-M8).
+	queue := passMergeQueue(workDir)
+	res := scanParkedBeads(bd, workDir, newOverseerNotice(workDir, rigName, router), queue)
+	res.Branches = reconcileStrandedBranches(bd, workDir, rigName, router, queue)
 	return res
 }
 
-func scanParkedBeads(bd *BdCli, workDir string, notice overseerNotice) *ScanParkedBeadsResult {
+// passMergeQueue reads the town merge queue once, lazily, for one patrol
+// phase: its git provers memoize every landing proof for the pass.
+func passMergeQueue(workDir string) func() *beads.MergeQueue {
+	var q *beads.MergeQueue
+	return func() *beads.MergeQueue {
+		if q == nil {
+			q = witnessMergeQueue(workDir)
+		}
+		return q
+	}
+}
+
+func scanParkedBeads(bd *BdCli, workDir string, notice overseerNotice, readQueue func() *beads.MergeQueue) *ScanParkedBeadsResult {
 	result := &ScanParkedBeadsResult{}
 	output, err := bd.Exec(workDir, "list", "--status=in_progress", "--json", "--limit=0")
 	if err != nil {
@@ -79,7 +94,7 @@ func scanParkedBeads(bd *BdCli, workDir string, notice overseerNotice) *ScanPark
 		}
 		result.Checked++
 		if queue == nil {
-			queue = witnessMergeQueue(workDir)
+			queue = readQueue()
 		}
 		closed, notified, err := settleParkedBead(bd, workDir, bead.ID, queue, notice)
 		if closed {

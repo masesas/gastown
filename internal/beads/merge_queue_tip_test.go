@@ -158,3 +158,29 @@ func TestAbandonCommand(t *testing.T) {
 		}
 	}
 }
+
+// noNewWorkProver: the commit is an ancestor of base_sha (no new work) and
+// reachable from the target.
+type noNewWorkProver struct{}
+
+func (noNewWorkProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	return nil
+}
+func (noNewWorkProver) IsAncestor(ancestor, descendant string) (bool, error) { return true, nil }
+
+// F7 round 1: an MR that records a merge but carried no new work (its commit
+// already in base_sha) is not a contradiction: reachability confirms the
+// record. Without a record the no-new-work guard still says not landed.
+func TestLandingVerdictRecordedNoNewWork(t *testing.T) {
+	sha := "c" + strings.Repeat("0", 39)
+	base := "b" + strings.Repeat("0", 39)
+	desc := "branch: polecat/x\ntarget: main\nsource_issue: gt-x\nrig: gastown\ncommit_sha: " + sha + "\nbase_sha: " + base + "\n"
+	recorded := ParseMRFields(&Issue{Description: desc + "close_reason: merged\n"})
+	if v, reason, ev := mrLandingVerdictReason(StatusClosed, recorded, noNewWorkProver{}); v != verdictLanded || ev != EvidenceGit {
+		t.Fatalf("recorded, no new work: %v %q %q, want landed by git", v, reason, ev)
+	}
+	bare := ParseMRFields(&Issue{Description: desc})
+	if v, _, ev := mrLandingVerdictReason(StatusClosed, bare, noNewWorkProver{}); v != verdictNotLanded || ev != EvidenceGit {
+		t.Fatalf("bare close, no new work: %v %q, want not landed", v, ev)
+	}
+}

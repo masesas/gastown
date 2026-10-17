@@ -1,7 +1,9 @@
 package witness
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,13 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/atomicfile"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/lock"
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/polecat"
-	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -39,14 +42,23 @@ import (
 //   - open MR, landed, unverified: not stranded here (the refinery, or the
 //     overseer via the parked-bead scan, owns them).
 //
+// A branch of an MR class is not stranded when the MR's source bead is
+// already terminal (the work was settled or dropped), or when the merge
+// queue still holds that source through another MR (MergeQueue.Hold:
+// pending = rework in progress, landed, unverified = the overseer's).
+//
 // A branch is reported once it has kept the same tip and class for the grace
-// period (WitnessThresholds.StrandedBranchGraceD), then again every reminder
-// interval (UnverifiedReminderIntervalD) while it stays stranded. One digest
-// mail per patrol, one line per branch. The report state lives in
-// <town>/witness/stranded-branches-<rig>.json; a lost or corrupt file only
-// repeats reports (at least once, never silenced). Nothing is auto-fixed
-// here: the only certain fix (closing parked beads whose MR landed by git
-// proof) is the parked-bead scan's.
+// period (WitnessThresholds.StrandedBranchGraceD); reminders back off
+// (strandedReminderBackoff: 1x, 3x, 7x UnverifiedReminderIntervalD, i.e.
+// 24h, 72h, 7d by default) and stop after the last one, which says so
+// ("leave it" then takes effect). One digest mail per patrol, one line per
+// branch. Branches whose state says nothing is due are not re-classified.
+// The report state lives in <town>/witness/stranded-branches-<rig>.json,
+// written atomically under a lock (a concurrent patrol skips); an unreadable
+// state is reported and counts as empty (reports repeat, never silenced). A
+// failed fetch or an exhausted time budget reports nothing that patrol.
+// Nothing is auto-fixed here: the only certain fix (closing parked beads
+// whose MR landed by git proof) is the parked-bead scan's.
 
 // mayorAddress is the mayor's mailbox.
 const mayorAddress = "mayor/"
@@ -57,16 +69,27 @@ type branchReport struct {
 	Class      string    `json:"class"`
 	FirstSeen  time.Time `json:"first_seen"`
 	NotifiedAt time.Time `json:"notified_at,omitempty"`
+	// Reports is how many reports were sent for this tip and class.
+	Reports int `json:"reports,omitempty"`
 }
 
 // branchReportState maps a branch to its report state.
 type branchReportState map[string]branchReport
 
+// strandedReminderBackoff are the waits before the 2nd, 3rd and 4th (last)
+// report, as multiples of the reminder interval. No report follows the last.
+var strandedReminderBackoff = []int{1, 3, 7}
+
+// strandedBranchBudget bounds one reconciliation (every git command is also
+// bounded by the proof limits); the rest waits for the next patrol.
+const strandedBranchBudget = 2 * time.Minute
+
 // StrandedBranchesResult is what one reconciliation did.
 type StrandedBranchesResult struct {
 	Checked  int      // polecat branches on the remote examined
 	Reported []string // branches the mayor was mailed about this patrol
-	Pending  int      // stranded branches in grace or already reported recently
+	Pending  int      // stranded branches in grace, recently reported or past the last reminder
+	Busy     bool     // another patrol of this rig held the state lock; nothing was done
 	Errors   []error
 }
 
@@ -75,16 +98,20 @@ type strandedBranch struct {
 	branch, tip string
 	disp        beads.TipDisposition
 	firstSeen   time.Time
-	reminder    bool
+	reminder    bool // an earlier report went out
+	last        bool // the last report: no reminder follows
 }
 
 // branchReconciler is one reconciliation of a rig's polecat branches.
 type branchReconciler struct {
+	ctx      context.Context
 	rig      string
 	tips     mergeproof.RemoteTips
 	git      mergeproof.PreservationGit
+	fetch    func() error // makes target and polecat tips local objects
 	queue    func() *beads.MergeQueue
 	alive    func(polecatName string) (bool, error)
+	terminal func(beadID string) (bool, error) // the source bead is closed or gone
 	grace    time.Duration
 	interval time.Duration
 	now      time.Time
@@ -93,26 +120,53 @@ type branchReconciler struct {
 }
 
 // ReconcileStrandedBranches reports the stranded polecat branches of rig
-// rigName (rig directory rigPath) to the mayor. It runs on every witness
-// patrol (gt patrol scan, with the parked-bead scan). rigName must be
-// beads.IsSafeID.
+// rigName (rig directory rigPath) to the mayor, within strandedBranchBudget.
+// It runs on every witness patrol (gt patrol scan, with the parked-bead
+// scan). rigName must be beads.IsSafeID.
 func ReconcileStrandedBranches(bd *BdCli, rigPath, rigName string, router *mail.Router) *StrandedBranchesResult {
-	r, statePath, err := newBranchReconciler(bd, rigPath, rigName, router)
+	return reconcileStrandedBranches(bd, rigPath, rigName, router, passMergeQueue(rigPath))
+}
+
+// reconcileStrandedBranches is ReconcileStrandedBranches with the patrol
+// pass's merge queue (shared with the parked-bead scan).
+func reconcileStrandedBranches(bd *BdCli, rigPath, rigName string, router *mail.Router, queue func() *beads.MergeQueue) *StrandedBranchesResult {
+	ctx, cancel := context.WithTimeout(context.Background(), strandedBranchBudget)
+	defer cancel()
+	r, statePath, err := newBranchReconciler(ctx, bd, rigPath, rigName, router)
 	if err != nil {
 		return &StrandedBranchesResult{Errors: []error{err}}
 	}
+	if queue != nil {
+		r.queue = queue
+	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		return &StrandedBranchesResult{Errors: []error{fmt.Errorf("stranded-branch state dir: %w", err)}}
+	}
+	unlock, locked, err := lock.FlockTryAcquire(statePath + ".flock")
+	if err != nil {
+		return &StrandedBranchesResult{Errors: []error{fmt.Errorf("locking the stranded-branch state: %w", err)}}
+	}
+	if !locked {
+		return &StrandedBranchesResult{Busy: true}
+	}
+	defer unlock()
+	state, loadErr := loadBranchReportState(statePath)
+	r.state = state
 	res := r.run()
+	if loadErr != nil {
+		res.Errors = append(res.Errors, fmt.Errorf("reading the stranded-branch state (reports may repeat): %w", loadErr))
+	}
 	if err := saveBranchReportState(statePath, r.state); err != nil {
-		res.Errors = append(res.Errors, fmt.Errorf("saving the stranded-branch report state: %w", err))
+		res.Errors = append(res.Errors, fmt.Errorf("saving the stranded-branch state: %w", err))
 	}
 	return res
 }
 
-// newBranchReconciler wires a reconciliation to the rig's repository (origin
-// fetched best effort, read through its push URL), the town merge queue,
-// tmux/agent-bead liveness, the operational config, the report state file
-// (returned) and the mail router.
-func newBranchReconciler(bd *BdCli, rigPath, rigName string, router *mail.Router) (*branchReconciler, string, error) {
+// newBranchReconciler wires a reconciliation to the rig's repository (read
+// through origin's push URL), the town merge queue, tmux/agent-bead
+// liveness, source bead status, the operational config and the mail router,
+// and returns the report state path (the caller loads it under the lock).
+func newBranchReconciler(ctx context.Context, bd *BdCli, rigPath, rigName string, router *mail.Router) (*branchReconciler, string, error) {
 	if !beads.IsSafeID(rigName) {
 		return nil, "", fmt.Errorf("refusing rig name %q: not a valid rig name", rigName)
 	}
@@ -125,40 +179,39 @@ func newBranchReconciler(bd *BdCli, rigPath, rigName string, router *mail.Router
 		return nil, "", fmt.Errorf("rig repository: %w", err)
 	}
 	repo = repo.WithProofLimits()
-	_ = repo.Fetch("origin") // best effort: target and polecat tips become local objects
 	thresholds := config.LoadOperationalConfig(townRoot).GetWitnessConfig()
-	statePath := branchReportStatePath(townRoot, rigName)
 	return &branchReconciler{
-		rig:      rigName,
-		tips:     mergeproof.RemoteTips{Defaults: []string{rigDefaultBranch(rigPath, repo)}, List: mergeproof.CachedLister(pushRemoteLister(repo))},
-		git:      repo,
-		queue:    func() *beads.MergeQueue { return witnessMergeQueue(rigPath) },
-		alive:    polecatAlive(bd, rigPath, townRoot, rigName),
+		ctx:   ctx,
+		rig:   rigName,
+		tips:  mergeproof.RemoteTips{Defaults: []string{mergeproof.RigDefaultBranch(rigPath, repo)}, List: mergeproof.CachedLister(pushRemoteLister(repo))},
+		git:   repo,
+		fetch: func() error { return repo.Fetch("origin") },
+		queue: func() *beads.MergeQueue { return witnessMergeQueue(rigPath) },
+		alive: polecatAlive(bd, rigPath, townRoot, rigName),
+		terminal: func(id string) (bool, error) {
+			status, ok := getBeadStatus(bd, rigPath, id)
+			if !ok {
+				return false, fmt.Errorf("cannot read source bead %s", displayID(id))
+			}
+			return status == "" || beads.IssueStatus(status).IsTerminal(), nil
+		},
 		grace:    thresholds.StrandedBranchGraceD(),
 		interval: thresholds.UnverifiedReminderIntervalD(),
 		now:      time.Now(),
-		state:    loadBranchReportState(statePath),
+		state:    branchReportState{},
 		send: func(msg *mail.Message) error {
 			if router == nil {
 				return errNoMailRouter
 			}
 			return router.Send(msg)
 		},
-	}, statePath, nil
+	}, branchReportStatePath(townRoot, rigName), nil
 }
 
 func pushRemoteLister(repo *git.Git) mergeproof.RemoteLister {
 	return func(prefix string) ([]git.RemoteRef, error) {
 		return repo.ListPushRemoteRefsWithHashes("origin", prefix)
 	}
-}
-
-// rigDefaultBranch is the rig's configured default branch, else origin/HEAD.
-func rigDefaultBranch(rigPath string, repo *git.Git) string {
-	if cfg, err := rig.LoadRigConfig(rigPath); err == nil && strings.TrimSpace(cfg.DefaultBranch) != "" {
-		return strings.TrimSpace(cfg.DefaultBranch)
-	}
-	return repo.RemoteDefaultBranch()
 }
 
 // polecatAlive reports whether polecat name of the rig is alive: its session
@@ -195,62 +248,117 @@ func (r *branchReconciler) run() *StrandedBranchesResult {
 		res.Errors = append(res.Errors, fmt.Errorf("listing polecat branches on the remote: %s", beads.DisplayReason(err.Error())))
 		return res
 	}
-	sort.Slice(refs, func(i, j int) bool { return refs[i].Name < refs[j].Name })
-	var q *beads.MergeQueue
-	stranded := map[string]bool{}
-	var due []strandedBranch
+	onRemote := map[string]string{}
 	for _, ref := range refs {
-		branch, ok := strings.CutPrefix(ref.Name, "refs/heads/")
-		if !ok || !strings.HasPrefix(branch, "polecat/") {
-			continue
+		if branch, ok := strings.CutPrefix(ref.Name, "refs/heads/"); ok && strings.HasPrefix(branch, "polecat/") {
+			onRemote[branch] = strings.TrimSpace(ref.Hash)
+		}
+	}
+	r.pruneGone(onRemote)
+	if len(onRemote) == 0 {
+		return res // nothing to fetch or classify
+	}
+	if r.fetch != nil {
+		if err := r.fetch(); err != nil {
+			res.Errors = append(res.Errors, fmt.Errorf("fetching origin failed, no branch reported: %s", beads.DisplayReason(err.Error())))
+			return res
+		}
+	}
+	due, ok := r.classifyAll(onRemote, res)
+	if !ok {
+		return res
+	}
+	r.report(due, res)
+	return res
+}
+
+// pruneGone forgets branches that are no longer on the remote or moved.
+func (r *branchReconciler) pruneGone(onRemote map[string]string) {
+	for branch, st := range r.state {
+		if tip, ok := onRemote[branch]; !ok || tip != st.Tip {
+			delete(r.state, branch)
+		}
+	}
+}
+
+// classifyAll classifies every branch and returns the due ones. ok is false
+// when the patrol must report nothing (remote archives or the merge queue
+// unreadable, budget exhausted).
+func (r *branchReconciler) classifyAll(onRemote map[string]string, res *StrandedBranchesResult) ([]strandedBranch, bool) {
+	branches := make([]string, 0, len(onRemote))
+	for b := range onRemote {
+		branches = append(branches, b)
+	}
+	sort.Strings(branches)
+	var q *beads.MergeQueue
+	var due []strandedBranch
+	for _, branch := range branches {
+		if r.ctx != nil && r.ctx.Err() != nil {
+			res.Errors = append(res.Errors, fmt.Errorf("time budget exhausted after %d of %d branches, no branch reported this patrol", res.Checked, len(branches)))
+			return nil, false
 		}
 		res.Checked++
-		tip := strings.TrimSpace(ref.Hash)
+		tip := onRemote[branch]
+		if st, ok := r.state[branch]; ok && !r.due(st) {
+			res.Pending++ // same tip, nothing due: not re-classified
+			continue
+		}
 		if mergeproof.CoveredByTargets(r.git, tip, r.tips) {
+			delete(r.state, branch)
 			continue
 		}
 		archived, err := r.tips.Archived(tip)
 		if err != nil {
 			res.Errors = append(res.Errors, fmt.Errorf("cannot list archives, no branch reported: %s", beads.DisplayReason(err.Error())))
-			return res
+			return nil, false
 		}
-		if archived {
-			continue
-		}
-		if q == nil {
+		if q == nil && !archived {
 			q = r.queue()
 		}
-		disp, err := q.TipDisposition(branch, tip)
-		if err != nil {
-			res.Errors = append(res.Errors, fmt.Errorf("merge queue unreadable, no branch reported: %w", err))
-			return res
+		var disp beads.TipDisposition
+		if !archived {
+			if disp, err = q.TipDisposition(branch, tip); err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("merge queue unreadable, no branch reported: %w", err))
+				return nil, false
+			}
 		}
-		if !r.strandedClass(branch, disp, res) {
+		errsBefore := len(res.Errors)
+		if archived || !r.strandedClass(branch, disp, q, res) {
+			if len(res.Errors) == errsBefore {
+				delete(r.state, branch) // settled; an unknown answer keeps the state (and its backoff)
+			}
 			continue
 		}
-		stranded[branch] = true
 		if b, ok := r.track(branch, tip, disp); ok {
 			due = append(due, b)
 		} else {
 			res.Pending++
 		}
 	}
-	for branch := range r.state {
-		if !stranded[branch] {
-			delete(r.state, branch)
-		}
+	return due, true
+}
+
+// due reports whether a branch with this state needs a report now.
+func (r *branchReconciler) due(st branchReport) bool {
+	if r.now.Sub(st.FirstSeen) < r.grace {
+		return false
 	}
-	r.report(due, res)
-	return res
+	if st.Reports == 0 || st.NotifiedAt.IsZero() || st.NotifiedAt.After(r.now.Add(unverifiedMarkSkew)) {
+		return st.Reports <= len(strandedReminderBackoff) // an invalid mark never silences
+	}
+	if st.Reports > len(strandedReminderBackoff) {
+		return false // past the last reminder
+	}
+	return r.now.Sub(st.NotifiedAt) >= time.Duration(strandedReminderBackoff[st.Reports-1])*r.interval
 }
 
 // strandedClass reports whether a tip of this class is stranded (reported to
 // the mayor). A branch without an MR counts only when none of its possible
 // owners is alive; unknown liveness is not reported (it may be worked on).
-func (r *branchReconciler) strandedClass(branch string, disp beads.TipDisposition, res *StrandedBranchesResult) bool {
+func (r *branchReconciler) strandedClass(branch string, disp beads.TipDisposition, q *beads.MergeQueue, res *StrandedBranchesResult) bool {
 	switch disp.Class {
 	case beads.TipRejected, beads.TipSuperseded, beads.TipConflict, beads.TipNoVerdict:
-		return true
+		return r.sourceStillOpen(disp, q, res)
 	case beads.TipNoMR:
 		for _, owner := range polecat.BranchOwners(branch) {
 			alive, err := r.alive(owner)
@@ -268,23 +376,49 @@ func (r *branchReconciler) strandedClass(branch string, disp beads.TipDispositio
 	}
 }
 
-// track updates the state of a stranded branch and reports whether it is due:
-// same tip and class for the grace period, never reported or last reported an
-// interval ago. A new tip or class restarts the grace.
+// sourceStillOpen reports whether the work of a decided MR still waits for a
+// decision: its source bead is not terminal and the merge queue does not
+// hold it through another MR (MergeQueue.Hold: pending = rework running,
+// landed, unverified = the overseer's). A source that cannot be read is not
+// reported (the error is).
+func (r *branchReconciler) sourceStillOpen(disp beads.TipDisposition, q *beads.MergeQueue, res *StrandedBranchesResult) bool {
+	fields := beads.ParseMRFields(disp.MR)
+	if fields == nil || strings.TrimSpace(fields.SourceIssue) == "" {
+		return true
+	}
+	source := strings.TrimSpace(fields.SourceIssue)
+	hold, _, err := q.Hold(source)
+	if err != nil {
+		res.Errors = append(res.Errors, fmt.Errorf("merge queue unreadable for %s: %w", displayID(source), err))
+		return false
+	}
+	if hold != beads.HoldNone {
+		return false
+	}
+	if r.terminal == nil {
+		return true
+	}
+	done, err := r.terminal(source)
+	if err != nil {
+		res.Errors = append(res.Errors, err)
+		return false
+	}
+	return !done
+}
+
+// track updates the state of a stranded branch and reports whether it is due
+// (due). A new tip or class restarts the grace and the reminder count.
 func (r *branchReconciler) track(branch, tip string, disp beads.TipDisposition) (strandedBranch, bool) {
 	st, ok := r.state[branch]
 	if !ok || st.Tip != tip || st.Class != string(disp.Class) {
 		st = branchReport{Tip: tip, Class: string(disp.Class), FirstSeen: r.now}
 	}
 	r.state[branch] = st
-	if r.now.Sub(st.FirstSeen) < r.grace {
+	if !r.due(st) {
 		return strandedBranch{}, false
 	}
-	notified := !st.NotifiedAt.IsZero() && !st.NotifiedAt.After(r.now.Add(unverifiedMarkSkew))
-	if notified && r.now.Sub(st.NotifiedAt) < r.interval {
-		return strandedBranch{}, false
-	}
-	return strandedBranch{branch: branch, tip: tip, disp: disp, firstSeen: st.FirstSeen, reminder: notified}, true
+	return strandedBranch{branch: branch, tip: tip, disp: disp, firstSeen: st.FirstSeen,
+		reminder: st.Reports > 0, last: st.Reports == len(strandedReminderBackoff)}, true
 }
 
 // report mails the due branches to the mayor in one digest and marks them;
@@ -300,6 +434,7 @@ func (r *branchReconciler) report(due []strandedBranch, res *StrandedBranchesRes
 	for _, b := range due {
 		st := r.state[b.branch]
 		st.NotifiedAt = r.now
+		st.Reports++
 		r.state[b.branch] = st
 		res.Reported = append(res.Reported, b.branch)
 	}
@@ -311,7 +446,11 @@ func (r *branchReconciler) message(due []strandedBranch) *mail.Message {
 	lines := make([]string, 0, len(due))
 	for _, b := range due {
 		reminder = reminder && b.reminder
-		lines = append(lines, strandedLine(r.rig, b)+fmt.Sprintf(" [stranded %s]", shortDuration(r.now.Sub(b.firstSeen))))
+		line := strandedLine(r.rig, b) + fmt.Sprintf(" [stranded %s]", shortDuration(r.now.Sub(b.firstSeen)))
+		if b.last {
+			line += " [last reminder: not reported again while this tip and class stay the same]"
+		}
+		lines = append(lines, line)
 	}
 	if reminder {
 		subject = "REMINDER " + subject
@@ -324,7 +463,8 @@ No agent deletes them; decide per branch (rework/resubmit = re-dispatch the sour
 Abandon (rejected/superseded only) archives the tip under refs/gt/archive/* before deleting.
 Deleting unlanded branches directly and pruning archives are for a human or crew: escalate
 to the overseer (gt mail send --human) when a decision needs one.
-Reminders follow every %s while a branch stays stranded.`,
+Reminders back off (%s, then 3x, then 7x) and stop after the last one; leaving a branch
+alone is then a decision that holds.`,
 		displayID(r.rig), strings.Join(lines, "\n"), shortDuration(r.interval))
 	return &mail.Message{
 		From:     fmt.Sprintf("%s/witness", r.rig),
@@ -371,27 +511,28 @@ func branchReportStatePath(townRoot, rigName string) string {
 	return filepath.Join(townRoot, "witness", "stranded-branches-"+rigName+".json")
 }
 
-// loadBranchReportState reads the report state; a missing or corrupt file is
-// empty (branches are reported again, never silenced).
-func loadBranchReportState(path string) branchReportState {
+// loadBranchReportState reads the report state. A missing file is empty; an
+// unreadable or corrupt one is empty with the error (branches are reported
+// again, never silenced).
+func loadBranchReportState(path string) (branchReportState, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path from the town root and a safe rig name
+	if errors.Is(err, os.ErrNotExist) {
+		return branchReportState{}, nil
+	}
 	if err != nil {
-		return branchReportState{}
+		return branchReportState{}, err
 	}
 	var st branchReportState
-	if json.Unmarshal(data, &st) != nil || st == nil {
-		return branchReportState{}
+	if err := json.Unmarshal(data, &st); err != nil {
+		return branchReportState{}, fmt.Errorf("corrupt state file: %w", err)
 	}
-	return st
+	if st == nil {
+		st = branchReportState{}
+	}
+	return st, nil
 }
 
+// saveBranchReportState writes the state atomically (temp file + rename).
 func saveBranchReportState(path string, st branchReportState) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
+	return atomicfile.EnsureDirAndWriteJSONWithPerm(path, st, 0o600)
 }
