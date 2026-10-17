@@ -135,6 +135,9 @@ func executeSling(params SlingParams) (res *SlingResult, retErr error) {
 		result.ErrMsg = err.Error()
 		return result, fmt.Errorf("could not get bead info: %w", err)
 	}
+	// Review-only mode sticks to the bead: scheduler, batch and convoy
+	// re-dispatch inherit it from the bead's review_only field (gt-pd1c.69).
+	reviewOnly := effectiveReviewOnly(params.ReviewOnly, info)
 
 	// Guard against dispatching closed/tombstone beads (defense-in-depth).
 	// Not bypassed by --force — if you need to re-dispatch, reopen the bead first.
@@ -392,7 +395,7 @@ func executeSling(params SlingParams) (res *SlingResult, retErr error) {
 		Vars:             varsForAttachment,
 		AttachedMolecule: attachedMoleculeID,
 		NoMerge:          params.NoMerge,
-		ReviewOnly:       params.ReviewOnly,
+		ReviewOnly:       reviewOnly,
 		Mode:             &params.Mode,
 		FormulaVars:      formulaVarsForAttachment,
 	}
@@ -415,7 +418,7 @@ func executeSling(params SlingParams) (res *SlingResult, retErr error) {
 		return result, fmt.Errorf("serializing hook write for %s: %w", targetAgent, assigneeLockErr)
 	}
 	defer assigneeUnlock()
-	if attachedMoleculeID == "" && (params.NoMerge || params.ReviewOnly) {
+	if attachedMoleculeID == "" && (params.NoMerge || reviewOnly) {
 		if err := storeFieldsInBeadFromTownRoot(townRoot, beadToHook, fieldUpdates); err != nil {
 			cleanupSpawnedPolecat(spawnInfo, params.RigName, convoyID)
 			restoreRollbackRawWorkflowFieldsFromCurrent(beadToHook, townRoot, hookWorkDir, info)

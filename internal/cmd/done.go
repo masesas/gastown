@@ -484,8 +484,7 @@ func doneReviewOnlyCloseSkipReason(bd *beads.Beads, issueID string, issue *beads
 	if skipReason != "" {
 		return skipReason, fatal
 	}
-	attachment := beads.ParseAttachmentFields(issue)
-	if attachment == nil || !attachment.ReviewOnly {
+	if !beads.IsReviewOnly(issue) {
 		return "", false
 	}
 	currentHead, err := currentReviewEvidenceHead()
@@ -500,10 +499,10 @@ func doneReviewOnlyCloseSkipReasonForHead(bd *beads.Beads, issueID string, issue
 	if skipReason != "" {
 		return skipReason, fatal
 	}
-	attachment := beads.ParseAttachmentFields(issue)
-	if attachment == nil || !attachment.ReviewOnly {
+	if !beads.IsReviewOnly(issue) {
 		return "", false
 	}
+	attachment := beads.ParseAttachmentFields(issue)
 	assignmentAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(attachment.AttachedAt))
 	if err != nil {
 		return fmt.Sprintf("review-only issue %s has no fresh assignment timestamp — re-sling it or add evidence after a fresh assignment", issueID), true
@@ -1034,12 +1033,9 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 			sourceIssueForNoMerge = sourceInfo.Issue
 			sourceBD = sourceInfo.BD
-			if af := beads.ParseAttachmentFields(sourceIssueForNoMerge); af != nil {
-				if af.NoMerge || af.ReviewOnly {
-					isNoMergeTask = true
-				}
-				reviewOnlySource = af.ReviewOnly
-			}
+			reviewOnlySource = beads.IsReviewOnly(sourceIssueForNoMerge)
+			af := beads.ParseAttachmentFields(sourceIssueForNoMerge)
+			isNoMergeTask = reviewOnlySource || (af != nil && af.NoMerge)
 		}
 
 		// If no commits ahead, work was likely already merged or is a legitimate

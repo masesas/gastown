@@ -113,6 +113,7 @@ case "$cmd" in
     for arg in "$@"; do
       case "$arg" in
         --description=*) printf "%s" "${arg#--description=}" > "$BD_DESC_FILE" ;;
+        --body-file=-) cat > "$BD_DESC_FILE" ;;
         --status=*) printf "%s" "${arg#--status=}" > "$BD_STATUS_FILE" ;;
         --assignee=*) printf "%s" "${arg#--assignee=}" > "$BD_ASSIGNEE_FILE" ;;
       esac

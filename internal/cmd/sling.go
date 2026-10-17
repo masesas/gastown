@@ -170,7 +170,7 @@ func init() {
 	slingCmd.Flags().BoolVar(&slingRalph, "ralph", false, "Enable Ralph Wiggum loop mode (fresh context per step, for multi-step workflows)")
 	slingCmd.Flags().StringVar(&slingFormula, "formula", "", "Formula to apply (default: mol-polecat-work for polecat targets)")
 	slingCmd.Flags().StringVar(&slingCrew, "crew", "", "Target a crew member in the specified rig (e.g., --crew mel with target gastown → gastown/crew/mel)")
-	slingCmd.Flags().BoolVar(&slingReviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push")
+	slingCmd.Flags().BoolVar(&slingReviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push (sticky: stored as review_only on the bead and inherited by every later sling)")
 
 	slingCmd.AddCommand(slingRespawnResetCmd)
 	rootCmd.AddCommand(slingCmd)
@@ -636,6 +636,9 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("checking bead status: %w", err)
 	}
+	// Review-only mode sticks to the bead: a re-sling without --review-only
+	// inherits it from the bead's review_only field (gt-pd1c.69).
+	reviewOnly := effectiveReviewOnly(slingReviewOnly, info)
 
 	// Guard against slinging beads with flag-like titles (gt-e0kx5).
 	// These are garbage beads created by flag-parsing bugs. Slinging them
@@ -1046,7 +1049,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		attachedMoleculeID,
 		formulaName,
 		slingNoMerge,
-		slingReviewOnly,
+		reviewOnly,
 		mode,
 		formulaVarsForAttachment,
 		convoyID,
@@ -1065,7 +1068,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("serializing hook write for %s: %w", targetAgent, assigneeLockErr)
 	}
 	defer assigneeUnlock()
-	if attachedMoleculeID == "" && (slingNoMerge || slingReviewOnly) {
+	if attachedMoleculeID == "" && (slingNoMerge || reviewOnly) {
 		if err := storeFieldsInBeadFromTownRoot(townRoot, beadID, fieldUpdates); err != nil {
 			if newPolecatInfo != nil {
 				fmt.Printf("%s Raw sling metadata failed, cleaning up spawned polecat %s...\n", style.Warning.Render("⚠"), newPolecatInfo.PolecatName)
@@ -1121,8 +1124,12 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		if slingNoMerge {
 			fmt.Printf("%s No-merge mode enabled (work stays on feature branch)\n", style.Bold.Render("✓"))
 		}
-		if slingReviewOnly {
-			fmt.Printf("%s Review-only mode: assignee must evaluate and report back, NOT merge/commit/push\n", style.Bold.Render("⚠"))
+		if reviewOnly {
+			inherited := ""
+			if !slingReviewOnly {
+				inherited = " (inherited from bead review_only)"
+			}
+			fmt.Printf("%s Review-only mode%s: assignee must evaluate and report back, NOT merge/commit/push\n", style.Bold.Render("⚠"), inherited)
 		}
 	}
 	if mode != "" {

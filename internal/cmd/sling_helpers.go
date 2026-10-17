@@ -553,6 +553,19 @@ type beadFieldUpdates struct {
 	FormulaVars      string   // Newline-separated key=value pairs for formula template substitution
 }
 
+// effectiveReviewOnly returns the review-only mode a dispatch must apply: the
+// explicit --review-only flag, or the review_only field already on the bead
+// (read through beads.IsReviewOnly, the single source of truth). A dispatch can
+// add review-only mode but never drop it, so a plain re-sling, --force,
+// scheduler dispatch or convoy relaunch keeps a review leg review-only
+// (gt-pd1c.69).
+func effectiveReviewOnly(flag bool, info *beadInfo) bool {
+	if flag {
+		return true
+	}
+	return info != nil && beads.IsReviewOnly(&beads.Issue{Description: info.Description})
+}
+
 func buildSlingFieldUpdates(
 	dispatcher string,
 	args string,

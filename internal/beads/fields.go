@@ -164,6 +164,44 @@ func FormatAttachmentFields(fields *AttachmentFields) string {
 	return strings.Join(lines, "\n")
 }
 
+// IsReviewOnly reports whether the issue carries the structured review_only
+// marker. It is the single source of truth for review-only mode: sling, the
+// scheduler dispatch, gt prime, gt done and gt mq submit all decide from the
+// bead through this function, never from a dispatch flag alone (gt-pd1c.69).
+func IsReviewOnly(issue *Issue) bool {
+	fields := ParseAttachmentFields(issue)
+	return fields != nil && fields.ReviewOnly
+}
+
+// DetachedAttachmentFields returns the attachment fields that survive a
+// molecule detach. Fields describing the current assignment (molecule,
+// formula, timestamp, args, dispatcher, convoy, ...) are dropped. review_only
+// describes the bead itself, so it is sticky: a burned or nuked assignment
+// must not turn a review leg into code work on the next dispatch.
+// Returns nil when nothing survives.
+func DetachedAttachmentFields(fields *AttachmentFields) *AttachmentFields {
+	if fields == nil || !fields.ReviewOnly {
+		return nil
+	}
+	return &AttachmentFields{ReviewOnly: true}
+}
+
+// WithReviewOnlyMarker returns description with the structured
+// "review_only: true" field prepended. The rest of the text is kept verbatim
+// (no attachment-key stripping), so it is safe for freshly authored bead
+// bodies. A description that is already review-only is returned unchanged.
+func WithReviewOnlyMarker(description string) string {
+	if IsReviewOnly(&Issue{Description: description}) {
+		return description
+	}
+	marker := FormatAttachmentFields(&AttachmentFields{ReviewOnly: true})
+	body := strings.Trim(description, "\n")
+	if body == "" {
+		return marker
+	}
+	return marker + "\n\n" + body
+}
+
 // SetAttachmentFields updates an issue's description with the given attachment fields.
 // Existing attachment field lines are replaced; other content is preserved.
 // Returns the new description string.

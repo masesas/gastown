@@ -583,6 +583,16 @@ gt sling <proto> --on gt-def <rig>       # With workflow template
 gt sling <bead> <rig>                    # Auto-convoy for dashboard visibility
 ```
 
+Review-only work (`--review-only`): the assignee evaluates and reports back, and
+must not commit, push or open a merge request. The mode is stored as the
+`review_only: true` field on the bead and is sticky: a later `gt sling` of the
+same bead without the flag (including `--force`, scheduler dispatch, convoy
+re-dispatch, or after the previous polecat was nuked) keeps it and refreshes the
+assignment timestamp. `gt prime` shows a REVIEW-ONLY directive, `gt done`
+refuses commits ahead of the base (complete with a `REPORT:`/`FINDINGS:` comment
+carrying `head_sha: <HEAD>` and no new commits), and `gt mq submit` refuses the
+bead. The field is removed only by editing the bead description.
+
 Agent overrides:
 
 - `gt start --agent <alias>` overrides the Mayor/Deacon runtime for this launch.
@@ -798,6 +808,9 @@ bd formula list          # Lists formulas by type
 - `gt sling` attempts to cook+pour the formula, which fails for convoy type
 - `gt formula run` handles convoy dispatch directly, spawning parallel polecats
 - Convoy formulas create multiple polecats (one per leg) + synthesis step
+- Legs of a convoy formula with `review_only = true` (formula-wide or per leg)
+  are created with the `review_only: true` field on the leg bead, so every later
+  re-dispatch of a leg stays review-only
 
 ## Common Issues
 

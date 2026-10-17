@@ -284,12 +284,17 @@ func (b *Beads) DetachMolecule(pinnedBeadID string) (*Issue, error) {
 	}
 
 	// Check if there's anything to detach
-	if ParseAttachmentFields(issue) == nil {
+	attachment := ParseAttachmentFields(issue)
+	if attachment == nil {
 		return issue, nil // Nothing to detach
 	}
 
-	// Clear attachment fields by passing nil
-	newDesc := SetAttachmentFields(issue, nil)
+	// Clear the assignment's attachment fields; sticky bead markers
+	// (review_only) survive the detach (gt-pd1c.69).
+	newDesc := SetAttachmentFields(issue, DetachedAttachmentFields(attachment))
+	if newDesc == issue.Description {
+		return issue, nil
+	}
 
 	// Update the issue
 	if err := b.Update(pinnedBeadID, UpdateOptions{Description: &newDesc}); err != nil {
