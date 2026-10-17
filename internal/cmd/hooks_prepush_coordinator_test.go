@@ -25,6 +25,12 @@ func (g gitLanded) VerifyPushedCommitReachableFromPushTarget(remote, branch, com
 	return stubNotOnTarget{"commit " + commit + " not on " + branch}
 }
 
+// PatchEquivalentOnPushTarget: no rebase/squash equivalent either (a
+// definite "not landed" for commits that are not listed).
+func (g gitLanded) PatchEquivalentOnPushTarget(remote, branch, commit, base string) (bool, error) {
+	return g[commit], nil
+}
+
 func mqWithProver(landed gitLanded, mrs ...*beads.Issue) func() *beads.MergeQueue {
 	return func() *beads.MergeQueue {
 		idx := beads.MergeQueueIndex{}

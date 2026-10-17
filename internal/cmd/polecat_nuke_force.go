@@ -29,7 +29,10 @@ const nukeForceAction = "gt polecat nuke --force"
 // nukeForceTargetCheck reports what a --force nuke of one target would lose
 // (nil = nothing); tests replace it.
 var nukeForceTargetCheck = func(p polecatTarget) error {
-	return errors.Join(nukeTargetBranchDeletable(p), nukeForceWorkCheck(p))
+	if err := nukeTargetBranchDeletable(p); err != nil {
+		return err // already refused: skip the worktree and bead checks
+	}
+	return nukeForceWorkCheck(p)
 }
 
 // gateNukeForceFor runs the gate for an actual --force nuke (not a dry run).
@@ -157,14 +160,21 @@ func polecatRepoBranchDeletable(repoGit *git.Git, branch, defaultBranch string, 
 			return repoGit.ListPushRemoteRefsWithHashes("origin", prefix)
 		},
 	}
-	remoteTip, _ := tips.branchTip(branch) // unreadable: the git proof is skipped
+	noGitProof := ""
+	remoteTip, err := tips.branchTip(branch)
+	if err != nil {
+		// Without the remote neither its tip nor the target tips are known:
+		// the merge queue decides on the local tip alone.
+		noGitProof = "cannot list origin: " + firstLine(err.Error())
+		tips = targetTipResolver{}
+	}
 	localTip, _ := repoGit.Rev("refs/heads/" + branch + "^{commit}")
 	candidates := uniqueNonEmpty(remoteTip, strings.TrimSpace(localTip))
 	if len(candidates) == 0 {
-		return polecatBranchDeletion{branch: branch, queue: queue}.check()
+		return polecatBranchDeletion{branch: branch, queue: queue, noGitProof: noGitProof}.check()
 	}
 	for _, tip := range candidates {
-		d := polecatBranchDeletion{branch: branch, tip: tip, tips: tips, git: repoGit, queue: queue}
+		d := polecatBranchDeletion{branch: branch, tip: tip, tips: tips, git: repoGit, queue: queue, noGitProof: noGitProof}
 		if err := d.check(); err != nil {
 			return err
 		}

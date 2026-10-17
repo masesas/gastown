@@ -50,3 +50,26 @@ func (q *MergeQueue) mergeRequestsFromBranch(branch string) []*Issue {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
+
+// GitProvesLanded reports whether git alone proves that mr's work landed
+// (gitLandingVerdict, the git part of the one landing predicate: the commit is
+// reachable from the target, or a rebase/squash equivalent is on it). The
+// predicate stops at the recorded merged signal (close_reason/merge_commit,
+// EvidenceRecorded) before asking git; callers that discard work on a landed
+// verdict ask git here instead of trusting the bead fields (gt-pd1c.78). An
+// unread queue, a missing prover or any git doubt is false.
+func (q *MergeQueue) GitProvesLanded(mr *Issue) bool {
+	if q.Err() != nil || mr == nil || q.resolve == nil {
+		return false
+	}
+	fields := ParseMRFields(mr)
+	if fields == nil {
+		return false
+	}
+	prover := q.resolve(strings.TrimSpace(fields.Rig))
+	if prover == nil {
+		return false
+	}
+	verdict, _ := gitLandingVerdict(fields, prover)
+	return verdict == verdictLanded
+}

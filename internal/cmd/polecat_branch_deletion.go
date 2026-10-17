@@ -24,10 +24,12 @@ import (
 //     HoldNone: no MR open from the branch and every MR from it definitely not
 //     landed (or none at all). An MR closed by hand that git proves did not
 //     land counts as "not landed" (user decision for gt-pd1c.78); or
-//  3. HoldLanded proven by git (HoldDetail.Evidence == EvidenceGit) and the
-//     deciding MR's commit_sha is exactly the tip. A landed verdict that rests
-//     only on bead fields (close_reason/merge_commit) or a human verdict is
-//     not trusted for discarding work.
+//  3. HoldLanded proven by git (HoldDetail.Evidence == EvidenceGit, which
+//     includes a rebase/squash equivalent; or, for a verdict recorded on the
+//     bead, MergeQueue.GitProvesLanded asked behind it) and the deciding MR's
+//     commit_sha is exactly the tip. A landed verdict that rests only on bead
+//     fields (close_reason/merge_commit) or a human verdict is not trusted for
+//     discarding work.
 //
 // Anything else (an open MR, a landing git cannot decide, landed work with
 // later commits, an unreadable queue) is refused: fail closed. Humans and crew
@@ -127,6 +129,9 @@ type polecatBranchDeletion struct {
 	// queue reads the town's merge queue; called only when the git proof
 	// fails. nil counts as unreadable.
 	queue func() *beads.MergeQueue
+	// noGitProof explains why the git proof could not run (e.g. the remote
+	// could not be listed); it is added to refusals.
+	noGitProof string
 }
 
 // polecatDeletionExits is the guidance appended to every refusal.
@@ -141,7 +146,8 @@ func (d polecatBranchDeletion) check() error {
 	if d.queue == nil {
 		return d.refuse("the merge queue is not available (fail closed)")
 	}
-	detail, err := d.queue().BranchHold(d.branch)
+	q := d.queue()
+	detail, err := q.BranchHold(d.branch)
 	if err != nil {
 		return d.refuse("cannot read the merge queue: " + firstLine(err.Error()) + " (fail closed)")
 	}
@@ -151,7 +157,7 @@ func (d polecatBranchDeletion) check() error {
 	case beads.HoldPending:
 		return d.refuse(fmt.Sprintf("MR %s from this branch is open; the refinery owns the branch until it merges", mrIDOf(detail)))
 	case beads.HoldLanded:
-		return d.checkLanded(detail)
+		return d.checkLanded(q, detail)
 	default:
 		notLanded, landed := beads.UnverifiedExitCommands(detail.Rig, detail.MRID)
 		return d.refuse(fmt.Sprintf("MR %s from this branch is closed but git cannot tell whether its work landed (%s); "+
@@ -159,9 +165,14 @@ func (d polecatBranchDeletion) check() error {
 	}
 }
 
-// checkLanded allows a landed branch only on git proof and an exact tip.
-func (d polecatBranchDeletion) checkLanded(detail beads.HoldDetail) error {
-	if detail.Evidence != beads.EvidenceGit {
+// checkLanded allows a landed branch only on git proof and an exact tip. A
+// verdict recorded on the bead (refinery close, gt mq post-merge) falls back to
+// git (q.GitProvesLanded), so the order in which the predicate reads its
+// evidence does not refuse a landed branch.
+func (d polecatBranchDeletion) checkLanded(q *beads.MergeQueue, detail beads.HoldDetail) error {
+	gitProven := detail.Evidence == beads.EvidenceGit ||
+		(detail.Evidence == beads.EvidenceRecorded && q.GitProvesLanded(detail.MR))
+	if !gitProven {
 		return d.refuse(fmt.Sprintf("MR %s from this branch is marked landed (%s), but git has not proven its tip "+
 			"is on a merge target; fetch and retry", mrIDOf(detail), detail.Evidence))
 	}
@@ -175,6 +186,9 @@ func (d polecatBranchDeletion) checkLanded(detail beads.HoldDetail) error {
 }
 
 func (d polecatBranchDeletion) refuse(why string) error {
+	if d.noGitProof != "" {
+		why += " (git proof unavailable: " + d.noGitProof + ")"
+	}
 	return fmt.Errorf("discarding %s: %s. %s", d.branch, why, polecatDeletionExits)
 }
 
