@@ -233,6 +233,8 @@ func TestEngineerCloseMRWithReasonRecordsMergeCommitAndClearsActiveMR(t *testing
 
 func TestEngineerCloseMRWithReasonRejectsAndClearsMatchingActiveMR(t *testing.T) {
 	e, b, mrIssue, agentIssue, srcIssue := setupEngineerTerminalCloseTest(t, "gt-wisp-old")
+	// A rejected MR whose work git proves not landed reopens its source.
+	useIsolatedMergeQueueNotLanded(t, b)
 
 	if err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "rejected: policy failed"); err != nil {
 		t.Fatalf("closeMRWithReason: %v", err)
@@ -315,7 +317,7 @@ func setupEngineerTerminalCloseTest(t *testing.T, activeMR string) (*Engineer, *
 	mrIssue, err := b.Create(beads.CreateOptions{
 		Title:       "MR for feature X",
 		Labels:      []string{"gt:merge-request"},
-		Description: "branch: polecat/test/gt-xyz\nsource_issue: " + srcIssue.ID + "\nworker: test\ntarget: main\nagent_bead: " + agentIssue.ID,
+		Description: "branch: polecat/test/gt-xyz\nsource_issue: " + srcIssue.ID + "\nworker: test\ntarget: main\nagent_bead: " + agentIssue.ID + "\ncommit_sha: " + notLandedMRCommit,
 	})
 	if err != nil {
 		t.Fatalf("create MR issue: %v", err)

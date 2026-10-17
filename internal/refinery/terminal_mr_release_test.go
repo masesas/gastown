@@ -191,12 +191,48 @@ func TestReportSourceRelease(t *testing.T) {
 // in a real town that DB is one of the town's beads DBs.
 func useIsolatedMergeQueue(t *testing.T, b *beads.Beads) {
 	t.Helper()
+	useIsolatedMergeQueueWithProvers(t, b, nil)
+}
+
+// useIsolatedMergeQueueWithProvers is useIsolatedMergeQueue with git provers
+// for the MRs' rigs (nil: none, so git cannot decide any landing).
+func useIsolatedMergeQueueWithProvers(t *testing.T, b *beads.Beads, resolve beads.ProverResolver) {
+	t.Helper()
 	old := readTownMergeQueue
 	readTownMergeQueue = func(string) *beads.MergeQueue {
 		idx, err := b.MergeRequestsBySource()
-		return beads.NewMergeQueue(idx, err, nil)
+		return beads.NewMergeQueue(idx, err, resolve)
 	}
 	t.Cleanup(func() { readTownMergeQueue = old })
+}
+
+// notLandedMRCommit is the commit_sha of rejected test MRs that git proves
+// did not land (notLandedProver).
+const notLandedMRCommit = "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"
+
+// notLandedProver: git definitely says no commit is on the target, not even
+// as an equivalent patch (rebase/squash).
+type notLandedProver struct{}
+
+func (notLandedProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	return commitNotOnTargetErr{}
+}
+
+func (notLandedProver) PatchEquivalentOnPushTarget(remote, branch, commit, base string) (bool, error) {
+	return false, nil
+}
+
+type commitNotOnTargetErr struct{}
+
+func (commitNotOnTargetErr) Error() string           { return "commit not on target" }
+func (commitNotOnTargetErr) CommitNotOnTarget() bool { return true }
+
+// useIsolatedMergeQueueNotLanded is the isolated queue with git proving that
+// no MR landed, so a rejected MR (commit_sha notLandedMRCommit) releases its
+// source to open.
+func useIsolatedMergeQueueNotLanded(t *testing.T, b *beads.Beads) {
+	t.Helper()
+	useIsolatedMergeQueueWithProvers(t, b, func(string) beads.MergeProver { return notLandedProver{} })
 }
 
 // round 3 #1: the rejected MR was closed by hand earlier and git cannot decide

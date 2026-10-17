@@ -91,25 +91,18 @@ func (b *Beads) findMRForBranch(branch string, skipClosed bool) (*Issue, error) 
 	return nil, nil
 }
 
-// ListPendingMergeRequests returns merge-request wisps that are not terminal:
-// submitted by gt done and not yet merged or rejected by the refinery. It uses
-// the same wisps-table SQL as ListMergeRequests, but neither hydrates details
-// nor swallows query errors, so callers deciding whether work may be
-// dispatched again can fail closed when the queue cannot be read.
+// ListPendingMergeRequests returns merge-request beads that are not
+// terminal: submitted and not yet merged or rejected by the refinery. It
+// reads the same beads as ListMergeRequests (the refinery's queue): wisps
+// (gt done / gt mq submit create MRs ephemeral) and the issues table (an MR
+// bead created without --ephemeral, or written before MRs became wisps), but
+// neither hydrates details nor swallows query errors, so callers deciding
+// whether work may be dispatched again or discarded can fail closed when the
+// queue cannot be read.
 func (b *Beads) ListPendingMergeRequests() ([]*Issue, error) {
-	out, err := b.run("sql", "--json",
-		"SELECT w.id, w.status, w.description FROM wisps w "+
-			"JOIN wisp_labels l ON w.id = l.issue_id "+
-			"WHERE l.label = 'gt:merge-request' AND w.status NOT IN ('closed', 'tombstone')")
+	rows, err := b.mergeRequestRows(false)
 	if err != nil {
 		return nil, fmt.Errorf("querying pending merge requests: %w", err)
-	}
-	if len(bytes.TrimSpace(out)) == 0 {
-		return nil, nil
-	}
-	var rows []*Issue
-	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("parsing pending merge requests: %w", err)
 	}
 	var pending []*Issue
 	for _, row := range rows {
@@ -120,26 +113,60 @@ func (b *Beads) ListPendingMergeRequests() ([]*Issue, error) {
 	return pending, nil
 }
 
-// ListClosedMergeRequests returns terminal merge-request wisps regardless of
-// close reason. The refinery LLM sometimes closes an MR with a bare `bd close`
-// (close_reason "Closed"), so "merged" cannot be read from the close reason
-// alone; see MRWorkLanded. Query errors are surfaced, not swallowed.
+// ListClosedMergeRequests returns terminal merge-request beads (wisps and
+// issues table, as ListPendingMergeRequests) regardless of close reason. The
+// refinery LLM sometimes closes an MR with a bare `bd close` (close_reason
+// "Closed"), so "merged" cannot be read from the close reason alone; see
+// MRWorkLanded. Query errors are surfaced, not swallowed.
 func (b *Beads) ListClosedMergeRequests() ([]*Issue, error) {
-	out, err := b.run("sql", "--json",
-		"SELECT w.id, w.status, w.description FROM wisps w "+
-			"JOIN wisp_labels l ON w.id = l.issue_id "+
-			"WHERE l.label = 'gt:merge-request' AND w.status IN ('closed', 'tombstone')")
+	rows, err := b.mergeRequestRows(true)
 	if err != nil {
 		return nil, fmt.Errorf("querying closed merge requests: %w", err)
+	}
+	return rows, nil
+}
+
+// mergeRequestRowsQuery is the one SQL read of the merge queue's MR beads:
+// every bead labelled gt:merge-request in the issues table and in the wisps
+// table, terminal (closed, tombstone) or not.
+func mergeRequestRowsQuery(terminal bool) string {
+	op := "NOT IN"
+	if terminal {
+		op = "IN"
+	}
+	part := func(table, labels, alias string) string {
+		return fmt.Sprintf("SELECT %[3]s.id, %[3]s.status, %[3]s.description FROM %[1]s %[3]s "+
+			"JOIN %[2]s l ON %[3]s.id = l.issue_id "+
+			"WHERE l.label = 'gt:merge-request' AND %[3]s.status %[4]s ('closed', 'tombstone')",
+			table, labels, alias, op)
+	}
+	return part("issues", "labels", "i") + " UNION ALL " + part("wisps", "wisp_labels", "w")
+}
+
+// mergeRequestRows runs mergeRequestRowsQuery; a bead listed by both tables
+// is returned once (the first row). Errors are returned, never swallowed.
+func (b *Beads) mergeRequestRows(terminal bool) ([]*Issue, error) {
+	out, err := b.run("sql", "--json", mergeRequestRowsQuery(terminal))
+	if err != nil {
+		return nil, err
 	}
 	if len(bytes.TrimSpace(out)) == 0 {
 		return nil, nil
 	}
 	var rows []*Issue
 	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("parsing closed merge requests: %w", err)
+		return nil, fmt.Errorf("parsing merge requests: %w", err)
 	}
-	return rows, nil
+	seen := make(map[string]bool, len(rows))
+	unique := make([]*Issue, 0, len(rows))
+	for _, row := range rows {
+		if row == nil || seen[row.ID] {
+			continue
+		}
+		seen[row.ID] = true
+		unique = append(unique, row)
+	}
+	return unique, nil
 }
 
 // MergeProver proves a commit landed on a remote target branch from git facts.

@@ -340,6 +340,10 @@ sha all zeros) is never a land; it is still scope-checked.
   the bash fallback refuses it always.
 - MRs without a `source_issue` are no bead's hold, but they count for their
   branch (the per-tip rule and "an MR from the branch is open").
+- The merge queue (holds, the per-tip rule, abandon) reads the same MR beads
+  as the refinery: every bead labelled `gt:merge-request` in the wisps table
+  (gt done / gt mq submit create MRs ephemeral) and in the issues table (an MR
+  created without `--ephemeral`, or written before MRs became wisps).
 - Time-of-check/time-of-use: the guard checks the remote tip it reads at push
   time, but a raw `git push --delete` carries no lease: if the branch moves
   between the check and git's update (another push lands), the newer tip is
