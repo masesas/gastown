@@ -162,6 +162,12 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		return reviewOnlySubmitRefusal(reviewBead)
 	}
 
+	// Same submit guard as gt done (gt-pd1c.59): no second MR for an issue the
+	// merge queue already holds through another branch.
+	if err := refuseHeldSubmission(townRoot, issueID, branch); err != nil {
+		return fmt.Errorf("refusing merge-queue submit: %w", err)
+	}
+
 	// Determine target branch with the resolver gt done uses (gt-pd1c.37):
 	// explicit --epic > formula_vars base_branch > epic integration branch > rig default.
 	explicitTarget := ""

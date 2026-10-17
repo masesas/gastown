@@ -22,7 +22,7 @@ flowchart TB
     dispatch --> working["Polecats execute<br/>tracked issues"]
 
     %% ---- Completion detection ----
-    working --> issue_close["Issue closes<br/>(gt done / bd close)"]
+    working --> issue_close["Issue closes<br/>(refinery on MR merge /<br/>gt done without MR / bd close)"]
 
     issue_close --> check{"All tracked<br/>issues closed?"}
 

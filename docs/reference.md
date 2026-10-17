@@ -261,8 +261,11 @@ with = "macro-formula"
 ```
 1. Work through formula checklist (shown inline by gt prime)
 2. Submit to merge queue via gt done
-3. gt done preserves branch/MR metadata and exits the session
-4. Witness/refinery cleanup handles any retired sandbox state
+3. gt done preserves branch/MR metadata, closes the polecat's molecule, parks the
+   issue for the merge queue (in_progress, no assignee) and exits the session
+4. Refinery closes the issue when the MR merges (closed_at = merge time) and
+   reopens it when the MR is rejected; without an MR gt done closes it itself
+5. Witness/refinery cleanup handles any retired sandbox state
 ```
 
 ### Session Cycling
@@ -687,10 +690,32 @@ gt mq submit                 # Submit current branch to merge queue
 gt mq status <id>            # Show detailed merge request status
 gt mq retry <id>             # Retry a failed merge request
 gt mq reject <id>            # Reject a merge request
+gt mq reject <rig> <mr> --confirm-not-landed  # Overseer verdict: closed MR did not land (releases an unverified hold)
+gt mq post-merge <rig> <mr> --confirm-landed  # Overseer verdict: closed MR landed (closes its issue)
 gt mq check-scope <rig> <mr-id>  # Verify the MR only changes merge_queue.allowed_paths
 gt mq check-scope --range <old-sha> <new-sha> [--rig <rig>]  # Same check on the two-dot diff old..new
 gt hooks pre-push <remote> [<url>]  # Git pre-push guard (stdin = git pre-push lines); run by the managed rig hook
 ```
+
+The two `--confirm-*` flags are the only manual exit for an issue held as
+*unverified* by the merge queue: its MR is closed but git cannot decide whether
+the work landed (no git prover for the rig, no `commit_sha`/`target` on the
+MR, or a git error other than "commit not on the target"). `gt doctor`
+(`null-assignee-steps`) lists such issues with the MR, the reason and both
+commands. The verdict is written on the MR (`landing: landed|not_landed`,
+`landing_by: <identity> via tty`), recorded as a comment on the issue, and then
+the normal rule acts on it. Guards: agent roles (polecat, refinery, witness,
+deacon, mayor) and a polecat `BD_ACTOR` are refused; stdin and stdout must be
+a terminal and the MR ID must be typed again (there is no bypass flag); MRs
+whose landing is already decided are refused. A verdict only counts while git
+cannot decide: a definite git answer always wins over a recorded `landing:`.
+If applying the verdict fails after it was recorded, rerun the same command
+(the verdict is then proof) or let the witness orphan scan / `gt doctor --fix`
+settle the issue.
+
+Git proof is definite only in a complete clone. In a shallow or partial clone
+(gastown's `.repo.git` is cloned with `--depth 1`) a commit object that is
+absent after fetching the target proves nothing, so such MRs stay unverified.
 
 #### Integration Branch Commands
 

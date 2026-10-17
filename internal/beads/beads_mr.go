@@ -4,6 +4,7 @@ package beads
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -179,29 +180,117 @@ func MRWorkLanded(mr *Issue, prover MergeProver) bool {
 
 // MRFieldsLanded is MRWorkLanded for already-parsed fields and a known status.
 func MRFieldsLanded(status IssueStatus, fields *MRFields, prover MergeProver) bool {
-	if fields == nil {
-		return false
+	return mrLandingVerdict(status, fields, prover) == verdictLanded
+}
+
+// Human landing verdicts (MRFields.Landing).
+const (
+	LandingLanded    = "landed"
+	LandingNotLanded = "not_landed"
+)
+
+// UnverifiedReason explains why the landing of a terminal MR cannot be
+// decided, or "" when it can (structured signal, definite git answer, or a
+// human verdict). prover may be nil.
+func UnverifiedReason(mr *Issue, prover MergeProver) string {
+	if mr == nil {
+		return "missing MR"
 	}
-	// Structured signal, written only by the merged close in closeTerminalMR.
+	verdict, reason := mrLandingVerdictReason(IssueStatus(strings.TrimSpace(mr.Status)), ParseMRFields(mr), prover)
+	if verdict != verdictUnknown {
+		return ""
+	}
+	return reason
+}
+
+// landingVerdict is the three-valued answer to "did this MR's work land?".
+// Only a definite verdictNotLanded lets released work be dispatched again.
+type landingVerdict int
+
+const (
+	verdictUnknown landingVerdict = iota
+	verdictLanded
+	verdictNotLanded
+)
+
+// notOnTargetError is implemented by prover errors that are a definite "the
+// commit is not reachable from the target" (git.CommitNotOnBranchError), as
+// opposed to a failure to find out.
+type notOnTargetError interface{ CommitNotOnTarget() bool }
+
+// IsCommitNotOnTarget reports whether a MergeProver error is a definite "not
+// reachable" answer.
+func IsCommitNotOnTarget(err error) bool {
+	var n notOnTargetError
+	return errors.As(err, &n) && n.CommitNotOnTarget()
+}
+
+func mrLandingVerdict(status IssueStatus, fields *MRFields, prover MergeProver) landingVerdict {
+	verdict, _ := mrLandingVerdictReason(status, fields, prover)
+	return verdict
+}
+
+// mrLandingVerdictReason decides whether an MR's work landed, in this order:
+// structured merged signal (written only by closeTerminalMR) > definite git
+// answer > human verdict (MRFields.Landing, terminal MRs only) > unknown. A
+// recorded verdict therefore never overrides git: a false `landing:` written
+// by hand cannot reopen work git proves landed, nor close work git proves did
+// not land. For verdictUnknown the reason says why git could not decide.
+func mrLandingVerdictReason(status IssueStatus, fields *MRFields, prover MergeProver) (landingVerdict, string) {
+	if fields == nil {
+		return verdictUnknown, "MR has no merge-request fields"
+	}
 	if status.IsTerminal() && (strings.EqualFold(strings.TrimSpace(fields.CloseReason), "merged") ||
 		strings.TrimSpace(fields.MergeCommit) != "") {
-		return true
+		return verdictLanded, ""
 	}
+	gitVerdict, reason := gitLandingVerdict(fields, prover)
+	if gitVerdict != verdictUnknown {
+		return gitVerdict, ""
+	}
+	if status.IsTerminal() {
+		switch strings.TrimSpace(fields.Landing) {
+		case LandingLanded:
+			return verdictLanded, ""
+		case LandingNotLanded:
+			return verdictNotLanded, ""
+		}
+	}
+	return verdictUnknown, reason
+}
+
+// gitLandingVerdict is the git part of the landing decision.
+func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, string) {
 	target := strings.TrimSpace(fields.Target)
 	commit := strings.TrimSpace(fields.CommitSHA)
-	if prover == nil || target == "" || commit == "" {
-		return false
+	switch {
+	case target == "" || commit == "":
+		return verdictUnknown, "no commit_sha or target recorded on the MR"
+	case prover == nil:
+		return verdictUnknown, "no git prover for rig " + strings.TrimSpace(fields.Rig)
 	}
 	// A commit already in the target when the MR was submitted carried no new
 	// work; reachability would then be a false positive.
 	if base := strings.TrimSpace(fields.BaseSHA); base != "" {
 		if a, ok := prover.(ancestorChecker); ok {
-			if isAnc, err := a.IsAncestor(commit, base); err != nil || isAnc {
-				return false
+			isAnc, err := a.IsAncestor(commit, base)
+			if err != nil {
+				return verdictUnknown, "git could not compare the commit with base_sha: " + err.Error()
+			}
+			if isAnc {
+				return verdictNotLanded, ""
 			}
 		}
 	}
-	return prover.VerifyPushedCommitReachableFromPushTarget("origin", target, commit) == nil
+	err := prover.VerifyPushedCommitReachableFromPushTarget("origin", target, commit)
+	switch {
+	case err == nil:
+		return verdictLanded, ""
+	case IsCommitNotOnTarget(err):
+		return verdictNotLanded, ""
+	default:
+		return verdictUnknown, "git could not verify the commit against the target: " + err.Error()
+	}
 }
 
 // ancestorChecker is optionally implemented by a MergeProver (*git.Git does).
@@ -243,38 +332,6 @@ func LandedMergeRequest(mrs []*Issue, resolve ProverResolver) string {
 		}
 	}
 	return ""
-}
-
-// MergedMergeRequestFor returns the ID of an MR whose work landed and whose
-// source issue is issueID, or "" when none exists.
-func (b *Beads) MergedMergeRequestFor(issueID string, resolve ProverResolver) (string, error) {
-	bySource, err := b.MergeRequestsBySource()
-	if err != nil {
-		return "", err
-	}
-	return LandedMergeRequest(bySource[strings.TrimSpace(issueID)], resolve), nil
-}
-
-// ReleaseWorkBead hands a work bead back after its worker went away (polecat
-// removal, unsling, stale hook cleanup). One rule: a bead whose MR already
-// landed is finished work and is closed; any other bead returns to open with
-// no assignee. Reopening landed work makes the convoy feeder dispatch it
-// again. If the merge queue cannot be read the bead is reopened (the worker
-// must be released) and the lookup error is returned alongside.
-func (b *Beads) ReleaseWorkBead(issueID string, resolve ProverResolver) (closed bool, err error) {
-	mrID, lookupErr := b.MergedMergeRequestFor(issueID, resolve)
-	if mrID != "" {
-		if err := b.ForceCloseWithReason("Merged in "+mrID, issueID); err != nil {
-			return false, fmt.Errorf("closing merged work bead %s: %w", issueID, err)
-		}
-		return true, nil
-	}
-	openStatus := "open"
-	empty := ""
-	if err := b.Update(issueID, UpdateOptions{Status: &openStatus, Assignee: &empty}); err != nil {
-		return false, err
-	}
-	return false, lookupErr
 }
 
 // FindOpenMRsForIssue returns all open merge-request beads whose source_issue

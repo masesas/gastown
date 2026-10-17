@@ -2182,15 +2182,42 @@ func (g *Git) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit s
 	if _, err := g.run("fetch", "--no-tags", fetchTarget, "refs/heads/"+branch); err != nil {
 		return fmt.Errorf("verified_push_failed: unable to fetch %s/%s for ancestry check: %w", remote, branch, err)
 	}
+	// The branch was fetched, so every commit reachable from it is now in the
+	// clone: an absent commit object is a definite "not on the branch"
+	// (gt-pd1c.59). Only a failed check stays uncertain.
+	exists, err := g.commitObjectExists(commit)
+	if err != nil {
+		return fmt.Errorf("verified_push_failed: unable to look up commit %s: %w", shortSHA(commit), err)
+	}
+	if !exists {
+		// In a shallow or partial clone an absent object may simply be below
+		// the shallow boundary or not yet fetched from the promisor: that
+		// proves nothing (gastown clones .repo.git with --depth 1).
+		if incomplete, why := g.historyMayBeIncomplete(); incomplete {
+			return fmt.Errorf("verified_push_failed: commit %s absent from %s clone; cannot tell whether it is on %s/%s", shortSHA(commit), why, remote, branch)
+		}
+		return &CommitNotOnBranchError{msg: fmt.Sprintf("verified_push_failed: commit %s not on %s/%s (commit absent after fetching the branch, remote tip %s)", shortSHA(commit), remote, branch, shortSHA(tip))}
+	}
 	reachable, err := g.IsAncestor(commit, "FETCH_HEAD")
 	if err != nil {
 		return fmt.Errorf("verified_push_failed: unable to verify commit %s on %s/%s: %w", shortSHA(commit), remote, branch, err)
 	}
 	if !reachable {
-		return fmt.Errorf("verified_push_failed: commit %s not on %s/%s (remote tip %s)", shortSHA(commit), remote, branch, shortSHA(tip))
+		return &CommitNotOnBranchError{msg: fmt.Sprintf("verified_push_failed: commit %s not on %s/%s (remote tip %s)", shortSHA(commit), remote, branch, shortSHA(tip))}
 	}
 	return nil
 }
+
+// CommitNotOnBranchError is the definite answer "the commit is not reachable
+// from the branch" (the branch was read and fetched), as opposed to a failure
+// to find out. Merge-queue classification relies on the difference
+// (beads.MergeQueueHold, gt-pd1c.59).
+type CommitNotOnBranchError struct{ msg string }
+
+func (e *CommitNotOnBranchError) Error() string { return e.msg }
+
+// CommitNotOnTarget marks the error as a definite "not landed".
+func (e *CommitNotOnBranchError) CommitNotOnTarget() bool { return true }
 
 func parseLSRemoteTip(out, branch string) string {
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -2291,13 +2318,76 @@ func (g *Git) Rev(ref string) (string, error) {
 func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
 	_, err := g.run("merge-base", "--is-ancestor", ancestor, descendant)
 	if err != nil {
-		// Exit code 1 means not an ancestor, not an error
-		if strings.Contains(err.Error(), "exit status 1") {
+		// Exit code 1 means not an ancestor, not an error. Any other code
+		// (128: unknown commit, broken repo) is an error.
+		if isNotAncestorExit(err) {
 			return false, nil
 		}
 		return false, err
 	}
 	return true, nil
+}
+
+// gitExitCode returns the exit code of a failed git process, if err carries one.
+func gitExitCode(err error) (int, bool) {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
+}
+
+// isNotAncestorExit reports whether `git merge-base --is-ancestor` exited 1.
+func isNotAncestorExit(err error) bool {
+	code, ok := gitExitCode(err)
+	return ok && code == 1
+}
+
+// historyMayBeIncomplete reports whether this clone may lack objects that are
+// reachable from its refs: a shallow clone, or a partial clone (promisor
+// remote or extensions.partialclone). A check that fails counts as
+// incomplete (fail closed). why names the reason.
+func (g *Git) historyMayBeIncomplete() (bool, string) {
+	out, err := g.run("rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return true, "an unverifiable (shallow check failed)"
+	}
+	if strings.TrimSpace(out) == "true" {
+		return true, "a shallow"
+	}
+	if _, err := g.run("config", "--get", "extensions.partialclone"); err == nil {
+		return true, "a partial"
+	} else if code, ok := gitExitCode(err); !ok || code != 1 {
+		return true, "an unverifiable (partial-clone check failed)"
+	}
+	promisors, err := g.run("config", "--get-regexp", `^remote\..*\.promisor$`)
+	if err != nil {
+		if code, ok := gitExitCode(err); ok && code == 1 {
+			return false, "" // no promisor remotes
+		}
+		return true, "an unverifiable (promisor check failed)"
+	}
+	for _, line := range strings.Split(promisors, "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 && strings.EqualFold(fields[1], "true") {
+			return true, "a partial (promisor)"
+		}
+	}
+	return false, ""
+}
+
+// commitObjectExists reports whether the commit object is in this clone.
+// `git cat-file -e <full-sha>` exits 0 when the object exists and 1 when it
+// does not; anything else (128: invalid or ambiguous name, broken repo) is an
+// error.
+func (g *Git) commitObjectExists(commit string) (bool, error) {
+	_, err := g.run("cat-file", "-e", commit)
+	if err == nil {
+		return true, nil
+	}
+	if code, ok := gitExitCode(err); ok && code == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // MergeBase returns the best common ancestor of a and b (git merge-base).

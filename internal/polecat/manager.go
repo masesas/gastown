@@ -2764,7 +2764,8 @@ func (m *Manager) ClearIssue(name string) error {
 
 // unassignWorkBeads finds all active work beads assigned to a polecat and resets them
 // to status=open with an empty assignee, so they can be picked up by another polecat.
-// Beads whose MR already merged are closed instead (beads.ReleaseWorkBead).
+// Beads held by the merge queue are not reopened (beads.ReleaseWorkBead): landed
+// work is closed, work with a pending MR is parked for the refinery.
 // This must be called during polecat removal to prevent orphaned beads (gt-e4u1).
 // Agent beads are skipped (handled separately by ResetAgentBeadForReuse).
 // Errors are logged as warnings but do not block removal.
@@ -2776,9 +2777,16 @@ func (m *Manager) unassignWorkBeads(name string) {
 		return
 	}
 
-	for _, issue := range activeWorkBeadsForCleanup(issues) {
-		// Merged work is closed, not reopened (ReleaseWorkBead).
-		if _, err := m.beads.ReleaseWorkBead(issue.ID, mergeproof.ForRig(m.rig.Path)); err != nil {
+	work := activeWorkBeadsForCleanup(issues)
+	if len(work) == 0 {
+		return
+	}
+	// One town-wide merge-queue read: an MR may live in another DB than its
+	// source bead (gt-pd1c.59).
+	queue := mergeproof.TownMergeQueue(m.townRoot)
+	for _, issue := range work {
+		// Held work is closed or parked, not reopened (ReleaseWorkBead).
+		if _, err := m.beads.ReleaseWorkBead(issue.ID, queue); err != nil {
 			style.PrintWarning("could not unassign bead %s from %s: %v", issue.ID, name, err)
 		}
 	}

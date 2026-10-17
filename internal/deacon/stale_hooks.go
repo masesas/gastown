@@ -56,6 +56,10 @@ type StaleHookResult struct {
 	WorktreeDirty bool   `json:"worktree_dirty,omitempty"`
 	UnpushedCount int    `json:"unpushed_count,omitempty"`
 	WorktreeError string `json:"worktree_error,omitempty"`
+	// MergeQueue is set when the bead was held by the merge queue
+	// (beads.MergeQueueHold) and settled instead of unhooked: "parked" (MR
+	// pending, left for the refinery) or "closed" (MR landed).
+	MergeQueue string `json:"merge_queue,omitempty"`
 }
 
 // StaleHookScanResult contains the full results of a stale hook scan.
@@ -93,6 +97,9 @@ func ScanStaleHooks(townRoot string, cfg *StaleHookConfig) (*StaleHookScanResult
 
 	threshold := time.Now().Add(-cfg.MaxAge)
 	t := tmux.NewTmux()
+
+	// The merge queue is read once, lazily, for the first stale bead.
+	var queue *beads.MergeQueue
 
 	for _, bead := range hookedBeads {
 		hookResult := &StaleHookResult{
@@ -138,12 +145,10 @@ func ScanStaleHooks(townRoot string, cfg *StaleHookConfig) (*StaleHookScanResult
 			checkWorktreeState(townRoot, bead.Assignee, hookResult)
 
 			if !cfg.DryRun {
-				if err := unhookBead(townRoot, bead.ID); err != nil {
-					hookResult.Error = err.Error()
-				} else {
-					hookResult.Unhooked = true
-					result.Unhooked++
+				if queue == nil {
+					queue = mergeQueueFn(townRoot)
 				}
+				releaseStaleHook(townRoot, bead.ID, queue, hookResult, result)
 			}
 		}
 
@@ -245,6 +250,35 @@ func assigneeToWorktreePath(townRoot, assignee string) string {
 	}
 
 	return ""
+}
+
+// releaseStaleHook hands a stale hooked bead back through the shared
+// merge-queue rule (gt-pd1c.59): a bead whose MR is pending is parked for the
+// refinery and one whose MR landed is closed (beads.SettleHeldWorkBead);
+// anything else is unhooked to open. An unreadable merge queue unhooks nothing
+// (fail closed: reopening could dispatch work still waiting for its merge).
+func releaseStaleHook(townRoot, beadID string, queue *beads.MergeQueue, hookResult *StaleHookResult, result *StaleHookScanResult) {
+	hold, mrID, err := queue.Hold(beadID)
+	if err != nil {
+		hookResult.Error = fmt.Sprintf("cannot read merge queue, not unhooking: %v", err)
+		return
+	}
+	if hold.Held() {
+		bd := beads.New(beads.ResolveHookDir(townRoot, beadID, townRoot))
+		outcome, err := bd.SettleHeldWorkBead(beadID, hold, mrID)
+		if err != nil {
+			hookResult.Error = err.Error()
+			return
+		}
+		hookResult.MergeQueue = string(outcome)
+		return
+	}
+	if err := unhookBead(townRoot, beadID); err != nil {
+		hookResult.Error = err.Error()
+		return
+	}
+	hookResult.Unhooked = true
+	result.Unhooked++
 }
 
 // unhookBead sets a bead's status back to 'open'.

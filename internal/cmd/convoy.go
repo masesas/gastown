@@ -1802,9 +1802,10 @@ var mergeProverResolver = mergeproof.Resolver
 // work is in, or through, a merge request.
 type mergeQueueHeld func(issueID string) bool
 
-// mergeQueueHeldIssues reads every rig's merge requests (MRs are created in the
-// polecat's rig DB, so every rig is scanned, as for sling contexts) and returns
-// the shared "held" predicate used by the convoy feeder and `gt convoy launch`:
+// mergeQueueHeldIssues reads every rig's merge requests (beads.ReadMergeQueue:
+// MRs are created in the polecat's rig DB, so every rig is scanned) and returns
+// the shared hold predicate (beads.MergeQueueHold, gt-pd1c.59) as used by the
+// convoy feeder and `gt convoy launch`:
 //   - a pending MR holds its source: the refinery owns the work until it is
 //     merged or rejected;
 //   - an MR whose work landed on its target branch (beads.MRWorkLanded: the
@@ -1819,48 +1820,22 @@ type mergeQueueHeld func(issueID string) bool
 // Any unreadable DB is an error: the caller holds dispatch rather than risk a
 // duplicate polecat.
 func mergeQueueHeldIssues(townRoot string) (mergeQueueHeld, error) {
-	dirs, err := beadsSearchDirs(townRoot)
-	if err != nil {
+	queue := beads.ReadMergeQueue(townRoot, mergeProverResolver(townRoot))
+	if err := queue.Err(); err != nil {
 		return nil, err
 	}
-	bySource := make(map[string][]*beads.Issue)
-	seen := make(map[string]bool)
-	for _, dir := range dirs {
-		beadsDir := beads.ResolveBeadsDir(dir)
-		if seen[beadsDir] {
-			continue
-		}
-		seen[beadsDir] = true
-		found, err := beads.NewWithBeadsDir(dir, beadsDir).MergeRequestsBySource()
-		if err != nil {
-			return nil, fmt.Errorf("listing merge requests in %s: %w", beadsDir, err)
-		}
-		for source, mrs := range found {
-			bySource[source] = append(bySource[source], mrs...)
-		}
-	}
-	resolve := mergeProverResolver(townRoot)
 	memo := make(map[string]bool)
 	return func(issueID string) bool {
 		if held, ok := memo[issueID]; ok {
 			return held
 		}
-		mrs := bySource[issueID]
-		held := false
-		for _, mr := range mrs {
-			if !beads.IssueStatus(strings.TrimSpace(mr.Status)).IsTerminal() {
-				held = true
-				break
-			}
-		}
-		if !held {
-			if mrID := beads.LandedMergeRequest(mrs, resolve); mrID != "" {
-				held = true
-				// Escape hatch for deliberate rework: a bead whose MR already
-				// landed is done. Rework needs a new bead.
-				if _, seen := landedHoldNoted.LoadOrStore(issueID, true); !seen {
-					fmt.Fprintf(os.Stderr, "note: %s not dispatched: its MR %s already landed on the target (create a new bead for rework)\n", issueID, mrID)
-				}
+		hold, mrID, _ := queue.Hold(issueID)
+		held := hold.Held()
+		// Escape hatch for deliberate rework: a bead whose MR already landed
+		// is done. Rework needs a new bead.
+		if hold == beads.HoldLanded {
+			if _, seen := landedHoldNoted.LoadOrStore(issueID, true); !seen {
+				fmt.Fprintf(os.Stderr, "note: %s not dispatched: its MR %s already landed on the target (create a new bead for rework)\n", issueID, mrID)
 			}
 		}
 		memo[issueID] = held

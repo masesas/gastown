@@ -213,6 +213,8 @@ The slot:
 │                  gt done (retired model)                     │
 │  → Push branch to origin                                   │
 │  → Submit work to merge queue (MR bead)                    │
+│  → Close own molecule; park the issue for the merge queue  │
+│    (in_progress, no assignee; NOT closed)                  │
 │  → Set agent state to "done"                               │
 │  → Kill session                                            │
 │                                                             │
@@ -225,7 +227,9 @@ The slot:
 │                   Refinery: merge queue                     │
 │  → Rebase and merge to target branch                       │
 │    (main or integration branch — see below)                │
-│  → Close the issue                                         │
+│  → Close the issue (closed_at = merge time)                │
+│  → If the MR is closed without merging (rejected):         │
+│    reopen the issue for rework                             │
 │  → If conflict: create task for available polecat          │
 │                                                             │
 │  Integration branch path:                                  │
@@ -233,6 +237,51 @@ The slot:
 │  → When all children closed: land to main as one commit    │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Who closes the issue (gt-pd1c.59)
+
+An issue whose work was submitted as an MR has one owner for its close: the
+Refinery, when the MR merges. `gt done` only closes it when there is no MR
+(no-merge work, nothing to submit because the work is already on the target).
+While the MR waits, the issue is *held by the merge queue*
+(`beads.MergeQueueHold`): it is `in_progress` with no assignee, so it is not in
+`bd ready` and a reused polecat name never inherits it. The witness (abandoned
+and orphaned beads), the deacon (stale hooks, re-dispatch), the convoy feeder and
+`gt convoy launch`, polecat removal, `gt unsling`, `gt rig reset --stale` and
+`gt doctor` (`null-assignee-steps`) all consult that one predicate and never
+reset, reopen or re-dispatch held work:
+
+| Merge queue says | Effect on the issue |
+|------------------|---------------------|
+| MR pending | held: parked, left for the Refinery |
+| MR landed (merged, or its commit is on the target) | closed |
+| Only MRs closed without landing, proven by git (commit not on the target) | free: reopened for rework |
+| MRs closed, landing not decidable (no prover, no recorded commit, git error) | held (unverified): parked, never reopened; reported by `gt doctor`, decided by an overseer |
+| Merge queue unreadable | fail closed: nothing is reset or dispatched |
+
+The merge queue is always read town-wide (every beads DB): an MR lives in the
+submitting polecat's rig DB, its issue may live in another (`hq-`, another
+rig). While the queue holds an issue through an MR from one branch, `gt done`
+and `gt mq submit` from any other branch are refused; the owner's own branch
+may resubmit (FIX_NEEDED). `gt mq reject` reopens a parked issue, and repeating
+it repeats the release. A parked issue whose MR landed but was closed by hand
+(bare `bd close`) is closed by the witness orphan scan, or by `gt doctor --fix`.
+
+"Not landed" must be definite: git fetched the target and the commit is not
+reachable from it. An absent commit object after the fetch counts only in a
+complete clone; in a shallow or partial clone (gastown's `.repo.git` is
+`--depth 1`) it proves nothing. When git cannot decide, the issue stays
+*unverified* and only a human verdict releases it:
+`gt mq reject <rig> <mr> --confirm-not-landed` reopens it for rework,
+`gt mq post-merge <rig> <mr> --confirm-landed` closes it. Both need an
+interactive terminal and the MR ID typed again, are refused for agent roles,
+record `landing:` on the MR plus a comment on the issue, and never override a
+definite git answer (see `docs/reference.md`).
+
+Known limitation: reachability compares the commit recorded at submit. A
+rebase or squash merge rewrites that commit, so such an MR closed by a bare
+`bd close` (without `merge_commit`) reads as definitely not landed and its
+issue is reopened.
 
 ## What "Recycle" Means
 

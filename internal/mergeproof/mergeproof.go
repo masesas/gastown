@@ -50,13 +50,25 @@ func (m *memoProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, c
 		// Integration branches are deleted after landing: the work then lives
 		// on the default branch.
 		if def := m.g.RemoteDefaultBranch(); def != "" && def != branch {
-			if derr := m.g.VerifyPushedCommitReachableFromPushTarget(remote, def, commit); derr == nil {
-				err = nil
-			}
+			err = combineFallback(err, m.g.VerifyPushedCommitReachableFromPushTarget(remote, def, commit))
 		}
 	}
 	m.seen[key] = err
 	return err
+}
+
+// combineFallback merges the target and default-branch answers: reachable from
+// either is landed; "not reachable" is definite only when both are definite
+// (beads.IsCommitNotOnTarget); any other failure keeps the answer uncertain.
+func combineFallback(targetErr, defaultErr error) error {
+	switch {
+	case defaultErr == nil:
+		return nil
+	case !beads.IsCommitNotOnTarget(targetErr):
+		return targetErr
+	default:
+		return defaultErr
+	}
 }
 
 // ForRigPath returns a prover for the rig at rigPath (memoized per prover, so
@@ -95,4 +107,11 @@ func Resolver(townRoot string) beads.ProverResolver {
 func ForRig(rigPath string) beads.ProverResolver {
 	p := ForRigPath(rigPath)
 	return func(string) beads.MergeProver { return p }
+}
+
+// TownMergeQueue reads the town's merge queue (every beads DB) with this
+// town's git provers: the one scope in which work beads are classified as
+// held (beads.MergeQueue, gt-pd1c.59).
+func TownMergeQueue(townRoot string) *beads.MergeQueue {
+	return beads.ReadMergeQueue(townRoot, Resolver(townRoot))
 }

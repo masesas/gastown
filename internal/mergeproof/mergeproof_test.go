@@ -1,11 +1,14 @@
 package mergeproof
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/gastown/internal/beads"
 )
 
 func run(t *testing.T, dir string, args ...string) string {
@@ -70,5 +73,32 @@ func TestResolverProvesLandedCommitFromGit(t *testing.T) {
 
 	if Resolver(tmp)("") != nil || Resolver(tmp)("../x") != nil {
 		t.Error("empty or path-traversing rig names must not resolve")
+	}
+}
+
+type notOnErr struct{}
+
+func (notOnErr) Error() string           { return "commit not on branch" }
+func (notOnErr) CommitNotOnTarget() bool { return true }
+
+// gt-pd1c.59 round 3: "not landed" is definite only when both branches answer
+// it definitely; any failure to find out stays uncertain.
+func TestCombineFallback(t *testing.T) {
+	uncertain := errors.New("unable to fetch")
+	cases := []struct {
+		target, def  error
+		wantNil      bool
+		wantNotOnTgt bool
+	}{
+		{notOnErr{}, nil, true, false},
+		{notOnErr{}, notOnErr{}, false, true},
+		{notOnErr{}, uncertain, false, false},
+		{uncertain, notOnErr{}, false, false},
+	}
+	for i, c := range cases {
+		got := combineFallback(c.target, c.def)
+		if (got == nil) != c.wantNil || beads.IsCommitNotOnTarget(got) != c.wantNotOnTgt {
+			t.Errorf("case %d: combineFallback = %v, want nil=%v notOn=%v", i, got, c.wantNil, c.wantNotOnTgt)
+		}
 	}
 }

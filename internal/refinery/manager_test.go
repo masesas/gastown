@@ -420,6 +420,7 @@ func TestManager_Queue_FiltersClosedMergeRequests(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable in test environment: %v", err)
 	}
@@ -536,6 +537,7 @@ func TestManager_PostMerge_ClosesMRAndSourceIssue(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}
@@ -587,6 +589,7 @@ func TestManager_RejectMR_ClearsMatchingActiveMR(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}
@@ -634,6 +637,7 @@ func TestManager_PostMerge_ClearsMatchingActiveMRAndClosesSource(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}
@@ -681,6 +685,7 @@ func TestManager_PostMerge_ClosesWorkBeadFromAgentFallbackBeforeActiveMRClear(t 
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}
@@ -736,6 +741,7 @@ func TestManager_PostMerge_AlreadyClosedMRRetriesActiveMRCleanup(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}
@@ -785,6 +791,7 @@ func TestManager_TerminalCloseDoesNotClearNewerActiveMR(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}
@@ -824,6 +831,7 @@ func TestManager_PostMerge_AlreadyClosedMR(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}

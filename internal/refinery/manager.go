@@ -703,6 +703,10 @@ func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*Merg
 	closeResult, err := closeTerminalMR(b, mr.ID, terminalMRCloseOptions{
 		Reason:        "rejected: " + reason,
 		AgentBeadHint: mr.AgentBead,
+		// Git proves landing for an MR closed by hand: such work is closed,
+		// never reopened by the reject.
+		Prover:   mergeproof.ForRigPath(m.rig.Path),
+		TownRoot: filepath.Dir(m.rig.Path),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to close MR bead: %w", err)
@@ -713,6 +717,7 @@ func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*Merg
 	if closeResult.AgentActiveMRClearErr != nil {
 		_, _ = fmt.Fprintf(m.output, "Warning: failed to clear agent bead %s active_mr: %v\n", closeResult.AgentBead, closeResult.AgentActiveMRClearErr)
 	}
+	reportSourceRelease(m.output, "", closeResult)
 
 	// Update in-memory state for return value
 	if closeResult.Closed {
@@ -788,6 +793,7 @@ func (m *Manager) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResul
 		Target:        mr.TargetBranch,
 		Out:           m.output,
 		Prover:        mergeproof.ForRigPath(m.rig.Path),
+		TownRoot:      filepath.Dir(m.rig.Path),
 	})
 	if err != nil {
 		return result, fmt.Errorf("closing MR bead: %w", err)

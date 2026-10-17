@@ -223,7 +223,7 @@ func runUnslingWith(cmd *cobra.Command, args []string, dryRun, force bool) error
 	// in "hooked" status forever. Now we update the bead to match the documented
 	// behavior: "The bead's status changes from 'hooked' back to 'open'."
 	if hookedBead.Status == beads.StatusHooked {
-		if _, err := hookedB.ReleaseWorkBead(hookedBeadID, mergeproof.Resolver(townRoot)); err != nil {
+		if _, err := hookedB.ReleaseWorkBead(hookedBeadID, mergeproof.TownMergeQueue(townRoot)); err != nil {
 			// Non-fatal: warn but don't fail the unsling. The hook slot is already
 			// cleared, so the agent is unblocked. The bead status is a bookkeeping
 			// issue that can be fixed manually.
@@ -325,7 +325,9 @@ func cleanStaleHookedBeads(cmd *cobra.Command, b *beads.Beads, agentID, targetBe
 		return true
 	}
 
-	// Clean up each stale hooked bead
+	// Clean up each stale hooked bead. One town-wide merge-queue read: an MR
+	// may live in another DB than its source bead (gt-pd1c.59).
+	queue := mergeproof.TownMergeQueue(townRoot)
 	for _, sb := range staleBeads {
 		fmt.Printf("%s Cleaning up stale hooked bead %s...\n", style.Bold.Render("🪝"), sb.ID)
 
@@ -336,16 +338,19 @@ func cleanStaleHookedBeads(cmd *cobra.Command, b *beads.Beads, agentID, targetBe
 			staleB = beads.New(stalePath)
 		}
 
-		closed, err := staleB.ReleaseWorkBead(sb.ID, mergeproof.Resolver(townRoot))
+		outcome, err := staleB.ReleaseWorkBead(sb.ID, queue)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: couldn't clean up stale bead %s: %v\n", sb.ID, err)
 			continue
 		}
-		if closed {
+		switch outcome {
+		case beads.ReleaseClosed:
 			fmt.Printf("%s Cleaned up stale bead %s (was hooked, MR already merged, now closed)\n", style.Bold.Render("✓"), sb.ID)
-			continue
+		case beads.ReleaseParked:
+			fmt.Printf("%s Cleaned up stale bead %s (was hooked, MR in merge queue, parked for the refinery)\n", style.Bold.Render("✓"), sb.ID)
+		default:
+			fmt.Printf("%s Cleaned up stale bead %s (was hooked, now open)\n", style.Bold.Render("✓"), sb.ID)
 		}
-		fmt.Printf("%s Cleaned up stale bead %s (was hooked, now open)\n", style.Bold.Render("✓"), sb.ID)
 	}
 	return true
 }

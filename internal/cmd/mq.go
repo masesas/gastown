@@ -156,11 +156,24 @@ var mqRejectCmd = &cobra.Command{
 	Long: `Manually reject a merge request.
 
 This closes the MR with a 'rejected' status without merging.
-The source issue is NOT closed (work is not done).
+The source issue is not closed (work is not done): if gt done parked it for
+the merge queue (in_progress, no assignee) it is reopened for rework, unless
+another MR still holds it. An issue a worker has claimed again is untouched.
+Rejecting an already-rejected MR repeats that release.
+
+--confirm-not-landed is the manual exit for an issue held as "unverified"
+(gt doctor null-assignee-steps): the MR is closed but git cannot prove its
+work did not land. A human (overseer, or crew) records the verdict
+landing: not_landed on the MR and the issue is released. It needs an
+interactive terminal and the MR ID typed again (no bypass), and is refused for
+agent roles and for MRs whose landing git can already decide. The verdict never
+overrides a definite git answer; it is audited on the MR (landing_by) and as a
+comment on the issue.
 
 Examples:
   gt mq reject greenplace polecat/Nux/gp-xyz --reason "Does not meet requirements"
-  gt mq reject greenplace mr-Nux-12345 --reason "Superseded by other work" --notify`,
+  gt mq reject greenplace mr-Nux-12345 --reason "Superseded by other work" --notify
+  gt mq reject greenplace gt-wisp-abc --confirm-not-landed`,
 	Args: cobra.ExactArgs(2),
 	RunE: runMQReject,
 }
@@ -180,11 +193,20 @@ This command consolidates post-merge steps into a single atomic operation:
 	 4. Delete the remote polecat branch at the submitted head (unless --skip-branch-delete)
 
 Designed for use by the refinery formula after a successful merge to main.
+
+--confirm-landed is the manual exit for an issue held as "unverified": the MR
+is closed but git cannot prove whether its work landed. A human (overseer, or
+crew) records landing: landed on the MR and the source issue is closed;
+no merge proof or branch delete runs. It needs an interactive terminal and
+the MR ID typed again (no bypass), and is refused for agent roles and for MRs
+whose landing git can already decide. The verdict never overrides a definite
+git answer; it is audited on the MR (landing_by) and as a comment on the issue.
 The branch name is read from the MR bead, so no manual branch argument is needed.
 
 Examples:
   gt mq post-merge gastown gt-mr-abc123
-  gt mq post-merge gastown gt-mr-abc123 --skip-branch-delete`,
+  gt mq post-merge gastown gt-mr-abc123 --skip-branch-delete
+  gt mq post-merge gastown gt-wisp-abc --confirm-landed`,
 	Args: cobra.ExactArgs(2),
 	RunE: runMQPostMerge,
 }
@@ -359,12 +381,14 @@ func init() {
 	mqRejectCmd.Flags().StringVarP(&mqRejectReason, "reason", "r", "", "Reason for rejection (required unless --stdin)")
 	mqRejectCmd.Flags().BoolVar(&mqRejectNotify, "notify", false, "Send mail notification to worker")
 	mqRejectCmd.Flags().BoolVar(&mqRejectStdin, "stdin", false, "Read reason from stdin (avoids shell quoting issues)")
+	mqRejectCmd.Flags().BoolVar(&mqRejectConfirmNotLanded, "confirm-not-landed", false, "Human verdict: this closed MR's work did not land (releases an unverified hold)")
 
 	// Status flags
 	mqStatusCmd.Flags().BoolVar(&mqStatusJSON, "json", false, "Output as JSON")
 
 	// Post-merge flags
 	mqPostMergeCmd.Flags().BoolVar(&mqPostMergeSkipBranchDelete, "skip-branch-delete", false, "Skip remote branch deletion")
+	mqPostMergeCmd.Flags().BoolVar(&mqPostMergeConfirmLanded, "confirm-landed", false, "Human verdict: this closed MR's work landed (closes the source of an unverified hold)")
 
 	// Add subcommands
 	mqCmd.AddCommand(mqSubmitCmd)
@@ -487,6 +511,9 @@ func runMQRetry(cmd *cobra.Command, args []string) error {
 }
 
 func runMQReject(cmd *cobra.Command, args []string) error {
+	if mqRejectConfirmNotLanded {
+		return runMQConfirmLanding(args[0], args[1], false)
+	}
 	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
 	if mqRejectStdin {
 		if mqRejectReason != "" {
@@ -522,7 +549,7 @@ func runMQReject(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Reason: %s\n", mqRejectReason)
 
 	if result.IssueID != "" {
-		fmt.Printf("  Issue:  %s %s\n", result.IssueID, style.Dim.Render("(not closed - work not done)"))
+		fmt.Printf("  Issue:  %s %s\n", result.IssueID, style.Dim.Render("(not merged: released to the merge-queue rule, see above)"))
 	}
 
 	if mqRejectNotify {
@@ -535,6 +562,9 @@ func runMQReject(cmd *cobra.Command, args []string) error {
 func runMQPostMerge(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
+	if mqPostMergeConfirmLanded {
+		return runMQConfirmLanding(rigName, mrID, true)
+	}
 
 	mgr, r, _, err := getRefineryManager(rigName)
 	if err != nil {
