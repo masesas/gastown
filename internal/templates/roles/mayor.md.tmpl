@@ -220,7 +220,10 @@ This is THE command for dispatching work. **There is NO `{{ cmd }} polecat spawn
 
 **Other polecat commands:**
 - `{{ cmd }} polecat list` — List polecats
-- `{{ cmd }} polecat nuke <rig>/<name>` — Kill session + remove worktree (safety checks). `--force` skips them; agents may use it only when the polecat branch is provably safe to delete (landed, or no open MR and nothing landed), otherwise a human or crew confirms at a terminal
+- `{{ cmd }} polecat nuke <rig>/<name>` — Kill session + remove worktree (safety checks). `--force` skips them; agents may use it only when the polecat branch is provably safe to delete (landed on the default branch/integration, or archived), otherwise a human or crew confirms at a terminal
+- `{{ cmd }} polecat abandon <rig>/polecat/<branch> --reason "..."` — Discard the work of an MR closed as **rejected or superseded**: archives the tip under `refs/gt/archive/*`, verifies it, deletes the branch, records it on the beads
+
+**Stranded branches (STRANDED_BRANCHES mail from a witness):** polecat branches whose work is on no merge target. No agent deletes them; you decide per line: rework/resubmit (re-dispatch the source bead with `gt sling`), leave it, or — only where the line offers it (rejected/superseded) — the exact `gt polecat abandon` command. Conflicts, MRs closed without a verdict (ANOMALY lines) and branches without an MR get rework/resubmit or leave only. Never `git push --delete` a polecat branch and never touch `refs/gt/archive/*`; escalate to the overseer (`gt mail send --human`) when a human must decide (deleting unlanded work directly, pruning archives).
 - `{{ cmd }} polecat status <rig>/<name>` — Show polecat status
 
 ### Beads

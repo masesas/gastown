@@ -46,40 +46,40 @@ func TestMQConfirmLanding_RefusesPolecat(t *testing.T) {
 	t.Setenv(EnvGTRole, "gastown/polecats/nux")
 	t.Setenv("BD_ACTOR", "gastown/polecats/nux")
 	for _, landed := range []bool{true, false} {
-		if err := runMQConfirmLanding("gastown", "gt-wisp-mr1", landed); err == nil || !strings.Contains(err.Error(), "refusing landing verdict") {
+		hp, _ := stubPrompt(true, "gt-wisp-mr1\n")
+		if err := runMQConfirmLanding(hp, "gastown", "gt-wisp-mr1", landed); err == nil || !strings.Contains(err.Error(), "refusing landing verdict") {
 			t.Fatalf("landed=%v: err = %v, want a refusal before any lookup", landed, err)
 		}
 	}
 }
 
-func stubLandingTTY(t *testing.T, tty bool, input string) *strings.Builder {
-	t.Helper()
-	oldTTY, oldIn, oldOut := humanConfirmTTY, humanConfirmInput, humanConfirmOutput
+// stubPrompt is a human terminal for tests: tty says whether it is one,
+// input is what the human types; the returned builder collects the prompt.
+func stubPrompt(tty bool, input string) (humanPrompt, *strings.Builder) {
 	out := &strings.Builder{}
-	humanConfirmTTY = func() bool { return tty }
-	humanConfirmInput = strings.NewReader(input)
-	humanConfirmOutput = out
-	t.Cleanup(func() { humanConfirmTTY, humanConfirmInput, humanConfirmOutput = oldTTY, oldIn, oldOut })
-	return out
+	return humanPrompt{tty: func() bool { return tty }, in: strings.NewReader(input), out: out}, out
 }
 
 // round 5 #3a: the verdict needs a human at a terminal who types the MR ID
 // again; there is no bypass flag.
 func TestConfirmLandingInteractively(t *testing.T) {
-	stubLandingTTY(t, false, "gt-wisp-mr1\n")
-	if err := confirmLandingInteractively("gt-wisp-mr1", "landed"); err == nil || !strings.Contains(err.Error(), "human action") {
+	hp, _ := stubPrompt(false, "gt-wisp-mr1\n")
+	if err := confirmLandingInteractively(hp, "gt-wisp-mr1", "landed"); err == nil || !strings.Contains(err.Error(), "human action") {
 		t.Fatalf("no TTY: err = %v, want a refusal naming the human action", err)
 	}
-	stubLandingTTY(t, true, "gt-wisp-mr2\n")
-	if err := confirmLandingInteractively("gt-wisp-mr1", "landed"); err == nil {
+	hp, _ = stubPrompt(true, "gt-wisp-mr2\n")
+	if err := confirmLandingInteractively(hp, "gt-wisp-mr1", "landed"); err == nil {
 		t.Fatal("a mistyped MR ID must refuse")
 	}
-	stubLandingTTY(t, true, "")
-	if err := confirmLandingInteractively("gt-wisp-mr1", "landed"); err == nil {
+	hp, _ = stubPrompt(true, "")
+	if err := confirmLandingInteractively(hp, "gt-wisp-mr1", "landed"); err == nil {
 		t.Fatal("no answer must refuse")
 	}
-	out := stubLandingTTY(t, true, "gt-wisp-mr1\n")
-	if err := confirmLandingInteractively("gt-wisp-mr1", "not_landed"); err != nil {
+	if err := confirmLandingInteractively(humanPrompt{}, "gt-wisp-mr1", "landed"); err == nil {
+		t.Fatal("a prompt without a terminal must refuse")
+	}
+	hp, out := stubPrompt(true, "gt-wisp-mr1\n")
+	if err := confirmLandingInteractively(hp, "gt-wisp-mr1", "not_landed"); err != nil {
 		t.Fatalf("matching MR ID at a TTY: %v", err)
 	}
 	if !strings.Contains(out.String(), "Type the MR ID") || !strings.Contains(out.String(), "not_landed") {
@@ -89,19 +89,19 @@ func TestConfirmLandingInteractively(t *testing.T) {
 
 // The env guard stays the first layer: an agent is refused before any prompt.
 func TestRunMQConfirmLanding_EnvGuardBeforePrompt(t *testing.T) {
-	out := stubLandingTTY(t, true, "gt-wisp-mr1\n")
+	hp, out := stubPrompt(true, "gt-wisp-mr1\n")
 	setCaller(t) // other tests in the package leave identity variables set
 	t.Setenv(EnvGTRole, "gastown/refinery")
 	t.Setenv("BD_ACTOR", "")
-	if err := runMQConfirmLanding("gastown", "gt-wisp-mr1", true); err == nil || !strings.Contains(err.Error(), "refusing landing verdict") {
+	if err := runMQConfirmLanding(hp, "gastown", "gt-wisp-mr1", true); err == nil || !strings.Contains(err.Error(), "refusing landing verdict") {
 		t.Fatalf("err = %v, want the env refusal", err)
 	}
 	if out.Len() != 0 {
 		t.Fatalf("an agent must be refused before the prompt, got %q", out.String())
 	}
 	t.Setenv(EnvGTRole, "")
-	stubLandingTTY(t, false, "")
-	if err := runMQConfirmLanding("gastown", "gt-wisp-mr1", false); err == nil || !strings.Contains(err.Error(), "interactive terminal") {
+	hp, _ = stubPrompt(false, "")
+	if err := runMQConfirmLanding(hp, "gastown", "gt-wisp-mr1", false); err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("human without TTY: err = %v, want the TTY refusal", err)
 	}
 }

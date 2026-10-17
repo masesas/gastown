@@ -120,6 +120,12 @@ const (
 	// MinWitnessUnverifiedReminderInterval is the floor for a configured
 	// reminder interval: shorter values are raised to it.
 	MinWitnessUnverifiedReminderInterval = time.Hour
+	// DefaultWitnessStrandedBranchGrace is how long a stranded polecat branch
+	// waits before the witness reports it to the mayor (gt-pd1c.78).
+	DefaultWitnessStrandedBranchGrace = 2 * time.Hour
+	// MinWitnessStrandedBranchGrace is the floor for a configured grace: a
+	// polecat between its push and gt done must not be reported.
+	MinWitnessStrandedBranchGrace = 10 * time.Minute
 )
 
 // LoadOperationalConfig loads operational config from a town root.
@@ -759,6 +765,24 @@ func (wt *WitnessThresholds) HeartbeatStartupGraceD() time.Duration {
 		return ParseDurationOrDefault(wt.HeartbeatStartupGrace, DefaultWitnessHeartbeatStartupGrace)
 	}
 	return DefaultWitnessHeartbeatStartupGrace
+}
+
+// StrandedBranchGraceD returns the configured or default grace before a
+// stranded polecat branch is reported (gt-pd1c.78). A non-positive or
+// unparsable value falls back to the default; a positive value below
+// MinWitnessStrandedBranchGrace is raised to it.
+func (wt *WitnessThresholds) StrandedBranchGraceD() time.Duration {
+	if wt == nil {
+		return DefaultWitnessStrandedBranchGrace
+	}
+	d := ParseDurationOrDefault(wt.StrandedBranchGrace, DefaultWitnessStrandedBranchGrace)
+	switch {
+	case d <= 0:
+		return DefaultWitnessStrandedBranchGrace
+	case d < MinWitnessStrandedBranchGrace:
+		return MinWitnessStrandedBranchGrace
+	}
+	return d
 }
 
 // UnverifiedReminderIntervalD returns the configured or default interval

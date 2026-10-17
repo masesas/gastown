@@ -505,6 +505,13 @@ type WitnessThresholds struct {
 	// git) the witness patrol sends a reminder (default "24h", minimum "1h",
 	// gt-pd1c.82).
 	UnverifiedReminderInterval string `json:"unverified_reminder_interval,omitempty"`
+
+	// StrandedBranchGrace is how long a polecat branch whose work is on no
+	// merge target and not archived must stay that way (same tip, same
+	// verdict) before the witness reports it to the mayor; for a branch
+	// without an MR its owner must also not be alive (default "2h", minimum
+	// "10m", gt-pd1c.78). Reminders follow unverified_reminder_interval.
+	StrandedBranchGrace string `json:"stranded_branch_grace,omitempty"`
 }
 
 // DefaultOperationalConfig returns an OperationalConfig with all defaults.

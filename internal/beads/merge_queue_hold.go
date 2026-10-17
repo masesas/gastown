@@ -109,7 +109,7 @@ func mergeQueueHoldDetail(mrs []*Issue, resolve ProverResolver) HoldDetail {
 			return HoldDetail{Hold: HoldLanded, MRID: mr.ID, MR: mr, Evidence: evidence}
 		case verdictUnknown:
 			if unverified == nil {
-				unverified = &HoldDetail{Hold: HoldUnverified, MRID: mr.ID, MR: mr, Rig: rig, Reason: holdReason(reason)}
+				unverified = &HoldDetail{Hold: HoldUnverified, MRID: mr.ID, MR: mr, Rig: rig, Reason: DisplayReason(reason)}
 			}
 		}
 	}
@@ -122,9 +122,9 @@ func mergeQueueHoldDetail(mrs []*Issue, resolve ProverResolver) HoldDetail {
 // maxHoldReasonLen bounds HoldDetail.Reason (it may carry git error text).
 const maxHoldReasonLen = 300
 
-// holdReason makes a landing reason safe to show to a human: one line, URL
-// credentials masked, bounded length.
-func holdReason(reason string) string {
+// DisplayReason makes a free-text reason safe to show to a human or record on
+// a bead (util.OneLine, at most maxHoldReasonLen bytes).
+func DisplayReason(reason string) string {
 	return util.OneLine(reason, maxHoldReasonLen)
 }
 
@@ -256,6 +256,35 @@ func (b *Beads) MarkUnverifiedNotified(mrID string, at time.Time) error {
 	desc := SetMRFields(issue, fields)
 	if err := b.Update(mrID, UpdateOptions{Description: &desc}); err != nil {
 		return fmt.Errorf("recording unverified notice on MR %s: %w", mrID, err)
+	}
+	return nil
+}
+
+// SupersedeMR closes MR mrID as replaced by MR byID with the official
+// verdict recorded on the MR (MRFields.CloseReason "superseded"), the one way
+// gt done and gt mq submit retire an older open MR of the same source. The
+// merge queue reads that verdict (TipDisposition): only rejected and
+// superseded work may be abandoned. The MR is re-read first so concurrent
+// field changes are kept.
+func (b *Beads) SupersedeMR(mrID, byID string) error {
+	issue, err := b.Show(mrID)
+	if err != nil {
+		return fmt.Errorf("reading MR %s: %w", mrID, err)
+	}
+	if issue == nil {
+		return fmt.Errorf("reading MR %s: %w", mrID, ErrNotFound)
+	}
+	fields := ParseMRFields(issue)
+	if fields == nil {
+		fields = &MRFields{}
+	}
+	fields.CloseReason = string(TipSuperseded)
+	desc := SetMRFields(issue, fields)
+	if err := b.Update(mrID, UpdateOptions{Description: &desc}); err != nil {
+		return fmt.Errorf("recording superseded verdict on MR %s: %w", mrID, err)
+	}
+	if err := b.CloseWithReason("superseded by "+strings.TrimSpace(byID), mrID); err != nil {
+		return fmt.Errorf("closing superseded MR %s: %w", mrID, err)
 	}
 	return nil
 }

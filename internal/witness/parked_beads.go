@@ -30,6 +30,10 @@ type ScanParkedBeadsResult struct {
 	Closed   []string // parked beads closed because their MR landed
 	Notified []string // unverified beads the overseer was mailed about
 	Errors   []error
+	// Branches is the stranded polecat branch reconciliation that runs in the
+	// same phase (ReconcileStrandedBranches, gt-pd1c.78); its errors are its
+	// own.
+	Branches *StrandedBranchesResult
 }
 
 // ScanParkedBeads applies the merge queue's verdict to every bead parked in
@@ -38,13 +42,16 @@ type ScanParkedBeadsResult struct {
 // the overseer (once per MR, then a reminder per
 // WitnessThresholds.UnverifiedReminderInterval), pending and free beads are
 // left alone. It runs on every witness patrol (`gt patrol scan`); the merge
-// queue is read only when a parked bead exists. rigName must be
-// beads.IsSafeID.
+// queue is read only when a parked bead exists. The same phase then reports
+// stranded polecat branches to the mayor (ReconcileStrandedBranches,
+// Branches). workDir is the rig directory; rigName must be beads.IsSafeID.
 func ScanParkedBeads(bd *BdCli, workDir, rigName string, router *mail.Router) *ScanParkedBeadsResult {
 	if !beads.IsSafeID(rigName) {
 		return &ScanParkedBeadsResult{Errors: []error{fmt.Errorf("refusing rig name %q: not a valid rig name", rigName)}}
 	}
-	return scanParkedBeads(bd, workDir, newOverseerNotice(workDir, rigName, router))
+	res := scanParkedBeads(bd, workDir, newOverseerNotice(workDir, rigName, router))
+	res.Branches = ReconcileStrandedBranches(bd, workDir, rigName, router)
+	return res
 }
 
 func scanParkedBeads(bd *BdCli, workDir string, notice overseerNotice) *ScanParkedBeadsResult {

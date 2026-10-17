@@ -121,3 +121,28 @@ type errProver struct{ err error }
 func (p errProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
 	return p.err
 }
+
+// gt-pd1c.78 tahap 2: a superseded MR records the official verdict on the MR
+// (close_reason: superseded), so the merge queue can tell it from a bare close.
+func TestSupersedeMR_RecordsVerdictAndCloses(t *testing.T) {
+	store := newMockStorage()
+	b := newTestBeads(store)
+	_ = store.CreateIssue(context.Background(), &beadsdk.Issue{Title: "mr", Description: "branch: polecat/a\nsource_issue: gt-1\ncommit_sha: abc\nprose line"}, "test")
+	if err := b.SupersedeMR("test-1", "gt-wisp-new"); err != nil {
+		t.Fatalf("SupersedeMR: %v", err)
+	}
+	got, err := b.Show("test-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := ParseMRFields(got)
+	if f == nil || f.CloseReason != "superseded" || f.CommitSHA != "abc" || f.SourceIssue != "gt-1" {
+		t.Fatalf("fields after supersede = %+v", f)
+	}
+	if !IssueStatus(got.Status).IsTerminal() || !strings.Contains(got.Description, "prose line") {
+		t.Fatalf("MR after supersede: status=%q desc=%q", got.Status, got.Description)
+	}
+	if err := newTestBeads(newMockStorage()).SupersedeMR("test-404", "x"); err == nil {
+		t.Fatal("superseding a missing MR must fail")
+	}
+}

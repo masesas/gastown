@@ -103,8 +103,9 @@ func (patchOnly) PatchEquivalentOnPushTarget(remote, branch, commit, base string
 	return true, nil
 }
 
-// gt-pd1c.78 round 2: landing by patch equivalence is git evidence, and git
-// can be asked behind a recorded merged signal.
+// gt-pd1c.78 round 2: landing by patch equivalence is git evidence; tahap 2
+// (F7): git is asked behind a recorded merged signal too, so a recorded MR
+// that git confirms is landed by git evidence.
 func TestMergeQueueGitEvidence(t *testing.T) {
 	sha := "d" + strings.Repeat("0", 39)
 	squashed := &Issue{ID: "mr-sq", Status: "closed", Description: "branch: polecat/s\ntarget: main\nsource_issue: gt-s\nrig: gastown\ncommit_sha: " + sha + "\n"}
@@ -114,20 +115,10 @@ func TestMergeQueueGitEvidence(t *testing.T) {
 	if d, err := q.BranchHold("polecat/s"); err != nil || d.Hold != HoldLanded || d.Evidence != EvidenceGit {
 		t.Fatalf("squash-landed MR: %+v %v, want landed by git", d, err)
 	}
-	if d, _ := q.BranchHold("polecat/r"); d.Evidence != EvidenceRecorded {
-		t.Fatalf("recorded MR: evidence %q", d.Evidence)
+	if d, _ := q.BranchHold("polecat/r"); d.Hold != HoldLanded || d.Evidence != EvidenceGit {
+		t.Fatalf("recorded MR confirmed by git: %+v", d)
 	}
-	if !q.GitProvesLanded(recorded) {
-		t.Fatal("git proves the recorded MR landed (patch equivalent)")
-	}
-	notOn := NewMergeQueue(idx, nil, func(string) MergeProver { return fakeProver{} })
-	if notOn.GitProvesLanded(recorded) {
-		t.Fatal("git does not prove a commit that is nowhere on the target")
-	}
-	if NewMergeQueue(idx, nil, nil).GitProvesLanded(recorded) || NewMergeQueue(nil, os.ErrPermission, nil).GitProvesLanded(recorded) {
-		t.Fatal("no prover or an unread queue proves nothing")
-	}
-	if q.GitProvesLanded(nil) {
-		t.Fatal("nil MR proves nothing")
+	if d, _ := NewMergeQueue(idx, nil, nil).BranchHold("polecat/r"); d.Hold != HoldLanded || d.Evidence != EvidenceRecorded {
+		t.Fatalf("recorded MR without a prover: %+v", d)
 	}
 }

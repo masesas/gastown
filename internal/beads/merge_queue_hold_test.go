@@ -18,7 +18,8 @@ func TestMergeQueueHoldFor_ClassifiesEveryMRShape(t *testing.T) {
 		wantHold MergeQueueHold
 		wantMR   string
 	}{
-		{"gt-work1", nil, HoldLanded, "gt-wisp-merged"},           // close_reason merged
+		{"gt-work1", []string{"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"}, HoldLanded, "gt-wisp-merged"}, // close_reason merged, git agrees
+		{"gt-work1", nil, HoldUnverified, "gt-wisp-merged"},       // close_reason merged, git proves not landed (F7)
 		{"gt-work4", []string{"c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4"}, HoldLanded, "gt-wisp-bare"},  // bare bd close, commit on target
 		{"gt-work4", nil, HoldNone, ""},                           // bare close, not on target
 		{"gt-work2", nil, HoldNone, ""},                           // rejected, never landed

@@ -294,8 +294,7 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 					if old.ID == mrIssue.ID {
 						continue // skip the one we just created
 					}
-					reason := fmt.Sprintf("superseded by %s", mrIssue.ID)
-					if err := bd.CloseWithReason(reason, old.ID); err != nil {
+					if err := bd.SupersedeMR(old.ID, mrIssue.ID); err != nil {
 						style.PrintWarning("could not supersede old MR %s: %v", old.ID, err)
 						continue
 					}

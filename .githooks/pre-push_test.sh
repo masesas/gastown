@@ -340,6 +340,19 @@ GT_ROLE=gastown/crew/max BD_ACTOR=overseer assert_block "Overseer BD_ACTOR with 
 GT_CREW=max BD_ACTOR=overseer assert_pass "Overseer BD_ACTOR with GT_CREW only is exempt" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
 GT_ROLE=gastown/refinery BD_ACTOR=mayor assert_block "Conflicting agent roles cannot push to the default branch" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
 GT_ROLE=gastown/refinery GT_CREW=max assert_pass "Refinery GT_ROLE with GT_CREW is the refinery" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+# gt-pd1c.78 tahap 2: archives (refs/gt/archive/*, gt polecat abandon).
+archive_ref="refs/gt/archive/polecat/nux/1760000000-${pc_sha:0:12}"
+GT_ROLE=mayor assert_block "Agent archive creation blocked without gt" run_hook_nogt "HEAD" "$pc_sha" "$archive_ref" "$zero15"
+GT_ROLE=gastown/witness assert_block "Agent delete of polecat/* with unarchived tip blocked" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+git push origin "$pc_sha:$archive_ref" >/dev/null 2>&1
+GT_ROLE=gastown/witness assert_pass "Agent delete of polecat/* with archived tip allowed" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/witness assert_pass "Agent rewrite of polecat/* with archived tip allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=mayor assert_block "Agent delete of an archive ref blocked" run_hook_nogt "(delete)" "$zero15" "$archive_ref" "$pc_sha"
+GT_ROLE=gastown/refinery assert_block "Refinery delete of an archive ref blocked" run_hook_nogt "(delete)" "$zero15" "$archive_ref" "$pc_sha"
+GT_ROLE=gastown/witness assert_block "Agent rewrite of an archive ref blocked" run_hook_nogt "HEAD" "$main_sha" "$archive_ref" "$pc_sha"
+GT_ROLE=gastown/crew/max assert_pass "Crew prune of an archive ref allowed" run_hook_nogt "(delete)" "$zero15" "$archive_ref" "$pc_sha"
+assert_pass "Human prune of an archive ref allowed" run_hook_nogt "(delete)" "$zero15" "$archive_ref" "$pc_sha"
+assert_pass "Human archive creation allowed" run_hook_nogt "HEAD" "$pc_sha" "$archive_ref" "$zero15"
 cleanup
 
 echo ""

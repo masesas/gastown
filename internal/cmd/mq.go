@@ -512,7 +512,7 @@ func runMQRetry(cmd *cobra.Command, args []string) error {
 
 func runMQReject(cmd *cobra.Command, args []string) error {
 	if mqRejectConfirmNotLanded {
-		return runMQConfirmLanding(args[0], args[1], false)
+		return runMQConfirmLanding(stdioHumanPrompt(), args[0], args[1], false)
 	}
 	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
 	if mqRejectStdin {
@@ -563,7 +563,7 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 	rigName := args[0]
 	mrID := args[1]
 	if mqPostMergeConfirmLanded {
-		return runMQConfirmLanding(rigName, mrID, true)
+		return runMQConfirmLanding(stdioHumanPrompt(), rigName, mrID, true)
 	}
 
 	mgr, r, _, err := getRefineryManager(rigName)

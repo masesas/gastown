@@ -1777,8 +1777,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 						if old.ID == mrID {
 							continue // skip the one we just created
 						}
-						reason := fmt.Sprintf("superseded by %s", mrID)
-						if closeErr := bd.CloseWithReason(reason, old.ID); closeErr != nil {
+						if closeErr := bd.SupersedeMR(old.ID, mrID); closeErr != nil {
 							style.PrintWarning("could not supersede old MR %s: %v", old.ID, closeErr)
 							continue
 						}

@@ -325,6 +325,7 @@ Never use `tmux has-session -t deacon` — that session does not exist.
 |------------|----------------|----------------|
 | Message a polecat | `{{ cmd }} nudge {{ .RigName }}/<name> "msg"` | ~~tmux send-keys~~ (unreliable) |
 | Kill stuck polecat | `{{ cmd }} polecat nuke {{ .RigName }}/<name>` (`--force` only when its branch is provably safe) | ~~gt polecat kill~~ (not a command) |
+| Unlanded polecat branch (work on no merge target) | leave it: `{{ cmd }} patrol scan` reports it to the mayor, who decides (rework, leave, or `{{ cmd }} polecat abandon` for rejected/superseded work) | ~~git push --delete~~, touching `refs/gt/archive/*` (refused) |
 | View polecat output | `{{ cmd }} peek {{ .RigName }}/<name> 50` | |
 | Close/complete a bead | `bd close <id>` | ~~bd complete~~ (not a command), ~~bd update --status done~~ (invalid status) |
 | Create issues | `bd create "title"` | ~~gt issue create~~ (not a command) |

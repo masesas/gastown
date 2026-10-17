@@ -233,12 +233,15 @@ func TestPatrolScanParkedOutput(t *testing.T) {
 		Closed:   []string{"gt-a"},
 		Notified: []string{"gt-b"},
 		Errors:   []error{errors.New("mailing the overseer: down")},
+		Branches: &witness.StrandedBranchesResult{Checked: 3, Reported: []string{"polecat/nux/gt-1"}, Pending: 1,
+			Errors: []error{errors.New("mailing the mayor: down")}},
 	})
 	data, err := json.Marshal(PatrolScanOutput{Rig: "gastown", Parked: out})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"parked":{"checked":2`, `"closed":["gt-a"]`, `"notified":["gt-b"]`, `"errors":["mailing the overseer: down"]`} {
+	for _, want := range []string{`"parked":{"checked":2`, `"closed":["gt-a"]`, `"notified":["gt-b"]`, `"errors":["mailing the overseer: down"]`,
+		`"stranded_branches":{"checked":3,"reported":["polecat/nux/gt-1"],"pending":1,"errors":["mailing the mayor: down"]}`} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("JSON missing %s: %s", want, data)
 		}

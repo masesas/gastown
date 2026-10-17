@@ -11,8 +11,9 @@
 #    not land while merge_queue.integration_branch_auto_land is off, whatever
 #    GT_INTEGRATION_LAND says. The bash fallback below only runs when no gt
 #    with `hooks pre-push` is on PATH; it is stricter for agents (no land, and
-#    without the merge queue no agent other than crew may delete polecat/*;
-#    gt-pd1c.78).
+#    without the merge queue no agent other than crew may delete or rewrite
+#    polecat/* unless its tip is archived under refs/gt/archive/* on the
+#    remote, nor create, delete or rewrite an archive ref; gt-pd1c.78).
 #
 # Local hooks can be skipped by the pusher; protect the real remote with
 # branch protection (docs/HOOKS.md, "Rig pre-push guard").
@@ -138,6 +139,17 @@ owns_branch() {
   [[ "$rest" != */* && "$rest" == *-* && "${rest%-*}" == "$caller_name" ]]
 }
 
+# tip_archived: an archive ref (refs/gt/archive/*, gt polecat abandon) on the
+# push remote points at the commit, as mergeproof.RemoteTips.Archived. An
+# unreadable remote is "not archived" (fail closed).
+push_remote="${2:-${1:-origin}}"
+tip_archived() {
+  local sha="$1" refs
+  [[ -n "$sha" && "$push_remote" != -* ]] || return 1
+  refs=$(git ls-remote --refs -- "$push_remote" 'refs/gt/archive/*' 2>/dev/null) || return 1
+  awk -v s="$sha" 'tolower($1) == tolower(s) && $2 ~ /^refs\/gt\/archive\// { found = 1 } END { exit !found }' <<< "$refs"
+}
+
 zero=0000000000000000000000000000000000000000
 input=$(cat)
 
@@ -149,8 +161,9 @@ input=$(cat)
 while read local_ref local_sha remote_ref remote_sha; do
   [[ -z "$remote_ref" ]] && continue
 
-  # Skip tags - they're allowed for releases
-  if [[ "$remote_ref" == refs/tags/* ]]; then
+  # Skip tags - they're allowed for releases. Archive refs (refs/gt/archive/*,
+  # gt polecat abandon) are checked by the coordinator rules below.
+  if [[ "$remote_ref" == refs/tags/* || "$remote_ref" == refs/gt/archive/* ]]; then
     continue
   fi
 
@@ -224,21 +237,33 @@ fi
 # check for humans only; agents cannot land through this fallback at all.
 while read local_ref local_sha remote_ref remote_sha; do
   [[ -z "$remote_ref" ]] && continue
+  # Archive refs (gt-pd1c.78 tahap 2): agents never delete or rewrite them
+  # (pruning is for a human or crew), and without gt the merge queue cannot
+  # say whether the work may be abandoned, so they may not create them either.
+  if [[ "$is_exempt" == "0" && "$remote_ref" == refs/gt/archive/* ]]; then
+    echo "BLOCKED: agents may not create, delete or rewrite archive ref $remote_ref without gt"
+    echo "(no gt with 'hooks pre-push' on PATH). Archives are created by 'gt polecat abandon';"
+    echo "pruning them is for a human or crew."
+    exit 1
+  fi
   branch="${remote_ref#refs/heads/}"
   # Without gt the merge queue cannot be read, so the polecat branch deletion
-  # rule cannot be proven: agents other than crew may not delete polecat/*.
-  if [[ "$is_exempt" == "0" && "$local_sha" == "$zero" && "$branch" == polecat/* ]]; then
+  # rule cannot be proven: agents other than crew may not delete polecat/*
+  # unless its tip is archived (refs/gt/archive/*) on the remote.
+  if [[ "$is_exempt" == "0" && "$local_sha" == "$zero" && "$branch" == polecat/* ]] && ! tip_archived "$remote_sha"; then
     echo "BLOCKED: agents may not delete $branch without gt (no gt with 'hooks pre-push' on PATH):"
-    echo "the merge queue cannot be read to prove its work is safe to discard."
+    echo "the merge queue cannot be read to prove its work is safe to discard, and its tip is not archived."
     echo "Landed polecat branches are deleted by the refinery or 'gt mq post-merge', preserved ones by"
-    echo "'gt polecat prune --remote'; anything else needs a human or crew."
+    echo "'gt polecat prune --remote', rejected or superseded work by 'gt polecat abandon';"
+    echo "anything else is reworked or resubmitted (the mayor decides) or needs a human or crew."
     exit 1
   fi
   # A rewrite (not a fast-forward) of polecat/* by an agent other than crew,
   # the refinery and the owning polecat discards the old tip like a deletion
-  # (gt-pd1c.78 round 1, H1); without gt it cannot be proven safe.
+  # (gt-pd1c.78 round 1, H1); without gt it cannot be proven safe unless the
+  # old tip is archived.
   if [[ "$is_exempt" == "0" && "$caller_role" != "refinery" && "$branch" == polecat/* && \
-        "$local_sha" != "$zero" && "$remote_sha" != "$zero" ]] && ! owns_branch "$branch"; then
+        "$local_sha" != "$zero" && "$remote_sha" != "$zero" ]] && ! owns_branch "$branch" && ! tip_archived "$remote_sha"; then
     if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
       echo "BLOCKED: agent rewrite (not a fast-forward) of $branch, a polecat branch it does not own"
       echo "(no gt with 'hooks pre-push' on PATH): the old tip cannot be proven safe to discard."

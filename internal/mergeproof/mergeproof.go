@@ -3,6 +3,7 @@
 package mergeproof
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +34,60 @@ type memoProver struct {
 	g       *git.Git
 	reaches memo[error]
 	patches memo[patchAnswer]
+	// configured is the rig's default_branch from config.json ("" = unset).
+	configured string
+	// remoteDefault is origin/HEAD, read once.
+	remoteDefault     func() string
+	remoteDefaultOnce sync.Once
+	remoteDefaultName string
+}
+
+// defaultBranch is the rig's default branch: config.json default_branch, else
+// origin/HEAD.
+func (m *memoProver) defaultBranch() string {
+	if m.configured != "" {
+		return m.configured
+	}
+	m.remoteDefaultOnce.Do(func() {
+		if m.remoteDefault != nil {
+			m.remoteDefaultName = strings.TrimSpace(m.remoteDefault())
+		}
+	})
+	return m.remoteDefaultName
+}
+
+// untrustedTarget refuses an MR target that is not a merge target (gt-pd1c.78
+// tahap 2): the rig's default branch (configured or origin/HEAD) or
+// integration/*. The target is a bead field anyone can edit; set to the
+// polecat's own branch it would "prove" any commit landed. The error is not a
+// definite "not on target", so the landing stays undecided (held, the
+// overseer decides) instead of being read as either verdict.
+func (m *memoProver) untrustedTarget(branch string) error {
+	branch = strings.TrimSpace(branch)
+	if rest, ok := strings.CutPrefix(branch, IntegrationBranchPrefix); ok && rest != "" {
+		return nil
+	}
+	if def := m.defaultBranch(); def != "" && branch == def {
+		return nil
+	}
+	if remote := m.originHead(); remote != "" && branch == remote {
+		return nil
+	}
+	return fmt.Errorf("MR target %q is not a merge target (the rig default branch or integration/*); "+
+		"it is not trusted as landing proof", branch)
+}
+
+// originHead is origin/HEAD (also trusted when the rig configures another
+// default branch: the prover falls back to it for deleted integration
+// branches).
+func (m *memoProver) originHead() string {
+	if m.configured == "" {
+		return m.defaultBranch()
+	}
+	if m.remoteDefault == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.remoteDefault())
 }
 
 // errProofAborted answers callers that waited for a computation that panicked.
@@ -44,13 +99,16 @@ func (m *memoProver) IsAncestor(ancestor, descendant string) (bool, error) {
 }
 
 func (m *memoProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	if err := m.untrustedTarget(branch); err != nil {
+		return err
+	}
 	key := remote + "\x00" + branch + "\x00" + commit
 	return m.reaches.do(key, func() error {
 		err := m.g.VerifyPushedCommitReachableFromPushTarget(remote, branch, commit)
 		if err != nil {
 			// Integration branches are deleted after landing: the work then
 			// lives on the default branch.
-			if def := m.g.RemoteDefaultBranch(); def != "" && def != branch {
+			if def := m.defaultBranch(); def != "" && def != branch {
 				err = combineFallback(err, m.g.VerifyPushedCommitReachableFromPushTarget(remote, def, commit))
 			}
 		}
@@ -67,11 +125,14 @@ type patchAnswer struct {
 // squash merges), memoized like reachability and with the same fallback to
 // the default branch.
 func (m *memoProver) PatchEquivalentOnPushTarget(remote, branch, commit, base string) (bool, error) {
+	if err := m.untrustedTarget(branch); err != nil {
+		return false, err
+	}
 	key := remote + "\x00" + branch + "\x00" + commit + "\x00" + base
 	a := m.patches.do(key, func() patchAnswer {
 		ok, err := m.g.PatchEquivalentOnPushTarget(remote, branch, commit, base)
 		if !ok {
-			if def := m.g.RemoteDefaultBranch(); def != "" && def != branch {
+			if def := m.defaultBranch(); def != "" && def != branch {
 				defOK, defErr := m.g.PatchEquivalentOnPushTarget(remote, def, commit, base)
 				ok, err = combinePatchFallback(ok, err, defOK, defErr)
 			}
@@ -118,7 +179,28 @@ func ForRigPath(rigPath string) beads.MergeProver {
 	}
 	// Patrol paths must never hang on git: every command of the prover,
 	// reachability included, runs under the proof bounds.
-	return &memoProver{g: g.WithProofLimits()}
+	bounded := g.WithProofLimits()
+	return &memoProver{g: bounded, configured: configuredDefaultBranch(rigPath), remoteDefault: bounded.RemoteDefaultBranch}
+}
+
+// configuredDefaultBranch reads default_branch from the rig's config.json
+// (rig.LoadRigConfig's file; the rig package imports this one, so it cannot
+// be called here). Missing or unreadable config: "".
+func configuredDefaultBranch(rigPath string) string {
+	data, err := os.ReadFile(filepath.Join(rigPath, "config.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return ""
+	}
+	if b := strings.TrimSpace(cfg.DefaultBranch); beads.IsSafeRefName(b) {
+		return b
+	}
+	return ""
 }
 
 // Resolver returns a ProverResolver for rigs under townRoot (<town>/<rig>).

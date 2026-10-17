@@ -112,3 +112,25 @@ func TestParseGeneratedBranchNameRejectsRawDashedIssues(t *testing.T) {
 		}
 	}
 }
+
+// gt-pd1c.78 (e): one ownership rule; a flat dashed branch names both
+// candidates.
+func TestBranchOwners(t *testing.T) {
+	cases := map[string][]string{
+		"polecat/nux":           {"nux"},
+		"polecat/nux/gt-1+abc":  {"nux"},
+		"polecat/nux/gt-1":      {"nux"},
+		"polecat/nux-abc123":    {"nux-abc123", "nux"},
+		"polecat/nux-2-abc":     {"nux-2-abc", "nux-2"},
+		"polecat/nux-2":         {"nux-2", "nux"},
+		"polecat/":              nil,
+		"main":                  nil,
+		"integration/polecat/x": nil,
+	}
+	for branch, want := range cases {
+		got := BranchOwners(branch)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("BranchOwners(%q) = %v, want %v", branch, got, want)
+		}
+	}
+}

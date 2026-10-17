@@ -35,10 +35,15 @@ import (
 //     and the owning polecat, discards the remote tip and is allowed only
 //     when that loses no work (polecatBranchDeletion): the old tip is
 //     preserved on the remote default branch or a remote integration/*
-//     branch, or the merge queue (beads.MergeQueue.BranchHold) says no MR is
-//     open and none landed, or the deciding MR landed by git proof with
-//     exactly that commit. An unreadable merge queue refuses. Humans and crew
-//     are not checked.
+//     branch, or archived under refs/gt/archive/* on the push remote, or the
+//     MR of exactly that commit landed by git proof
+//     (beads.MergeQueue.TipDisposition). Everything else (no MR, rejected,
+//     conflict, an open MR, an unreadable merge queue) refuses with its one
+//     exit. Humans and crew are not checked.
+//   - Archive refs (refs/gt/archive/*, gt-pd1c.78 tahap 2, agents other than
+//     crew): never deleted or rewritten; created only in gt polecat
+//     abandon's shape for work whose MR was closed as rejected or superseded
+//     (checkArchiveUpdate).
 //   - Target roles (gt-pd1c.78): an update of a target by an agent other than
 //     the refinery or crew (witness, mayor, deacon, dog, boot, polecat, an
 //     unknown role) is refused. Exceptions already in Gas Town: a polecat on a
@@ -80,7 +85,7 @@ import (
 // prePushZeroSHA is the object name git uses for "no commit" in pre-push input.
 const prePushZeroSHA = "0000000000000000000000000000000000000000"
 
-const integrationBranchPrefix = "integration/"
+const integrationBranchPrefix = mergeproof.IntegrationBranchPrefix
 
 var hooksPrePushCmd = &cobra.Command{
 	Use:   "pre-push <remote> [<url>]",
@@ -94,9 +99,12 @@ Rules (agent = GT_ROLE, BD_ACTOR, GT_POLECAT or GT_CREW is set):
   - Agent (not crew) deletion of polecat/*, or a non-fast-forward update by
     an agent other than the refinery and the owning polecat: allowed only
     when the old tip is preserved on the remote default branch or
-    integration/*, or the merge queue shows no open MR and no landed work
-    from the branch (or a git-proven landed MR's commit is the tip).
+    integration/*, archived under refs/gt/archive/*, or the MR of that tip
+    landed by git proof. Rejected/superseded work is abandoned with
+    gt polecat abandon; anything else is reworked or resubmitted.
     Unreadable beads: refused.
+  - Agent (not crew) push to refs/gt/archive/*: delete and rewrite refused;
+    create only for work whose MR was closed as rejected or superseded.
   - Update of the default branch or integration/* by an agent other than the
     refinery or crew: refused (a polecat may push there only when the rig's
     merge queue is disabled; a new integration/* branch with no new commits
@@ -321,13 +329,16 @@ type prePushGuard struct {
 	// polecat branch whose tip is not on a target (nil = unreadable).
 	loadQueue func() *beads.MergeQueue
 
-	rigLoaded  bool
-	rig        *prePushRig
-	rigErr     error
-	tips       []git.RemoteRef
-	tipsErr    error
-	tipsDone   bool
-	remoteSHAs map[string]string // branch -> tip on the push remote ("" = absent)
+	rigLoaded bool
+	rig       *prePushRig
+	rigErr    error
+	tips      []git.RemoteRef
+	tipsErr   error
+	tipsDone  bool
+	// remoteList reads the push remote; every remote read of one push
+	// (branch tips, targets, archives) goes through listRemote, so each
+	// prefix is read once.
+	remoteList mergeproof.RemoteLister
 }
 
 // check returns nil when every update may be pushed, else an error naming
@@ -343,6 +354,9 @@ func (g *prePushGuard) check(updates []prePushUpdate) error {
 }
 
 func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
+	if strings.HasPrefix(u.RemoteRef, mergeproof.ArchiveRefPrefix) {
+		return g.checkArchiveUpdate(u)
+	}
 	branch, ok := strings.CutPrefix(u.RemoteRef, "refs/heads/")
 	if !ok {
 		return nil // tag or other ref
@@ -474,31 +488,31 @@ func (g *prePushGuard) pushTarget() (string, error) {
 	return target, nil
 }
 
-// remoteBranchSHA returns the tip of refs/heads/<branch> on the push remote,
-// "" when the branch does not exist there.
-func (g *prePushGuard) remoteBranchSHA(branch string) (string, error) {
-	if sha, ok := g.remoteSHAs[branch]; ok {
-		return sha, nil
+// errPushRemoteUnreadable: ls-remote of the push remote failed (the URL is
+// never shown: it may carry credentials).
+var errPushRemoteUnreadable = errors.New("cannot read the push remote; retry when it is reachable")
+
+// listRemote lists refs under prefix on the push remote, once per prefix per
+// push (mergeproof.CachedLister over readRemote).
+func (g *prePushGuard) listRemote(prefix string) ([]git.RemoteRef, error) {
+	if g.remoteList == nil {
+		g.remoteList = mergeproof.CachedLister(g.readRemote)
 	}
+	return g.remoteList(prefix)
+}
+
+// readRemote is one ls-remote of the push remote. An invalid remote is
+// errInvalidPushRemote; a failed read is errPushRemoteUnreadable.
+func (g *prePushGuard) readRemote(prefix string) ([]git.RemoteRef, error) {
 	target, err := g.pushTarget()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	refs, err := g.git.ListRemoteRefsWithHashes(target, "refs/heads/"+branch)
+	refs, err := g.git.ListRemoteRefsWithHashes(target, prefix)
 	if err != nil {
-		return "", errors.New("cannot read the push remote; retry when it is reachable")
+		return nil, errPushRemoteUnreadable
 	}
-	sha := ""
-	for _, ref := range refs {
-		if ref.Name == "refs/heads/"+branch {
-			sha = ref.Hash
-		}
-	}
-	if g.remoteSHAs == nil {
-		g.remoteSHAs = map[string]string{}
-	}
-	g.remoteSHAs[branch] = sha
-	return sha, nil
+	return refs, nil
 }
 
 // checkAgentDelete allows an agent to delete integration/<x> only once its
@@ -512,7 +526,7 @@ func (g *prePushGuard) checkAgentDelete(u prePushUpdate, branch string, defaults
 		return fmt.Errorf("BLOCKED: agent deletion of %s refused: %s. Integration branches are "+
 			"deleted by gt mq integration land after landing, or by a human", branch, why)
 	}
-	defaultSHA, err := g.remoteBranchSHA(defaults[0])
+	defaultSHA, err := g.tipResolver(defaults).BranchTip(defaults[0])
 	if err != nil {
 		return refuse(err.Error())
 	}
@@ -575,12 +589,7 @@ func (g *prePushGuard) integrationTips() ([]git.RemoteRef, error) {
 		return g.tips, g.tipsErr
 	}
 	g.tipsDone = true
-	target, err := g.pushTarget()
-	if err != nil {
-		g.tipsErr = err
-		return nil, err
-	}
-	tips, err := g.git.ListRemoteRefsWithHashes(target, "refs/heads/"+integrationBranchPrefix)
+	tips, err := g.listRemote("refs/heads/" + integrationBranchPrefix)
 	if err != nil {
 		g.tipsErr = err
 		return nil, err
@@ -704,7 +713,7 @@ func (g *prePushGuard) checkScope(u prePushUpdate, branch, defaultBranch string,
 // newBranchBase returns the merge-base of local with the default branch tip
 // on the push remote (ls-remote, not a local ref that could be moved).
 func (g *prePushGuard) newBranchBase(local, defaultBranch string) (string, error) {
-	sha, err := g.remoteBranchSHA(defaultBranch)
+	sha, err := g.tipResolver([]string{defaultBranch}).BranchTip(defaultBranch)
 	if err != nil {
 		return "", fmt.Errorf("%v; cannot check merge scope", err)
 	}

@@ -24,6 +24,7 @@ type prePushFixture struct {
 	mainSHA, epicSHA    string
 	land, bad, good     string
 	integrationOnTopBad string // integration/epic-a + commit touching infra/
+	archived            string // a commit under refs/gt/archive/* on the remote (set by tests)
 }
 
 func newPrePushFixture(t *testing.T) prePushFixture {

@@ -83,13 +83,19 @@ func TestPreserveBranchBeforeRemovalHonoursHookedReviewLeg(t *testing.T) {
 }
 
 func TestCleanupStaleBranchesKeepsUnverifiedBranches(t *testing.T) {
+	allow := func(string) error { return nil }
+	refuse := func(b string) error { return errors.New("discarding " + b + ": no MR recorded this tip") }
 	for _, tt := range []struct {
-		name     string
-		failAll  bool
-		wantKept bool
+		name      string
+		failAll   bool
+		deletable func(string) error
+		wantKept  bool
 	}{
-		{"beads unavailable keeps the branch", true, true},
-		{"ordinary orphan is deleted", false, false},
+		{"beads unavailable keeps the branch", true, allow, true},
+		{"ordinary orphan the deletion rule allows is deleted", false, allow, false},
+		// gt-pd1c.78 tahap 2: gc goes through the polecat branch deletion rule.
+		{"orphan the deletion rule refuses is kept", false, refuse, true},
+		{"no deletion rule keeps the branch (fail closed)", false, nil, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			const branch = "polecat/ghost/gt-code+abc"
@@ -109,7 +115,7 @@ func TestCleanupStaleBranchesKeepsUnverifiedBranches(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := m.CleanupStaleBranches(); err != nil {
+			if _, err := m.CleanupStaleBranches(tt.deletable); err != nil {
 				t.Fatalf("CleanupStaleBranches: %v", err)
 			}
 			exists, err := cloneGit.BranchExists(branch)

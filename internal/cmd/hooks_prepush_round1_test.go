@@ -34,8 +34,8 @@ func TestPrePushGuardPolecatRewrite(t *testing.T) {
 			update: rewrite, queue: openMR, wantErr: "does not own"},
 		{name: "mayor force-push, tip unknown locally: blocked", env: []string{"GT_ROLE", "mayor"},
 			update: prePushUpd("refs/heads/"+branch, f.mainSHA, strings.Repeat("1", 40)), queue: openMR, wantErr: "is open"},
-		{name: "witness force-push over never-submitted tip: allowed", env: []string{"GT_ROLE", "myrig/witness"},
-			update: rewrite, queue: mqWith()},
+		{name: "witness force-push over never-submitted tip: blocked (tahap 2)", env: []string{"GT_ROLE", "myrig/witness"},
+			update: rewrite, queue: mqWith(), wantErr: "no MR recorded this tip"},
 		{name: "witness force-push over landed tip: allowed", env: []string{"GT_ROLE", "myrig/witness"},
 			update: prePushUpd("refs/heads/"+branch, f.good, f.mainSHA), queue: openMR},
 		{name: "owning polecat force-push: allowed", env: []string{"GT_ROLE", "myrig/polecats/nux", "GT_POLECAT", "nux"},
@@ -112,29 +112,29 @@ func TestGateNukeForceWorkProblems(t *testing.T) {
 		return errors.New("worktree is dirty (1 uncommitted/untracked file(s), 0 stash(es))")
 	}
 	setCaller(t, "GT_ROLE", "gastown/witness")
-	stubLandingTTY(t, true, "gastown/nux\n")
-	if err := gateNukeForce(nukeTargets("nux"), dirty); err == nil || !strings.Contains(err.Error(), "dirty") {
+	hp, _ := stubPrompt(true, "gastown/nux\n")
+	if err := (forceDiscardGate{action: nukeForceAction, check: dirty, prompt: hp}).run(nukeTargets("nux")); err == nil || !strings.Contains(err.Error(), "dirty") {
 		t.Fatalf("witness on a dirty worktree: %v", err)
 	}
 	setCaller(t)
-	stubLandingTTY(t, true, "gastown/nux\n")
-	if err := gateNukeForce(nukeTargets("nux"), dirty); err != nil {
+	hp, _ = stubPrompt(true, "gastown/nux\n")
+	if err := (forceDiscardGate{action: nukeForceAction, check: dirty, prompt: hp}).run(nukeTargets("nux")); err != nil {
 		t.Fatalf("human at a TTY: %v", err)
 	}
-	if err := nukeForceWorkCheck(polecatTarget{}); err == nil {
+	if err := forceDiscardWorkCheck(polecatTarget{}); err == nil {
 		t.Fatal("an unreadable polecat must fail closed")
 	}
 }
 
 // Confirmation errors name the action and keep errNotInteractive.
 func TestConfirmHumanInteractivelyNamesAction(t *testing.T) {
-	stubLandingTTY(t, false, "")
-	err := confirmHumanInteractively("gt polecat nuke --force", "p", "x")
+	hp, _ := stubPrompt(false, "")
+	err := hp.confirm("gt polecat nuke --force", "p", "x")
 	if !errors.Is(err, errNotInteractive) || !strings.Contains(err.Error(), "gt polecat nuke --force") {
 		t.Fatalf("no TTY: %v", err)
 	}
-	stubLandingTTY(t, true, "y\n")
-	if err := confirmHumanInteractively("landing verdict on MR m1", "p", "x"); err == nil ||
+	hp, _ = stubPrompt(true, "y\n")
+	if err := hp.confirm("landing verdict on MR m1", "p", "x"); err == nil ||
 		!strings.Contains(err.Error(), "landing verdict on MR m1") || !strings.Contains(err.Error(), "did not match") {
 		t.Fatalf("mismatch: %v", err)
 	}

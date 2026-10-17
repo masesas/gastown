@@ -261,7 +261,8 @@ treat crew as an agent, as before.
 | Push | Agent | Human |
 |---|---|---|
 | Push to `polecat/*`, other branches, tags | allowed, nothing checked | allowed |
-| Delete `polecat/*` (agents other than crew), or rewrite it (not a fast-forward) when the agent is neither the refinery nor the polecat that owns the branch | the old remote tip is checked; allowed only when discarding it loses no work: the tip is preserved (ancestor, merge-tree no-op or every patch present, the `gt polecat prune` rule) on the remote default branch or a remote `integration/*` branch; or the merge queue (`MergeQueue.BranchHold`, the one predicate) shows no open MR from the branch and every MR from it definitely not landed (or none); or the deciding MR landed **by git proof** and its `commit_sha` is the tip (a landed verdict resting only on `close_reason`/`merge_commit` or a human `landing:` verdict is not trusted for discarding work). An MR closed by hand that git proves did not land counts as not landed, so its branch may be deleted (user decision). An open MR, a landing git cannot decide, landed work with later commits or an unreadable merge queue refuse. The git proof runs first, so the refinery and `gt mq post-merge` / `gt polecat prune --remote` (which delete only landed tips) never read beads | allowed |
+| Delete `polecat/*` (agents other than crew), or rewrite it (not a fast-forward) when the agent is neither the refinery nor the polecat that owns the branch | the old remote tip is checked; allowed only when discarding it loses no work (gt-pd1c.78): the tip is preserved (ancestor, merge-tree no-op or every patch present, the `gt polecat prune` rule) on the remote default branch or a remote `integration/*` branch; or the tip is **archived** (an `refs/gt/archive/*` ref on the push remote points at it, written by `gt polecat abandon`); or the MR whose `commit_sha` is exactly the tip landed **by git proof** (a landed verdict resting only on `close_reason`/`merge_commit` or a human `landing:` verdict is not trusted for discarding work). Everything else is refused with the one exit of its class (`MergeQueue.TipDisposition`): open MR (the refinery owns the branch), MR of the tip closed as `rejected`/`superseded` (abandon it: `gt polecat abandon <rig>/<branch> --reason ...`), closed for `conflict` or without an official verdict, or no MR for the tip (rework/resubmit; the mayor decides, the witness reports it), landing git cannot decide (overseer verdict), unreadable merge queue. "No open MR and nothing landed" no longer frees a branch (tahap 2). The git proofs run first, so the refinery and `gt mq post-merge` / `gt polecat prune --remote` (which delete only landed tips) never read beads | allowed |
+| Create, delete or rewrite an archive ref `refs/gt/archive/<polecat-branch>/<unix>-<sha>` (agents other than crew) | delete and rewrite refused (pruning archives is for a human or crew); create allowed only in `gt polecat abandon`'s shape (the stamp names the pushed commit) and only for a tip whose MR was closed as `rejected` or `superseded` (`TipDisposition.Abandonable`); an unreadable merge queue refuses | allowed |
 | Update the default branch or `integration/*` by an agent other than the refinery or crew (witness, mayor, deacon, dog, boot, polecat, unknown role) | refused. A polecat may push there only when the rig's `merge_queue.enabled` is `false` (`gt done`, direct convoy strategy); any agent may create an `integration/*` branch whose tip is already on a remote target (`gt mq integration create`). The refinery and crew are unchanged | allowed |
 | Default branch or `integration/*` from a repository that runs the managed hook but whose rig cannot be detected | refused (fail closed) | checked as below, without rig settings |
 | Default branch or `integration/*` from a repository without the managed hook and outside any rig (e.g. the Gas Town source repo, whose `.githooks/pre-push` delegates) | checked as below without rig settings: auto-land off, no scope | same |
@@ -314,22 +315,65 @@ sha all zeros) is never a land; it is still scope-checked.
   a non-land change straight to the default branch or `integration/*`. That the
   refinery pushes only merged MRs is not checked yet (gt-pd1c.78, stage 3).
 - The polecat deletion rule sees only MRs with a `source_issue` (the merge
-  queue index groups by source). The `close_reason`/`merge_commit` fields that
-  make an MR landed can be edited with `bd update` (cross-check in stage 2).
+  queue index groups by source). Bead fields can be edited with `bd update`;
+  the landing predicate asks git first (tahap 2, F7): a recorded merge
+  (`close_reason: merged`, `merge_commit`) that git proves is not on the
+  target is held as unverified (the overseer decides), and an MR `target`
+  other than the rig default branch or `integration/*` is not trusted as
+  proof. Only when git cannot decide at all (no prover, no `commit_sha` or
+  `target`) does a recorded merge still count as landed for holding and
+  closing beads, never for discarding a branch. A `close_reason` of
+  `rejected`/`superseded` (what makes work abandonable) can be forged too;
+  abandon archives the tip first, so that loses no work.
 - `gt polecat nuke --force` uses the same deletion rule for the polecat's
   remote and local tip, and also requires a clean worktree (no uncommitted or
   untracked non-ignored files, no stash), no active hook bead, no open work
   assigned and a readable agent bead (from the nuke safety checks). When that
   does not hold, an agent is refused and a human or crew must type the polecat
-  addresses at a terminal. `gt polecat remove --force` is not gated.
+  addresses at a terminal. `gt polecat remove --force` goes through the same
+  gate (tahap 2), and `gt polecat gc` deletes a local branch only when the
+  same rule allows it (others are kept with a warning, for everyone).
 - The Gas Town repo's own `.githooks/pre-push` fallback (no `gt` with
   `hooks pre-push` on `PATH`) cannot read the merge queue or rig settings, so
-  it is stricter: agents other than crew may not delete `polecat/*`, agents
-  other than crew, the refinery and the owning polecat may not rewrite it,
-  and only the refinery, crew and humans may update the default branch or
-  `integration/*`.
+  it is stricter: agents other than crew may not delete `polecat/*` (nor
+  may agents other than crew, the refinery and the owning polecat rewrite
+  it) unless its tip is archived under `refs/gt/archive/*` on the push
+  remote; agents may not create, delete or rewrite archive refs at all; and
+  only the refinery, crew and humans may update the default branch or
+  `integration/*`. A Go/bash parity test runs the archive rows on both.
 - Agents can no longer delete an unlanded `integration/*` branch (e.g. to
   abandon an epic); a human does that.
+
+### Unlanded polecat branches: report, decide, abandon (gt-pd1c.78 tahap 2)
+
+No agent deletes a polecat branch whose work is on no merge target. Instead:
+
+1. **Report.** Every witness patrol (`gt patrol scan`, together with the
+   parked-bead scan) lists the `polecat/*` branches on the rig's remote whose
+   tip is neither on the default branch / `integration/*` nor archived, and
+   mails the **mayor** (not the overseer) one digest with one line per branch
+   and the options its class allows. A branch is reported after it kept the
+   same tip and class for `stranded_branch_grace` (operational config,
+   `witness`, default 2h, minimum 10m); a branch without an MR only when no
+   polecat that may own it is alive (session or agent bead with hooked work).
+   Reminders follow `unverified_reminder_interval`. State:
+   `<town>/witness/stranded-branches-<rig>.json` (deleting it only repeats
+   reports).
+2. **Decide (mayor).** Rejected/superseded: rework or resubmit, leave it, or
+   abandon it. Conflict, closed without an official verdict (reported as an
+   ANOMALY when an MR was closed by hand and git says it did not land), no
+   MR: rework or resubmit, or leave it. The mayor escalates to the overseer
+   when a human must decide; the overseer otherwise only hears about
+   unverified landings.
+3. **Abandon.** `gt polecat abandon <rig>/<polecat>` or
+   `gt polecat abandon <rig>/polecat/<branch>` with `--reason`: archives the
+   tip to `refs/gt/archive/<branch>/<unix>-<12-hex>` on origin, verifies the
+   archive, deletes the branch only if it still points at the tip, and adds a
+   note (reason, archive ref, actor) to the MR and source beads. A failure
+   before the delete deletes nothing.
+4. **Prune (humans/crew only).** Archives stay until a human or crew deletes
+   them (`git push origin --delete refs/gt/archive/...`); a human or crew may
+   also delete an unlanded branch directly.
 
 The hard boundary for a real project is the remote:
 point the rig at a local mirror and protect the real origin's branches, with

@@ -42,8 +42,9 @@ func TestPrePushGuardRefineryPostMergeDelete(t *testing.T) {
 	if err := coordinatorGuard(f, plain, mqWithProver(gitLanded{f.bad: true}, recorded), refinery...).check(del(f.bad)); err != nil {
 		t.Fatalf("recorded verdict that git confirms: %v", err)
 	}
+	// tahap 2 (F7): git disproves the record, so the landing is unverified.
 	err := coordinatorGuard(f, plain, mqWithProver(gitLanded{}, recorded), refinery...).check(del(f.bad))
-	if err == nil || !strings.Contains(err.Error(), "git has not proven") {
+	if err == nil || !strings.Contains(err.Error(), "recorded as merged") {
 		t.Fatalf("recorded verdict that git does not confirm: %v", err)
 	}
 }
@@ -55,18 +56,31 @@ func TestPolecatRepoBranchDeletableRemoteUnreadable(t *testing.T) {
 	runGitForMQSubmitTest(t, f.repo, "branch", "polecat/nux", f.good)
 	runGitForMQSubmitTest(t, f.repo, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
 	repo := gitpkg.NewGit(f.repo)
-	err := polecatRepoBranchDeletable(repo, "polecat/nux", "main", mqWith(mrIssue("gt-mr1", "open", "polecat/nux", f.good, "")))
+	err := polecatRepoBranchDeletable(repo, "gastown", "polecat/nux", "main", mqWith(mrIssue("gt-mr1", "open", "polecat/nux", f.good, "")))
 	if err == nil || !strings.Contains(err.Error(), "git proof unavailable") {
 		t.Fatalf("open MR, remote unreadable: %v", err)
 	}
-	if err := polecatRepoBranchDeletable(repo, "polecat/nux", "main", mqWith()); err != nil {
-		t.Fatalf("no MR, remote unreadable: the queue decides: %v", err)
+	// tahap 2: without an MR the work is not proven safe either.
+	err = polecatRepoBranchDeletable(repo, "gastown", "polecat/nux", "main", mqWith())
+	if err == nil || !strings.Contains(err.Error(), "no MR recorded this tip") || !strings.Contains(err.Error(), "git proof unavailable") {
+		t.Fatalf("no MR, remote unreadable: %v", err)
+	}
+	// No local branch and origin unreadable: the tip is unknown, refused.
+	if err := polecatRepoBranchDeletable(repo, "gastown", "polecat/ghost", "main", mqWith()); err == nil ||
+		!strings.Contains(err.Error(), "tip is unknown") {
+		t.Fatalf("no local branch, remote unreadable: %v", err)
+	}
+	// Rejected work is offered abandon, never deleted directly.
+	rejected := mqWithProver(gitLanded{}, mrIssue("gt-mr2", "closed", "polecat/nux", f.good, "close_reason: rejected\n"))
+	if err := polecatRepoBranchDeletable(repo, "gastown", "polecat/nux", "main", rejected); err == nil ||
+		!strings.Contains(err.Error(), "gt polecat abandon gastown/polecat/nux") {
+		t.Fatalf("rejected MR, remote unreadable: %v", err)
 	}
 }
 
 // (d) The --force target check stops at a refused branch.
-func TestNukeForceTargetCheckShortCircuits(t *testing.T) {
-	err := nukeForceTargetCheck(polecatTarget{rigName: "gastown", polecatName: "nux"})
+func TestForceDiscardCheckShortCircuits(t *testing.T) {
+	err := forceDiscardCheck(polecatTarget{rigName: "gastown", polecatName: "nux"})
 	if err == nil || strings.Count(err.Error(), "fail closed") != 1 || strings.Contains(err.Error(), "\n") {
 		t.Fatalf("want only the branch refusal, got %q", err)
 	}

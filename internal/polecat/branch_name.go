@@ -26,6 +26,29 @@ func FormatGeneratedBranchName(polecatName, issue, suffix string) string {
 	return fmt.Sprintf("%s%s-%s", polecatBranchPrefix, polecatName, suffix)
 }
 
+// BranchOwners returns every polecat name that may own branch, the one
+// ownership rule (gt-pd1c.78): polecat/<name>, polecat/<name>/..., and the
+// name ParseBranchName decodes (polecat/<name>-<suffix>). A flat dashed
+// branch is ambiguous (polecat/nux-2 may be nux-2's branch or nux's with
+// suffix 2), so both names are returned; callers that need one owner treat
+// any of them as the owner. Not a polecat branch: nil.
+func BranchOwners(branch string) []string {
+	rest, ok := strings.CutPrefix(branch, polecatBranchPrefix)
+	if !ok || rest == "" {
+		return nil
+	}
+	var out []string
+	if slash := strings.Index(rest, "/"); slash > 0 {
+		out = append(out, rest[:slash])
+	} else if slash < 0 {
+		out = append(out, rest)
+	}
+	if meta, ok := ParseBranchName(branch); ok && meta.Polecat != "" && (len(out) == 0 || out[0] != meta.Polecat) {
+		out = append(out, meta.Polecat)
+	}
+	return out
+}
+
 // ParseBranchName decodes polecat branch names without guessing at dashed issue IDs.
 func ParseBranchName(branch string) (BranchNameMeta, bool) {
 	if !strings.HasPrefix(branch, polecatBranchPrefix) {
