@@ -115,6 +115,8 @@ func TestSetParseIdempotentAndKeepsBody(t *testing.T) {
 		"body field para":   "dispatched_by: mayor/\n\nBODY a\n\nreview_only: maybe\n\nBODY b",
 		"probe M-A3":        "attached_args: a\nmode: x\n\nBODY more\nreview_only: true",
 		"weak prose":        "BODY Mode: fast please\n\nattached_molecule: gt-1\n\nBODY z",
+		"mode only":         "mode: ralph\n\nBODY a",
+		"mode + convoy_id":  "mode: ralph\nconvoy_id: hq-cv-1\n\nBODY a",
 	}
 	for name, d := range fixtures {
 		t.Run(name, func(t *testing.T) {
@@ -149,5 +151,61 @@ func TestMachineFieldKeysDerivedFromAttachmentKeys(t *testing.T) {
 	}
 	if !isMachineFieldKey("workflow_target") || isMachineFieldKey("note") {
 		t.Fatal("workflow_target must count, other keys must not")
+	}
+}
+
+// Round 3 (L2): tooling may write only weak keys (mode, convoy). Without a
+// strong-key paragraph, a first paragraph made only of field lines is the
+// header.
+func TestWeakKeyOnlyHeaderFallback(t *testing.T) {
+	for name, fields := range map[string]*AttachmentFields{
+		"mode only":        {Mode: "ralph"},
+		"mode + convoy_id": {Mode: "ralph", ConvoyID: "hq-cv-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			desc := SetAttachmentFields(&Issue{Description: "Body."}, fields)
+			parsed := ParseAttachmentFields(&Issue{Description: desc})
+			if parsed == nil || parsed.Mode != "ralph" || parsed.ConvoyID != fields.ConvoyID {
+				t.Fatalf("weak-key header lost: %q -> %+v", desc, parsed)
+			}
+		})
+	}
+	if got := ParseAttachmentFields(&Issue{Description: "convoy: hq-cv-1\n\nBody."}); got == nil || got.ConvoyID != "hq-cv-1" {
+		t.Fatalf("convoy-only header: %+v", got)
+	}
+	// A strong header still wins over opening weak-key prose (M-A2).
+	fields := ParseAttachmentFields(&Issue{Description: "Mode: fast please\n\nattached_molecule: gt-1\nreview_only: true"})
+	if fields == nil || fields.Mode != "" || fields.AttachedMolecule != "gt-1" || !fields.ReviewOnly {
+		t.Fatalf("strong header must win: %+v", fields)
+	}
+	// A first paragraph that is not only field lines is prose.
+	if got := ParseAttachmentFields(&Issue{Description: "Mode: fast please\nand keep it short\n\nBody."}); got != nil {
+		t.Fatalf("prose paragraph read as header: %+v", got)
+	}
+}
+
+// Round 3 (L3): clearing repeats until no marker counts, keeping text.
+func TestWithoutReviewOnlyMarkerIsComplete(t *testing.T) {
+	desc := "Review-Only: TRUE\nfoo: bar\n\nattached_args: raw\n# H\nreview_only: true"
+	cleared := WithoutReviewOnlyMarker(desc)
+	if IsReviewOnly(&Issue{Description: cleared}) {
+		t.Fatalf("marker survived the clear:\n%s", cleared)
+	}
+	for _, keep := range []string{"foo: bar", "# H"} {
+		if !strings.Contains(cleared, keep) {
+			t.Fatalf("clear dropped %q:\n%s", keep, cleared)
+		}
+	}
+	if fields := ParseAttachmentFields(&Issue{Description: cleared}); fields == nil || fields.AttachedArgs != "raw" {
+		t.Fatalf("clear lost attached_args: %+v\n%s", fields, cleared)
+	}
+}
+
+// Round 3 (L1 b): a legacy raw attached_args that happens to be a valid JSON
+// string is decoded (documented).
+func TestLegacyArgsThatLookLikeJSONAreDecoded(t *testing.T) {
+	fields := ParseAttachmentFields(&Issue{Description: "attached_args: \"hello\"\n\nBody.\nreview_only: true"})
+	if fields == nil || fields.AttachedArgs != "hello" || fields.ReviewOnly {
+		t.Fatalf("JSON-looking legacy args: %+v", fields)
 	}
 }

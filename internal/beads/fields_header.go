@@ -11,7 +11,7 @@ import "strings"
 // or a later paragraph is not read as a field and is never rewritten. The one
 // exception is review_only, which fails closed (below).
 //
-// Header block. The first paragraph, outside fenced code blocks and not
+// Header block (fallback below). The first paragraph, outside fenced code blocks and not
 // indented as code, whose first line is a field with a strong attachment key:
 // any attachment key except the weak spellings "mode" and "convoy", which are
 // ordinary words that an opening prose line ("Mode: fast please") may start
@@ -20,6 +20,11 @@ import "strings"
 // line that opens a Markdown block (fence ``` or ~~~, block quote '>', heading
 // '#', list item, table row '|'). Within it the first occurrence of a key wins;
 // review_only lines are OR-ed and formula_vars lines are joined.
+//
+// Weak-key fallback. Without such a paragraph, the first paragraph is the
+// header when every one of its lines is an attachment field line (tooling that
+// wrote only mode or convoy_id), so a strong-key header always wins over
+// opening prose, and prose is never a header.
 //
 // Legacy multi-line values. Older gt wrote attached_args and formula_vars raw,
 // so their value could span lines (blank lines, lists, headings and fences
@@ -170,7 +175,36 @@ func scanDescription(description string) descriptionLayout {
 		layout.markReviewOnly(i, end)
 		i = end - 1
 	}
+	if layout.headerStart < 0 {
+		layout.weakKeyHeaderFallback()
+	}
 	return layout
+}
+
+// weakKeyHeaderFallback makes the first paragraph the header when no
+// paragraph starts with a strong key and that first paragraph consists only
+// of attachment field lines (tooling that wrote just mode/convoy). Opening
+// prose ("Mode: fast please\nand more text") is not all field lines, and a
+// strong-key header elsewhere always wins.
+func (l *descriptionLayout) weakKeyHeaderFallback() {
+	start := 0
+	for start < len(l.lines) && strings.TrimSpace(l.lines[start]) == "" {
+		start++
+	}
+	if start == len(l.lines) || isIndentedCode(l.lines[start]) {
+		return
+	}
+	end := start
+	for end < len(l.lines) && strings.TrimSpace(l.lines[end]) != "" {
+		if _, _, ok := attachmentFieldLine(l.lines[end]); !ok {
+			return
+		}
+		end++
+	}
+	l.headerStart, l.headerEnd = start, end
+	for k := start; k < end; k++ {
+		delete(l.extraReviewOnly, k) // now header lines
+	}
 }
 
 // scanHeader returns the end of the header block starting at start, and
@@ -401,17 +435,24 @@ func reviewOnlyLikeLine(line string) (key, value string, ok bool) {
 // never does): gt bead clear-review-only and the rollback of a failed
 // gt sling --review-only on a bead that was not review-only before
 // (gt-pd1c.75). A description that is not review-only is returned unchanged.
+//
+// Removing the header can make a later paragraph the header, with a marker
+// of its own, so the clear repeats until no marker counts (at most once per
+// line). Each pass removes only field lines; free text is kept.
 func WithoutReviewOnlyMarker(description string) string {
-	issue := &Issue{Description: description}
-	fields := ParseAttachmentFields(issue)
-	if fields == nil || !fields.ReviewOnly {
-		return description
+	for pass := 0; pass <= strings.Count(description, "\n")+1; pass++ {
+		issue := &Issue{Description: description}
+		fields := ParseAttachmentFields(issue)
+		if fields == nil || !fields.ReviewOnly {
+			return description
+		}
+		cleared := *fields
+		cleared.ReviewOnly = false
+		cleared.ReviewOnlyNonCanonical = false
+		cleared.ReviewOnlyRaw = ""
+		description = writeAttachmentFields(issue, &cleared)
 	}
-	cleared := *fields
-	cleared.ReviewOnly = false
-	cleared.ReviewOnlyNonCanonical = false
-	cleared.ReviewOnlyRaw = ""
-	return writeAttachmentFields(issue, &cleared)
+	return description
 }
 
 // StripAttachmentFields returns description without its attachment header

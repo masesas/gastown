@@ -642,6 +642,20 @@ field lines up to a blank line or the end. That is how the `no_merge` /
 a further such run counts too (fail closed). Rewriting a bead consolidates its
 fields into the header, and `Set(Parse(description))` is stable after one pass.
 
+Without a paragraph that starts with a strong key, the first paragraph is the
+header when every line in it is an attachment field (e.g. only `mode: ralph`).
+Clearing (below) repeats until no `review_only` line counts.
+Known edge cases of this format:
+- A raw (non-JSON) `attached_args` from older gt can absorb a final body
+  paragraph made only of field lines whose keys come later in the old writer
+  order.
+- A raw `attached_args` that happens to be a valid JSON string (`"hello"`) is
+  decoded (`hello`) and does not continue.
+- A gt binary from before this change shows new `attached_args` values as
+  quoted JSON.
+- A byte order mark (BOM) at the start of a line is not recognised; that line
+  is not a field.
+
 Values: only `true` and `false` (any case) are canonical. Any other value
 (`no`, `off`, `0`, `f`, `maybe`, or an empty value) still marks the bead
 review-only (fail closed). Before gt-pd1c.75, `0`/`f` meant false. The value is
