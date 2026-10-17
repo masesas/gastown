@@ -138,6 +138,7 @@ func executeSling(params SlingParams) (res *SlingResult, retErr error) {
 	// Review-only mode sticks to the bead: scheduler, batch and convoy
 	// re-dispatch inherit it from the bead's review_only field (gt-pd1c.69).
 	reviewOnly := effectiveReviewOnly(params.ReviewOnly, info)
+	printReviewOnlyMarkerWarnings(params.BeadID, info)
 
 	// Guard against dispatching closed/tombstone beads (defense-in-depth).
 	// Not bypassed by --force — if you need to re-dispatch, reopen the bead first.

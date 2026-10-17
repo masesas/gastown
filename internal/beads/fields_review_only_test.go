@@ -17,7 +17,7 @@ func TestIsReviewOnly(t *testing.T) {
 		{"marker false", &Issue{Description: "review_only: false"}, false},
 		{"marker true", &Issue{Description: "review_only: true\n\nbody"}, true},
 		{"dash alias", &Issue{Description: "review-only: TRUE"}, true},
-		{"marker below body", &Issue{Description: "body\nreview_only: true"}, true},
+		{"marker below body is ignored", &Issue{Description: "body\nreview_only: true"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -64,13 +64,15 @@ func TestReviewOnlyParsingFailsClosed(t *testing.T) {
 		want bool
 	}{
 		{"true then false", "review_only: true\nreview_only: false", true},
-		{"false then true", "review_only: false\nbody\nreview_only: true", true},
+		{"false then true", "review_only: false\nreview_only: true", true},
+		{"true below body is ignored", "review_only: false\n\nbody\nreview_only: true", false},
 		{"yes", "review_only: yes", true},
 		{"one", "review_only: 1", true},
 		{"garbage", "review_only: maybe", true},
 		{"false", "review_only: false", false},
 		{"FALSE", "review_only: FALSE", false},
-		{"zero", "review_only: 0", false},
+		{"zero is not canonical: fails closed", "review_only: 0", true},
+		{"no is not canonical: fails closed", "review_only: no", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

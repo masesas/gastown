@@ -591,7 +591,11 @@ must not commit, push or open a merge request. The mode is stored as the
 `review_only: true` field on the bead and is sticky: a later `gt sling` of the
 same bead without the flag (including `--force`, scheduler dispatch, convoy
 re-dispatch, or after the previous polecat was nuked) keeps it and refreshes the
-assignment timestamp; detach, burn and a failed sling's rollback keep it too.
+assignment timestamp; detach and burn keep it too. A sling that fails (hook or
+session start) rolls back to the bead's state before that sling: when the bead
+was not review-only before, the rollback removes the marker it added; when it
+was, or when the prior state is unknown, or when the rollback write itself
+fails, the marker stays (fail closed).
 `gt prime` shows a REVIEW-ONLY directive. `gt done` and `gt mq submit` refuse
 commits and merge requests when the target bead (`--issue` or the branch) or
 the caller's active assignment is review-only. The active assignment is picked
@@ -611,9 +615,40 @@ polecat's hooked bead are both checked. When that status cannot be read, the
 push (and checkpoint) is skipped too, but nuke and stale-branch cleanup keep the
 local branch so its commits survive in the rig repo, and `gt doctor --fix`
 reports the push as deferred.
-Parsing fails closed: any `review_only` line with a value other than an explicit
-false (`false`, `0`, ...) marks the bead. The field is removed only by editing
-the bead description.
+
+Where the marker counts: attachment fields (`review_only`, `no_merge`,
+`attached_*`, `dispatched_by`, `convoy_id`, `merge_strategy`, `mode`,
+`formula_vars`, ...) are read only from the description's header block: the
+first lines of the description, starting with a `key: value` line and ending at
+the first blank line or the first Markdown block (code fence, `>` quote, `#`
+heading, list item, table row). This is where `gt sling` writes them. A
+`review_only: true` line in the free text, a code block or a quote does not mark
+the bead, and rewrites leave it untouched; `gt sling` warns when such a line is
+ignored. Use `gt sling --review-only` to mark a bead.
+
+Values: only `true` and `false` (any case) are canonical. Any other value
+(`no`, `off`, `0`, `maybe`, ...) still marks the bead review-only (fail closed),
+and is kept exactly as written: no tool turns it into `true` or drops it. `gt
+sling` warns about it; fix the value, or clear the marker.
+
+Clearing: `gt bead clear-review-only <bead> --reason "<why>"` is the one
+explicit way to remove the marker. Only a human (overseer), crew or the mayor may
+run it; polecats and other agents are refused. It records a bead comment
+(`review_only cleared by <who> at <time>: <why>`) before changing the
+description, and emits a `review_only_cleared` event; if the comment cannot be
+written the marker is kept. A bead that is not review-only is left as it is.
+
+`no_merge` vs `review_only`: `no_merge` (`--no-merge`) is an assignment field,
+like `attached_molecule`: detaching or burning the attached molecule (as a
+formula re-sling does) clears it with the rest of the assignment, a failed
+sling restores its value from before that sling, and no dispatch path adds it
+back unless `--no-merge` is passed again. `review_only` belongs to the bead:
+detach, burn and every later assignment keep it, with or without the flag,
+until it is cleared with `gt bead clear-review-only` (or by editing the
+description). The reason: no_merge is a delivery choice per dispatch (e.g. this
+time a human opens the PR), while review-only is a property of the work itself
+(a review leg must never commit), so a dispatcher forgetting the flag must not
+turn a review leg into normal work.
 
 Agent overrides:
 

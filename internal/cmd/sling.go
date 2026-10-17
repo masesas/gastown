@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/cli"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/lock"
 	"github.com/steveyegge/gastown/internal/mail"
@@ -170,7 +171,7 @@ func init() {
 	slingCmd.Flags().BoolVar(&slingRalph, "ralph", false, "Enable Ralph Wiggum loop mode (fresh context per step, for multi-step workflows)")
 	slingCmd.Flags().StringVar(&slingFormula, "formula", "", "Formula to apply (default: mol-polecat-work for polecat targets)")
 	slingCmd.Flags().StringVar(&slingCrew, "crew", "", "Target a crew member in the specified rig (e.g., --crew mel with target gastown → gastown/crew/mel)")
-	slingCmd.Flags().BoolVar(&slingReviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push (sticky: stored as review_only on the bead and inherited by every later sling)")
+	slingCmd.Flags().BoolVar(&slingReviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push (sticky: stored as review_only on the bead and inherited by every later sling; remove with gt bead clear-review-only)")
 
 	slingCmd.AddCommand(slingRespawnResetCmd)
 	rootCmd.AddCommand(slingCmd)
@@ -639,6 +640,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	// Review-only mode sticks to the bead: a re-sling without --review-only
 	// inherits it from the bead's review_only field (gt-pd1c.69).
 	reviewOnly := effectiveReviewOnly(slingReviewOnly, info)
+	printReviewOnlyMarkerWarnings(beadID, info)
 
 	// Guard against slinging beads with flag-like titles (gt-e0kx5).
 	// These are garbage beads created by flag-parsing bugs. Slinging them
@@ -1262,8 +1264,8 @@ var burnExistingMoleculesForRollback = burnExistingMolecules
 
 // rawWorkflowFieldValues returns the per-assignment workflow fields a raw
 // sling writes before hooking. review_only is not among them: it is sticky on
-// the bead (beads.SetAttachmentFields never drops it), so rollback has nothing
-// to restore for it and cannot lose it (gt-pd1c.69).
+// the bead (beads.SetAttachmentFields never drops it, gt-pd1c.69); rollback
+// handles it in rollbackDropsReviewOnly.
 func rawWorkflowFieldValues(info *beadInfo) (noMerge bool, attachedAt string) {
 	if info == nil {
 		return false, ""
@@ -1275,6 +1277,24 @@ func rawWorkflowFieldValues(info *beadInfo) (noMerge bool, attachedAt string) {
 	return fields.NoMerge, fields.AttachedAt
 }
 
+// rollbackDropsReviewOnly reports whether rolling back a failed sling must
+// remove the review_only marker: the bead carries it now, and the snapshot
+// taken before the sling shows it was not review-only, so this sling added it
+// (gt-pd1c.75, R2-5). An unknown prior state (originalInfo nil) keeps the
+// marker: rollback fails closed.
+func rollbackDropsReviewOnly(fields *beads.AttachmentFields, originalInfo *beadInfo) bool {
+	if fields == nil || !fields.ReviewOnly || originalInfo == nil {
+		return false
+	}
+	return !beads.IsReviewOnly(&beads.Issue{Description: originalInfo.Description})
+}
+
+// restoreRollbackRawWorkflowFields restores the per-assignment fields a failed
+// sling wrote (no_merge, attached_at) to their values in originalInfo, and
+// removes a review_only marker the sling added (rollbackDropsReviewOnly)
+// through beads.WithoutReviewOnlyMarker, the one unset path. Everything is one
+// description write: if it fails, the bead stays as it is, review-only
+// included (fail closed).
 func restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info, originalInfo *beadInfo) (bool, error) {
 	if info == nil {
 		return false, nil
@@ -1288,13 +1308,17 @@ func restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir string, info
 		}
 		fields = &beads.AttachmentFields{}
 	}
-	if fields.NoMerge == originalNoMerge && fields.AttachedAt == originalAttachedAt {
+	dropReviewOnly := rollbackDropsReviewOnly(fields, originalInfo)
+	if fields.NoMerge == originalNoMerge && fields.AttachedAt == originalAttachedAt && !dropReviewOnly {
 		return false, nil
 	}
 	restored := *fields
 	restored.NoMerge = originalNoMerge
 	restored.AttachedAt = originalAttachedAt
 	newDesc := beads.SetAttachmentFields(issue, &restored)
+	if dropReviewOnly {
+		newDesc = beads.WithoutReviewOnlyMarker(newDesc)
+	}
 	if newDesc == info.Description {
 		return false, nil
 	}
@@ -1324,6 +1348,9 @@ func restoreRollbackRawWorkflowFieldsFromCurrent(beadID, townRoot, hookWorkDir s
 	}
 	if restored, restoreErr := restoreRollbackRawWorkflowFields(beadID, townRoot, hookWorkDir, info, originalInfo); restoreErr != nil {
 		fmt.Printf("  %s Could not restore raw workflow metadata on %s: %v\n", style.Dim.Render("Warning:"), beadID, restoreErr)
+		if beads.IsReviewOnly(&beads.Issue{Description: info.Description}) {
+			fmt.Printf("  %s %s stays review-only; if it should not be, run: %s bead clear-review-only %s --reason \"<why>\"\n", style.Dim.Render("Warning:"), beadID, cli.Name(), beadID)
+		}
 	} else if restored {
 		fmt.Printf("  %s Restored raw workflow metadata on %s\n", style.Dim.Render("○"), beadID)
 	}
