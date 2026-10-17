@@ -2465,26 +2465,13 @@ func selectAssignedIssue(branchIssue string, assigned []string) (string, bool) {
 // the current rig, the target rig for rig agents, then town beads. The assigned
 // work bead is authoritative; agent-bead hook slots are intentionally ignored.
 func findAssignedBeadsForAgent(workDir, agentID string) ([]string, error) {
-	return findAgentBeadsAcrossLocations(workDir, agentID, queryAssignedBeadsE)
-}
-
-// findHookedBeadsForAgent is findAssignedBeadsForAgent restricted to beads in
-// status hooked: the agent's current hook. in_progress beads are left out, so
-// a stale assignment under a reused polecat name does not count (gt-pd1c.69).
-func findHookedBeadsForAgent(workDir, agentID string) ([]string, error) {
-	return findAgentBeadsAcrossLocations(workDir, agentID, queryHookedBeadsE)
-}
-
-// findAgentBeadsAcrossLocations walks the gt hook assignment locations with
-// the given per-location query and returns the first non-empty answer.
-func findAgentBeadsAcrossLocations(workDir, agentID string, queryLocation func(*beads.Beads, string) ([]*beads.Issue, error)) ([]string, error) {
 	if agentID == "" {
 		return nil, nil
 	}
 
 	var firstErr error
 	query := func(bd *beads.Beads) []string {
-		issues, err := queryLocation(bd, agentID)
+		issues, err := queryAssignedBeadsE(bd, agentID)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -2536,19 +2523,6 @@ func findAgentBeadsAcrossLocations(workDir, agentID string, queryLocation func(*
 func queryAssignedBeads(bd *beads.Beads, agentID string) []*beads.Issue {
 	issues, _ := queryAssignedBeadsE(bd, agentID)
 	return issues
-}
-
-// queryHookedBeadsE returns the agent's beads in status hooked.
-func queryHookedBeadsE(bd *beads.Beads, agentID string) ([]*beads.Issue, error) {
-	hooked, err := bd.List(beads.ListOptions{
-		Status:   beads.StatusHooked,
-		Assignee: agentID,
-		Priority: -1,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listing hooked assignments: %w", err)
-	}
-	return hooked, nil
 }
 
 // queryAssignedBeadsE is queryAssignedBeads with errors surfaced: an empty

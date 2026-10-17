@@ -19,11 +19,11 @@ type reviewOnlyCandidate struct {
 	IgnoreMissing bool
 }
 
-// findHookedBeadsForReviewOnly is a seam for tests.
-var findHookedBeadsForReviewOnly = findHookedBeadsForAgent
+// findAssignedBeadsForReviewOnly is a seam for tests.
+var findAssignedBeadsForReviewOnly = findAssignedBeadsForAgent
 
 // findReviewOnlyWork returns the ID of the first review-only bead among the
-// candidates and the beads currently hooked to agentID, or ""
+// candidates and agentID's active assignment, or ""
 // when none is review-only. gt done and gt mq submit both decide through it
 // (gt-pd1c.69), so a review leg cannot produce commits or a merge request by
 // naming another bead with --issue or a branch name. Lookup failures are
@@ -61,11 +61,11 @@ func findReviewOnlyWork(cwd, agentID string, candidates ...reviewOnlyCandidate) 
 	if agentID == "" {
 		return "", nil
 	}
-	assigned, err := findHookedBeadsForReviewOnly(cwd, agentID)
+	active, err := activeAssignmentsForReviewOnly(cwd, agentID)
 	if err != nil {
-		return "", fmt.Errorf("cannot verify review-only status of work hooked to %s: %w", agentID, err)
+		return "", err
 	}
-	for _, id := range assigned {
+	for _, id := range active {
 		reviewOnly, err := check(id, nil, false)
 		if err != nil {
 			return "", err
@@ -106,4 +106,24 @@ func reviewOnlyCallerAgent() (string, error) {
 		return actor, nil
 	}
 	return strings.TrimSpace(os.Getenv("GT_ROLE")), nil
+}
+
+// activeAssignmentsForReviewOnly returns agentID's active assignment exactly as
+// gt done resolves its hook: findAssignedBeadsForAgent (hooked beads win over
+// in_progress ones, so a claimed review leg still counts while a stale
+// in_progress leg loses to the current hook) narrowed by selectAssignedIssue.
+// When that selection is ambiguous every candidate is returned, so the guard
+// fails closed instead of guessing.
+func activeAssignmentsForReviewOnly(cwd, agentID string) ([]string, error) {
+	assigned, err := findAssignedBeadsForReviewOnly(cwd, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot verify review-only status of work assigned to %s: %w", agentID, err)
+	}
+	if active, ambiguous := selectAssignedIssue("", assigned); !ambiguous {
+		if active == "" {
+			return nil, nil
+		}
+		return []string{active}, nil
+	}
+	return assigned, nil
 }

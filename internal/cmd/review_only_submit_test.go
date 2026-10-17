@@ -336,10 +336,10 @@ func TestRunDoneReviewOnlyWithUncommittedFilesCompletesWithoutCommit(t *testing.
 }
 
 func TestFindReviewOnlyWorkFailsClosedAndPrefersTarget(t *testing.T) {
-	prev := findHookedBeadsForReviewOnly
-	t.Cleanup(func() { findHookedBeadsForReviewOnly = prev })
+	prev := findAssignedBeadsForReviewOnly
+	t.Cleanup(func() { findAssignedBeadsForReviewOnly = prev })
 
-	findHookedBeadsForReviewOnly = func(workDir, agentID string) ([]string, error) {
+	findAssignedBeadsForReviewOnly = func(workDir, agentID string) ([]string, error) {
 		return nil, fmt.Errorf("database is locked")
 	}
 	if _, err := findReviewOnlyWork(t.TempDir(), reviewOnlyAssignee); err == nil {
@@ -352,7 +352,7 @@ func TestFindReviewOnlyWorkFailsClosedAndPrefersTarget(t *testing.T) {
 		t.Fatalf("preloaded review-only target = (%q, %v), want (%q, nil) without assignment lookup", got, err, review.ID)
 	}
 
-	findHookedBeadsForReviewOnly = func(workDir, agentID string) ([]string, error) { return nil, nil }
+	findAssignedBeadsForReviewOnly = func(workDir, agentID string) ([]string, error) { return nil, nil }
 	code := codeSourceIssue()
 	if got, err := findReviewOnlyWork(t.TempDir(), "", reviewOnlyCandidate{ID: code.ID, Issue: &code}); err != nil || got != "" {
 		t.Fatalf("code bead without agent = (%q, %v), want (\"\", nil)", got, err)
@@ -368,55 +368,92 @@ func staleReviewLeg() beads.Issue {
 	return leg
 }
 
-func TestStaleInProgressReviewLegDoesNotLockSubmit(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		hooked []beads.Issue
-	}{
-		{"with a hooked code bead", []beads.Issue{func() beads.Issue {
-			b := codeSourceIssue()
-			b.ID = "gt-code"
-			b.Status = "hooked"
-			b.Assignee = reviewOnlyAssignee
-			return b
-		}()}},
-		{"without a hook", nil},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			workDir, _, _ := setupRoutedSourceTestTown(t)
-			setupRoutedSubmitCommandTown(t, workDir)
-			branch := setupRoutedSubmitGitRepo(t, workDir, true)
-			installReviewOnlyAssignmentsBDRecorder(t, codeSourceIssue(), tt.hooked, []beads.Issue{staleReviewLeg()})
-			resetMqSubmitFlagsForTest(t)
-			t.Setenv("GT_TEST_NUDGE_LOG", filepath.Join(t.TempDir(), "nudge.log"))
-			t.Setenv("GT_RIG", "gastown")
-			t.Setenv("GT_ROLE", reviewOnlyAssignee)
-			t.Setenv("GT_POLECAT", "refuge")
-			t.Setenv("BD_ACTOR", reviewOnlyAssignee)
-			t.Chdir(workDir)
-
-			mqSubmitBranch = branch
-			mqSubmitIssue = "bd-source"
-			mqSubmitNoCleanup = true
-			if err := runMqSubmit(nil, nil); err != nil {
-				t.Fatalf("a stale in_progress review leg locked gt mq submit: %v", err)
-			}
-		})
-	}
+// hookedCodeBead is an ordinary bead currently hooked to the calling polecat.
+func hookedCodeBead() beads.Issue {
+	b := codeSourceIssue()
+	b.ID = "gt-code"
+	b.Status = "hooked"
+	b.Assignee = reviewOnlyAssignee
+	return b
 }
 
-func TestStaleInProgressReviewLegDoesNotLockDone(t *testing.T) {
+// activeInProgressReviewLeg is the polecat's review leg after it claimed it
+// with bd update --status=in_progress (hq-xa4z): still its active assignment.
+func activeInProgressReviewLeg() beads.Issue {
+	leg := hookedReviewLeg()
+	leg.Status = "in_progress"
+	return leg
+}
+
+func setupPolecatMqSubmit(t *testing.T, hooked, inProgress []beads.Issue) string {
+	t.Helper()
+	workDir, _, _ := setupRoutedSourceTestTown(t)
+	setupRoutedSubmitCommandTown(t, workDir)
+	branch := setupRoutedSubmitGitRepo(t, workDir, true)
+	logPath := installReviewOnlyAssignmentsBDRecorder(t, codeSourceIssue(), hooked, inProgress)
+	resetMqSubmitFlagsForTest(t)
+	t.Setenv("GT_TEST_NUDGE_LOG", filepath.Join(t.TempDir(), "nudge.log"))
+	t.Setenv("GT_RIG", "gastown")
+	t.Setenv("GT_ROLE", reviewOnlyAssignee)
+	t.Setenv("GT_POLECAT", "refuge")
+	t.Setenv("BD_ACTOR", reviewOnlyAssignee)
+	t.Chdir(workDir)
+	mqSubmitBranch = branch
+	mqSubmitIssue = "bd-source" // another bead than the review leg
+	mqSubmitNoCleanup = true
+	return logPath
+}
+
+func TestRunMqSubmitRefusesActiveInProgressReviewLeg(t *testing.T) {
+	logPath := setupPolecatMqSubmit(t, nil, []beads.Issue{activeInProgressReviewLeg()})
+	err := runMqSubmit(nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "gt-review-leg") {
+		t.Fatalf("mq submit --issue <other bead> with an in_progress review leg = %v, want refusal naming gt-review-leg", err)
+	}
+	assertNoMergeRequestCreated(t, logPath)
+}
+
+func TestRunDoneRefusesActiveInProgressReviewLeg(t *testing.T) {
 	workDir, _, _ := setupRoutedSourceTestTown(t)
 	setupRoutedSubmitCommandTown(t, workDir)
 	setupRoutedSubmitGitRepo(t, workDir, false)
-	installReviewOnlyAssignmentsBDRecorder(t, codeSourceIssue(), nil, []beads.Issue{staleReviewLeg()})
+	writeMQSubmitTestFile(t, workDir, "file.txt", "uncommitted review scratch\n")
+	head := runGitForMQSubmitTest(t, workDir, "rev-parse", "HEAD")
+	logPath := installReviewOnlyAssignmentsBDRecorder(t, codeSourceIssue(), nil, []beads.Issue{activeInProgressReviewLeg()})
 	setupReviewOnlyDoneEnv(t, workDir)
-	doneSkipVerify = true
+	doneSkipVerify = true // doneIssue = bd-source: another bead than the review leg
 
 	err := runDone(nil, nil)
-	if err != nil && strings.Contains(err.Error(), "review-only") {
-		t.Fatalf("a stale in_progress review leg locked gt done: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "gt-review-leg") {
+		t.Fatalf("gt done --issue <other bead> with an in_progress review leg = %v, want refusal naming gt-review-leg", err)
 	}
+	if after := runGitForMQSubmitTest(t, workDir, "rev-parse", "HEAD"); after != head {
+		t.Fatalf("gt done auto-committed for an active review leg: HEAD %s -> %s", head, after)
+	}
+	assertNoMergeRequestCreated(t, logPath)
+}
+
+// A hooked bead wins over in_progress ones, as in gt done's own hook lookup,
+// so a stale in_progress review leg under a reused polecat name does not lock
+// the polecat's current code work.
+func TestStaleInProgressReviewLegDoesNotLockHookedCodeWork(t *testing.T) {
+	t.Run("mq submit", func(t *testing.T) {
+		setupPolecatMqSubmit(t, []beads.Issue{hookedCodeBead()}, []beads.Issue{staleReviewLeg()})
+		if err := runMqSubmit(nil, nil); err != nil {
+			t.Fatalf("a stale in_progress review leg locked gt mq submit: %v", err)
+		}
+	})
+	t.Run("done", func(t *testing.T) {
+		workDir, _, _ := setupRoutedSourceTestTown(t)
+		setupRoutedSubmitCommandTown(t, workDir)
+		setupRoutedSubmitGitRepo(t, workDir, false)
+		installReviewOnlyAssignmentsBDRecorder(t, codeSourceIssue(), []beads.Issue{hookedCodeBead()}, []beads.Issue{staleReviewLeg()})
+		setupReviewOnlyDoneEnv(t, workDir)
+		doneSkipVerify = true
+		if err := runDone(nil, nil); err != nil && strings.Contains(err.Error(), "review-only") {
+			t.Fatalf("a stale in_progress review leg locked gt done: %v", err)
+		}
+	})
 }
 
 func TestRunMqSubmitPolecatWithoutResolvableIdentityRefuses(t *testing.T) {
@@ -451,9 +488,9 @@ func TestRunDoneDeferredAutoCommitsWhenReviewOnlyStatusUnknown(t *testing.T) {
 	installReviewOnlySourceBDRecorder(t, codeSourceIssue())
 	setupReviewOnlyDoneEnv(t, workDir)
 	doneStatus = ExitDeferred
-	prev := findHookedBeadsForReviewOnly
-	t.Cleanup(func() { findHookedBeadsForReviewOnly = prev })
-	findHookedBeadsForReviewOnly = func(workDir, agentID string) ([]string, error) {
+	prev := findAssignedBeadsForReviewOnly
+	t.Cleanup(func() { findAssignedBeadsForReviewOnly = prev })
+	findAssignedBeadsForReviewOnly = func(workDir, agentID string) ([]string, error) {
 		return nil, fmt.Errorf("database is locked")
 	}
 
