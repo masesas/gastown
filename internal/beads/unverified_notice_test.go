@@ -105,7 +105,7 @@ func TestMergeQueueDetail_UnverifiedReasonIsSafe(t *testing.T) {
 	if strings.Contains(d.Reason, "ghp_secret") || !strings.Contains(d.Reason, "://***@github.com") {
 		t.Errorf("credentials not masked: %q", d.Reason)
 	}
-	if strings.Contains(d.Reason, "\n") || len(d.Reason) > maxHoldReasonLen+len("…") {
+	if strings.Contains(d.Reason, "\n") || len(d.Reason) > MaxReasonLen+len("…") {
 		t.Errorf("reason must be one bounded line, got %d bytes: %q", len(d.Reason), d.Reason)
 	}
 	if hold, mrID, _ := q.Hold("gt-1"); hold != d.Hold || mrID != d.MRID {

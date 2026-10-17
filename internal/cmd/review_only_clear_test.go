@@ -273,12 +273,14 @@ func TestDefaultClearDepsUseHumanConfirmation(t *testing.T) {
 	if deps.confirm == nil || deps.storeFor == nil || deps.now == nil {
 		t.Fatalf("default deps incomplete: %+v", deps)
 	}
-	// Without a TTY the default confirmation refuses (no bypass).
-	prevTTY := humanConfirmTTY
-	humanConfirmTTY = func() bool { return false }
-	t.Cleanup(func() { humanConfirmTTY = prevTTY })
-	if err := deps.confirm("clearing review_only on gt-leg1", "prompt", "gt-leg1"); !errors.Is(err, errNotInteractive) {
-		t.Fatalf("default confirm without TTY: %v, want errNotInteractive", err)
+	// Without a TTY the human confirmation refuses (no bypass).
+	noTTY, _ := stubPrompt(false, "gt-leg1\n")
+	if err := clearReviewOnlyDepsWith(noTTY).confirm("clearing review_only on gt-leg1", "prompt", "gt-leg1"); !errors.Is(err, errNotInteractive) {
+		t.Fatalf("confirm without TTY: %v, want errNotInteractive", err)
+	}
+	tty, _ := stubPrompt(true, "gt-leg1\n")
+	if err := clearReviewOnlyDepsWith(tty).confirm("clearing review_only on gt-leg1", "prompt", "gt-leg1"); err != nil {
+		t.Fatalf("confirm at a TTY: %v", err)
 	}
 }
 

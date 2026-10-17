@@ -120,7 +120,13 @@ type clearReviewOnlyDeps struct {
 }
 
 func defaultClearReviewOnlyDeps() clearReviewOnlyDeps {
-	return clearReviewOnlyDeps{confirm: confirmHumanInteractively, storeFor: townReviewOnlyClearStore, now: time.Now}
+	return clearReviewOnlyDepsWith(stdioHumanPrompt())
+}
+
+// clearReviewOnlyDepsWith are the production deps with the human asked at
+// prompt (the shared humanPrompt seam).
+func clearReviewOnlyDepsWith(prompt humanPrompt) clearReviewOnlyDeps {
+	return clearReviewOnlyDeps{confirm: prompt.confirm, storeFor: townReviewOnlyClearStore, now: time.Now}
 }
 
 // reviewOnlyClearOutcome is the result of clearReviewOnlyMarker. ConfirmErr

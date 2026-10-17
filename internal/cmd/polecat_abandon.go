@@ -13,6 +13,7 @@ import (
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/util"
 )
 
 // gt polecat abandon (gt-pd1c.78 tahap 2) is the one way an agent discards a
@@ -94,7 +95,7 @@ type abandonResult struct {
 // a note to a bead.
 func abandonPolecatBranch(req abandonRequest, g abandonGit, queue func() *beads.MergeQueue,
 	record func(id, note string) error) (*abandonResult, error) {
-	reason := beads.DisplayReason(req.reason)
+	reason := util.OneLine(req.reason, beads.MaxReasonLen)
 	switch {
 	case !beads.IsSafeID(strings.TrimSpace(req.rig)):
 		return nil, fmt.Errorf("invalid rig name %q", req.rig)
@@ -156,7 +157,7 @@ func archiveAndDelete(req abandonRequest, reason, tip string, disp beads.TipDisp
 		res.Source = strings.TrimSpace(fields.SourceIssue)
 	}
 	note := fmt.Sprintf("abandoned %s at %s by %s: archived at %s. Reason: %s",
-		req.branch, tip, beads.DisplayReason(req.actor), ref, reason)
+		req.branch, tip, util.OneLine(req.actor, beads.MaxReasonLen), ref, reason)
 	var errs []error
 	for _, id := range uniqueNonEmpty(res.MRID, res.Source) {
 		if !beads.IsSafeID(id) {
@@ -173,7 +174,7 @@ func archiveAndDelete(req abandonRequest, reason, tip string, disp beads.TipDisp
 // gitErrLine is a git error safe to show: its first line, URL credentials
 // masked (a remote URL may carry a token).
 func gitErrLine(err error) string {
-	return beads.DisplayReason(firstLine(err.Error()))
+	return util.OneLine(firstLine(err.Error()), beads.MaxReasonLen)
 }
 
 // archiveOnRemote reports whether ref exists on the remote at tip.

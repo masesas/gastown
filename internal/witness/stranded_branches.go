@@ -21,6 +21,7 @@ import (
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/steveyegge/gastown/internal/util"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -245,7 +246,7 @@ func (r *branchReconciler) run() *StrandedBranchesResult {
 	res := &StrandedBranchesResult{}
 	refs, err := r.tips.List("refs/heads/polecat/")
 	if err != nil {
-		res.Errors = append(res.Errors, fmt.Errorf("listing polecat branches on the remote: %s", beads.DisplayReason(err.Error())))
+		res.Errors = append(res.Errors, fmt.Errorf("listing polecat branches on the remote: %s", util.OneLine(err.Error(), beads.MaxReasonLen)))
 		return res
 	}
 	onRemote := map[string]string{}
@@ -260,7 +261,7 @@ func (r *branchReconciler) run() *StrandedBranchesResult {
 	}
 	if r.fetch != nil {
 		if err := r.fetch(); err != nil {
-			res.Errors = append(res.Errors, fmt.Errorf("fetching origin failed, no branch reported: %s", beads.DisplayReason(err.Error())))
+			res.Errors = append(res.Errors, fmt.Errorf("fetching origin failed, no branch reported: %s", util.OneLine(err.Error(), beads.MaxReasonLen)))
 			return res
 		}
 	}
@@ -309,7 +310,7 @@ func (r *branchReconciler) classifyAll(onRemote map[string]string, res *Stranded
 		}
 		archived, err := r.tips.Archived(tip)
 		if err != nil {
-			res.Errors = append(res.Errors, fmt.Errorf("cannot list archives, no branch reported: %s", beads.DisplayReason(err.Error())))
+			res.Errors = append(res.Errors, fmt.Errorf("cannot list archives, no branch reported: %s", util.OneLine(err.Error(), beads.MaxReasonLen)))
 			return nil, false
 		}
 		if q == nil && !archived {
@@ -514,7 +515,7 @@ func strandedLine(rigName string, b strandedBranch) string {
 	if b.disp.Abandonable() {
 		options += " | abandon: " + beads.AbandonCommand(rigName, b.branch)
 	}
-	return fmt.Sprintf("- %s @%s %s: %s", branch, tip, beads.DisplayReason(what), options)
+	return fmt.Sprintf("- %s @%s %s: %s", branch, tip, util.OneLine(what, beads.MaxReasonLen), options)
 }
 
 func branchReportStatePath(townRoot, rigName string) string {

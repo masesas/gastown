@@ -70,7 +70,7 @@ func MergeQueueHoldOf(mrs []*Issue, resolve ProverResolver) (MergeQueueHold, str
 // HoldDetail is the merge queue's verdict on a bead with its deciding MR,
 // computed once (MergeQueueHoldOf). Rig and Reason explain a HoldUnverified
 // hold: the MR's rig and why git cannot decide whether its work landed
-// (one line, at most maxHoldReasonLen bytes, URL credentials masked).
+// (one line, at most MaxReasonLen bytes, URL credentials masked).
 type HoldDetail struct {
 	Hold   MergeQueueHold
 	MRID   string // deciding MR ("" for HoldNone)
@@ -109,7 +109,7 @@ func mergeQueueHoldDetail(mrs []*Issue, resolve ProverResolver) HoldDetail {
 			return HoldDetail{Hold: HoldLanded, MRID: mr.ID, MR: mr, Evidence: evidence}
 		case verdictUnknown:
 			if unverified == nil {
-				unverified = &HoldDetail{Hold: HoldUnverified, MRID: mr.ID, MR: mr, Rig: rig, Reason: DisplayReason(reason)}
+				unverified = &HoldDetail{Hold: HoldUnverified, MRID: mr.ID, MR: mr, Rig: rig, Reason: util.OneLine(reason, MaxReasonLen)}
 			}
 		}
 	}
@@ -119,14 +119,9 @@ func mergeQueueHoldDetail(mrs []*Issue, resolve ProverResolver) HoldDetail {
 	return HoldDetail{Hold: HoldNone}
 }
 
-// maxHoldReasonLen bounds HoldDetail.Reason (it may carry git error text).
-const maxHoldReasonLen = 300
-
-// DisplayReason makes a free-text reason safe to show to a human or record on
-// a bead (util.OneLine, at most maxHoldReasonLen bytes).
-func DisplayReason(reason string) string {
-	return util.OneLine(reason, maxHoldReasonLen)
-}
+// MaxReasonLen bounds a free-text reason shown or recorded by gt (a hold
+// reason, a git error, an abandon reason): util.OneLine(text, MaxReasonLen).
+const MaxReasonLen = 300
 
 // MergeQueueIndex holds the merge requests of one or more beads DBs grouped
 // by source issue (MRs live in the submitting polecat's rig DB, which need not
