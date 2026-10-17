@@ -15,6 +15,7 @@ import (
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/util"
 )
 
 // MQ command flags
@@ -691,7 +692,11 @@ func cleanupMQPostMergeBranch(rigPath string, rigGit mqPostMergeGit, mr *refiner
 	// The branch comes from a bead field: only a plain branch name is handed
 	// to git (gt-pd1c.78 N3).
 	if !beads.IsSafeRefName(cleanup.Branch) {
-		return cleanup, fmt.Errorf("remote branch delete: MR branch %q is not a plain branch name", cleanup.Branch)
+		// Runs after the MR was closed as merged: say so, so the error is not
+		// read as a failed post-merge. Like every cleanup failure it still
+		// exits non-zero (the branch needs a human).
+		return cleanup, fmt.Errorf("MR %s is already closed (merged); branch delete skipped because the branch name %q "+
+			"is not a plain branch name (delete it by hand)", mr.ID, util.OneLine(cleanup.Branch, 120))
 	}
 	if skipBranchDelete {
 		cleanup.Skipped = true

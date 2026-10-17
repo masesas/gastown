@@ -171,6 +171,7 @@ func runHooksPrePush(cmd *cobra.Command, args []string) error {
 		},
 	}
 	g.loadQueue = func() *beads.MergeQueue { return prePushMergeQueue(cwd) }
+	g.readRemoteHead = git.NewGit(cwd).WithProofLimits().RemoteHeadBranch
 	return g.check(updates)
 }
 
@@ -337,9 +338,12 @@ type prePushGuard struct {
 	// (branch tips, targets, archives) goes through listRemote, so each
 	// prefix is read once.
 	remoteList mergeproof.RemoteLister
-	// remoteHead caches the push remote's HEAD branch (trustedDefault).
+	// remoteHead caches the push remote's HEAD branch (trustedDefault);
+	// readRemoteHead reads it (nil: g.git, unbounded; runHooksPrePush passes
+	// a WithProofLimits reader so a hung remote cannot hang the push).
 	remoteHead     string
 	remoteHeadDone bool
+	readRemoteHead func(remote string) (string, error)
 }
 
 // check returns nil when every update may be pushed, else an error naming
@@ -377,9 +381,14 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 		}
 		r = nil // human: fall back to git defaults
 	}
-	defaults := g.defaultBranches(r)
-	if !containsString(defaults, branch) && !strings.HasPrefix(branch, integrationBranchPrefix) {
+	if !g.isMergeTarget(branch, r, agentVar != "") {
 		return nil
+	}
+	// Only the agent rules (deletion, scope merge base) use the default
+	// branch list; a human's push never reads the remote HEAD for it.
+	var defaults []string
+	if agentVar != "" {
+		defaults = g.defaultBranches(r)
 	}
 	if agentVar != "" && r == nil && g.managedRepo() {
 		return fmt.Errorf("BLOCKED: push to %s: this repository runs the Gas Town managed pre-push hook "+
@@ -445,49 +454,6 @@ func (g *prePushGuard) loadRigOnce() (*prePushRig, error) {
 	return g.rig, g.rigErr
 }
 
-// trustedDefault is the one default branch the guard trusts as a merge
-// target for coverage proofs (gt-pd1c.78 N1): the rig's configured
-// default_branch, else the branch the push remote's own HEAD names
-// (ls-remote --symref on the push remote or URL), never the local
-// refs/remotes/origin/HEAD that any agent in the repository can repoint.
-// "" when neither is known: no default branch counts as covering work.
-func (g *prePushGuard) trustedDefault(r *prePushRig) string {
-	if r != nil && r.defaultBranch != "" {
-		return r.defaultBranch
-	}
-	if !g.remoteHeadDone {
-		g.remoteHeadDone = true
-		if target, err := g.pushTarget(); err == nil {
-			if b, err := g.git.RemoteHeadBranch(target); err == nil {
-				g.remoteHead = strings.TrimSpace(b)
-			}
-		}
-	}
-	return g.remoteHead
-}
-
-// coverageDefaults are the default branches whose tips prove work preserved
-// (mergeproof.RemoteTips.Defaults): only the trusted default, none when it
-// is unknown (fail closed).
-func (g *prePushGuard) coverageDefaults(r *prePushRig) []string {
-	if b := g.trustedDefault(r); b != "" {
-		return []string{b}
-	}
-	return nil
-}
-
-// defaultBranches returns the branch names protected as the default branch
-// (target-role, fast-forward, land, scope and deletion rules); the first is
-// the one used as merge base. The rig's default_branch when configured;
-// otherwise the push remote's HEAD branch plus main and master, so an
-// unknown or misleading default never weakens the push rules.
-func (g *prePushGuard) defaultBranches(r *prePushRig) []string {
-	if r != nil && r.defaultBranch != "" {
-		return []string{r.defaultBranch}
-	}
-	return uniqueNonEmpty(g.trustedDefault(r), "main", "master")
-}
-
 func containsString(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {
@@ -495,22 +461,6 @@ func containsString(list []string, s string) bool {
 		}
 	}
 	return false
-}
-
-// errInvalidPushRemote: an empty or option-looking remote/URL (L1).
-var errInvalidPushRemote = errors.New("invalid push remote")
-
-// pushTarget is the repository git pushes to (URL when known), validated so
-// it cannot be taken for an option.
-func (g *prePushGuard) pushTarget() (string, error) {
-	target := g.url
-	if target == "" {
-		target = g.remote
-	}
-	if target == "" || strings.HasPrefix(target, "-") {
-		return "", errInvalidPushRemote
-	}
-	return target, nil
 }
 
 // errPushRemoteUnreadable: ls-remote of the push remote failed (the URL is

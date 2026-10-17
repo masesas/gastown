@@ -21,9 +21,10 @@
 # The default branch is the one the push remote's own HEAD names
 # (ls-remote --symref on the remote or URL being pushed to), never the local
 # refs/remotes/origin/HEAD, which anyone with write access to this repository
-# can repoint (gt-pd1c.78 N1, as the Go guard's trustedDefault). When the
-# remote names none, main and master are both treated as the default branch,
-# so an unknown default never weakens a rule (fail closed).
+# can repoint (gt-pd1c.78 N1, as the Go guard's trustedDefault). main and
+# master are always protected as the default branch too (the Go guard's
+# defaultBranches without a rig default_branch), so an unknown or unusual
+# remote HEAD never weakens a rule (fail closed).
 push_remote="${2:-${1:-origin}}"
 default_branch=""
 if [[ "$push_remote" != -* ]]; then
@@ -32,13 +33,9 @@ if [[ "$push_remote" != -* ]]; then
 fi
 # is_default: the branch is (treated as) the default branch.
 is_default() {
-  if [[ -n "$default_branch" ]]; then
-    [[ "$1" == "$default_branch" ]]
-  else
-    [[ "$1" == main || "$1" == master ]]
-  fi
+  [[ "$1" == main || "$1" == master ]] || [[ -n "$default_branch" && "$1" == "$default_branch" ]]
 }
-default_label="${default_branch:-main/master}"
+default_label="main/master${default_branch:+/$default_branch}"
 
 # Same identity variables as the Go guard (agentSessionEnvVars).
 is_agent=0

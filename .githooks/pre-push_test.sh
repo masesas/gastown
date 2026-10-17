@@ -412,6 +412,13 @@ GT_ROLE=gastown/witness assert_block "Witness push to the default branch still r
 # Remote HEAD unknown: main and master are both protected.
 git -C "$TMPDIR/remote.git" symbolic-ref HEAD refs/heads/nonexistent
 GT_ROLE=gastown/witness assert_block "Witness push to main refused when the remote names no HEAD" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha"
+# Round 3 (sec 4): remote HEAD = trunk, upstream remote present, no gt: main
+# and master stay protected, and trunk is protected as well.
+git -C "$TMPDIR/remote.git" update-ref refs/heads/trunk "$remote_sha"
+git -C "$TMPDIR/remote.git" symbolic-ref HEAD refs/heads/trunk
+for target in main master trunk; do
+  GT_ROLE=rig/polecats/nux assert_block "Polecat push to $target refused (remote HEAD=trunk)" run_hook_nogt "HEAD" "$local_sha" "refs/heads/$target" "$remote_sha"
+done
 cleanup
 
 echo ""

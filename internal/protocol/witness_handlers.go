@@ -245,11 +245,14 @@ Please rebase your changes:
   # Resolve any conflicts
   git push -f
 
-Then run 'gt done' to resubmit for merge.`,
+Then run 'gt done' to resubmit for merge. The force-push is allowed while
+your MR for this branch tip is open; if it was already closed (rejected,
+superseded, conflict), merge origin/%s instead of rebasing, then gt done.`,
 			payload.TargetBranch,
 			payload.Branch,
 			payload.Issue,
 			conflictInfo,
+			payload.TargetBranch,
 			payload.TargetBranch,
 		),
 	)

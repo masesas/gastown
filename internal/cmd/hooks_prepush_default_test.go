@@ -59,3 +59,31 @@ func TestPrePushGuardLandCheckWithRepointedOriginHead(t *testing.T) {
 		}
 	}
 }
+
+// Round 3 M1: the remote HEAD lookup is lazy. A human's feature-branch push,
+// a push to main/master/integration/* and any push with a configured default
+// never read it; an agent's push of another branch reads it once (bounded).
+func TestPrePushGuardRemoteHeadLookupIsLazy(t *testing.T) {
+	f := newPrePushFixture(t)
+	count := func(r *prePushRig, env []string, updates ...prePushUpdate) int {
+		calls := 0
+		g := newGuard(f, r, env...)
+		g.isManaged = func() bool { return false }
+		g.readRemoteHead = func(string) (string, error) { calls++; return "main", nil }
+		_ = g.check(updates)
+		return calls
+	}
+	feature := prePushUpd("refs/heads/feature/x", f.good, testZeroSHA)
+	if n := count(nil, nil, feature); n != 0 {
+		t.Fatalf("human feature push read the remote HEAD %d times", n)
+	}
+	if n := count(&prePushRig{name: "myrig", defaultBranch: "main"}, []string{"GT_ROLE", "mayor"}, feature); n != 0 {
+		t.Fatalf("configured default: %d lookups", n)
+	}
+	if n := count(nil, nil, prePushUpd("refs/heads/integration/epic-z", f.good, testZeroSHA)); n != 0 {
+		t.Fatalf("human integration push needs no default lookup: %d", n)
+	}
+	if n := count(nil, []string{"GT_ROLE", "mayor"}, feature, feature); n != 1 {
+		t.Fatalf("agent push of a non-target branch: %d lookups, want 1 (cached)", n)
+	}
+}

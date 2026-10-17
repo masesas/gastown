@@ -315,8 +315,11 @@ sha all zeros) is never a land; it is still scope-checked.
   never the local `refs/remotes/origin/HEAD`, which any agent in the shared
   repository can repoint (S-M1, N1). In the pre-push guard (Go and the bash
   fallback) an unknown default fails closed: no default branch proves work
-  covered, and `main`, `master` and the remote's HEAD branch are all
-  protected as the default branch for target pushes and land checks. A
+  covered. Without a configured `default_branch`, `main` and `master` are
+  always protected as the default branch for target pushes and land checks,
+  plus the remote's HEAD branch (the Go guard looks it up, bounded by the
+  proof limits, only for an agent's push to a branch that may be it; a
+  human's feature-branch push never reads it). A
   configured `default_branch` with characters outside letters, digits, `.`,
   `_`, `-` and `/` (e.g. `+`, `@`) is ignored with a warning.
 - Owner rewrites read the merge queue: when beads (bd) cannot be read, a

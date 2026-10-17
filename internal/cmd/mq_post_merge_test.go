@@ -282,7 +282,7 @@ func TestCleanupMQPostMergeBranchRejectsUnsafeBranch(t *testing.T) {
 	for _, b := range []string{"-x", "polecat/a b", "polecat/../main", "--delete"} {
 		mr := &refinery.MergeRequest{ID: "gt-mr1", Branch: b, CommitSHA: "abc"}
 		if _, err := cleanupMQPostMergeBranch(t.TempDir(), &fakeMQPostMergeGit{}, mr, false); err == nil ||
-			!strings.Contains(err.Error(), "not a plain branch name") {
+			!strings.Contains(err.Error(), "MR gt-mr1 is already closed (merged); branch delete skipped") {
 			t.Errorf("branch %q: %v", b, err)
 		}
 	}
