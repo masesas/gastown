@@ -36,7 +36,7 @@ func TestPushBranchBeforeRemovalSkipsReviewOnlyLeg(t *testing.T) {
 	m := newReviewOnlyPushManager(t, map[string]string{"gt-review": "review_only: true\n\nReview leg."}, false)
 	clone, remote := testutil.NewUnpushedPolecatBranch(t, reviewLegBranch)
 
-	m.preserveBranchBeforeRemoval("pipboy", clone)
+	m.pushBranchBeforeRemoval(clone, m.reviewOnlyDecisionForClone("pipboy", clone)) // as removeWithOptionsLocked does
 
 	if testutil.RemoteHasBranch(t, remote, reviewLegBranch) {
 		t.Fatal("removal pushed the branch of a review-only leg to origin")
@@ -47,7 +47,7 @@ func TestPushBranchBeforeRemovalSkipsWhenReviewOnlyUnknown(t *testing.T) {
 	m := newReviewOnlyPushManager(t, nil, true)
 	clone, remote := testutil.NewUnpushedPolecatBranch(t, reviewLegBranch)
 
-	m.preserveBranchBeforeRemoval("pipboy", clone)
+	m.pushBranchBeforeRemoval(clone, m.reviewOnlyDecisionForClone("pipboy", clone)) // as removeWithOptionsLocked does
 
 	if testutil.RemoteHasBranch(t, remote, reviewLegBranch) {
 		t.Fatal("removal pushed although the review-only status could not be read (must fail closed)")
@@ -59,7 +59,7 @@ func TestPushBranchBeforeRemovalPreservesOrdinaryWork(t *testing.T) {
 	m := newReviewOnlyPushManager(t, map[string]string{"gt-code": "Implement the thing."}, false)
 	clone, remote := testutil.NewUnpushedPolecatBranch(t, branch)
 
-	m.preserveBranchBeforeRemoval("pipboy", clone)
+	m.pushBranchBeforeRemoval(clone, m.reviewOnlyDecisionForClone("pipboy", clone)) // as removeWithOptionsLocked does
 
 	if !testutil.RemoteHasBranch(t, remote, branch) {
 		t.Fatal("removal no longer preserves unpushed commits of ordinary work")
@@ -75,7 +75,7 @@ func TestPreserveBranchBeforeRemovalHonoursHookedReviewLeg(t *testing.T) {
 	}, false, "gt-review")
 	clone, remote := testutil.NewUnpushedPolecatBranch(t, branch)
 
-	m.preserveBranchBeforeRemoval("pipboy", clone)
+	m.pushBranchBeforeRemoval(clone, m.reviewOnlyDecisionForClone("pipboy", clone)) // as removeWithOptionsLocked does
 
 	if testutil.RemoteHasBranch(t, remote, branch) {
 		t.Fatal("removal pushed although the polecat's hooked bead is review-only")

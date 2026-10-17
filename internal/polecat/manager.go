@@ -1195,12 +1195,6 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	return m.removeWithOptionsLocked(name, force, nuclear, selfNuke)
 }
 
-// preserveBranchBeforeRemoval decides and performs the best-effort push of
-// the polecat's branch before its worktree is removed.
-func (m *Manager) preserveBranchBeforeRemoval(name, clonePath string) {
-	m.pushBranchBeforeRemoval(clonePath, m.reviewOnlyDecisionForClone(name, clonePath))
-}
-
 // reviewOnlyDecisionForClone classifies the work on the polecat's checked-out
 // branch, including its hooked bead. Call it while the polecat's work beads
 // are still assigned (before unassignWorkBeads).

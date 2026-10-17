@@ -130,8 +130,10 @@ func (d *Daemon) checkpointRigPolecats(rigName string) (int, int) {
 
 // checkpointPolecat checkpoints one polecat worktree unless its work is
 // review-only or that cannot be verified (gt-pd1c.69): a checkpoint commit on
-// a review leg makes gt done refuse it, and skipping only defers a local
-// commit, so skipping on an unreadable status loses nothing.
+// a review leg makes gt done refuse it. When the status cannot be read the
+// checkpoint is skipped as well: the changes stay uncommitted in the worktree,
+// so checkpoint protection (a crash-safe local commit) is suspended for every
+// polecat until beads is readable again.
 func (d *Daemon) checkpointPolecat(rigName, polecatName, workDir string) bool {
 	statusOut, err := runGitCmd(workDir, "status", "--porcelain")
 	if err != nil || strings.TrimSpace(statusOut) == "" {
