@@ -285,6 +285,63 @@ git add file.txt && git commit -m "polecat" >/dev/null 2>&1
 GT_ROLE=polecat assert_pass "Agent polecat push allowed" run_hook "refs/heads/polecat/nux" "$(get_sha HEAD)" "refs/heads/polecat/nux" "0000000000000000000000000000000000000000"
 cleanup
 
+# Test 15: coordinator rules of the bash fallback (gt-pd1c.78), run with no gt
+# on PATH so the fallback is what decides.
+echo "Test 15: Fallback coordinator rules (no gt on PATH)"
+setup_repos
+cd "$TMPDIR/local"
+nogt="$TMPDIR/nogt-bin"
+mkdir -p "$nogt"
+for tool in git sed awk cat; do
+  ln -s "$(command -v "$tool")" "$nogt/$tool"
+done
+run_hook_nogt() {
+  local local_ref=$1 local_sha=$2 remote_ref=$3 remote_sha=$4
+  echo "$local_ref $local_sha $remote_ref $remote_sha" | PATH="$nogt" "$BASH" "$HOOK" "origin" 2>&1
+}
+base_sha=$(get_sha HEAD)
+git checkout -b polecat/nux >/dev/null 2>&1
+echo "polecat" >> file.txt
+git add file.txt && git commit -m "polecat" >/dev/null 2>&1
+pc_sha=$(get_sha HEAD)
+git push origin polecat/nux >/dev/null 2>&1
+git checkout "$DEFAULT_BRANCH" >/dev/null 2>&1
+echo "main change" >> file.txt
+git add file.txt && git commit -m "main change" >/dev/null 2>&1
+main_sha=$(get_sha HEAD)
+zero15=0000000000000000000000000000000000000000
+GT_ROLE=gastown/witness assert_block "Witness delete of polecat/* blocked without gt" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/refinery assert_block "Refinery delete of polecat/* blocked without gt" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+BD_ACTOR=gastown/polecats/nux assert_block "Polecat (BD_ACTOR) delete of polecat/* blocked without gt" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/crew/max GT_POLECAT=nux assert_block "Polecat claiming crew blocked" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/crew/max assert_pass "Crew delete of polecat/* allowed" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_CREW=max assert_pass "Crew (GT_CREW only) delete of polecat/* allowed" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+BD_ACTOR=overseer assert_pass "Overseer delete of polecat/* allowed" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+assert_pass "Human delete of polecat/* allowed" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=mayor assert_block "Mayor push to default branch blocked" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+GT_ROLE=gastown/witness assert_block "Witness push to default branch blocked" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+GT_ROLE=gastown/polecats/nux assert_block "Polecat push to default branch blocked without gt" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+GT_ROLE=deacon assert_block "Deacon push to integration/* blocked" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/integration/x" "$zero15"
+GT_ROLE=gastown/refinery assert_pass "Refinery push to default branch unchanged" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+GT_ROLE=gastown/crew/max assert_pass "Crew push to default branch unchanged" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+assert_pass "Human push to default branch unchanged" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+GT_ROLE=gastown/witness assert_pass "Witness push of polecat/* allowed" run_hook_nogt "HEAD" "$pc_sha" "refs/heads/polecat/nux" "$zero15"
+# Round 1 (H1): rewriting polecat/* (not a fast-forward) discards its old tip.
+GT_ROLE=gastown/witness assert_block "Witness force-push over polecat/* blocked" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/polecats/max assert_block "Other polecat force-push over polecat/nux blocked" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/polecats/nux GT_POLECAT=nux assert_pass "Owning polecat force-push allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/polecats/nux assert_pass "Owning polecat force-push of polecat/nux/gt-1 allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux/gt-1" "$pc_sha"
+GT_ROLE=gastown/refinery assert_pass "Refinery force-push over polecat/* allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/crew/max assert_pass "Crew force-push over polecat/* allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/witness assert_pass "Witness fast-forward of polecat/* allowed" run_hook_nogt "HEAD" "$main_sha" "refs/heads/polecat/nux" "$base_sha"
+# Round 1 (M2): conflicting identities are read the strictest way.
+GT_ROLE=gastown/crew/max BD_ACTOR=gastown/witness assert_block "Crew GT_ROLE with witness BD_ACTOR is an agent" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/crew/max BD_ACTOR=overseer assert_block "Overseer BD_ACTOR with a GT_ROLE is not exempt" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_CREW=max BD_ACTOR=overseer assert_pass "Overseer BD_ACTOR with GT_CREW only is exempt" run_hook_nogt "(delete)" "$zero15" "refs/heads/polecat/nux" "$pc_sha"
+GT_ROLE=gastown/refinery BD_ACTOR=mayor assert_block "Conflicting agent roles cannot push to the default branch" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+GT_ROLE=gastown/refinery GT_CREW=max assert_pass "Refinery GT_ROLE with GT_CREW is the refinery" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$main_sha" "refs/heads/$DEFAULT_BRANCH" "$base_sha"
+cleanup
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [[ $FAIL -gt 0 ]]; then

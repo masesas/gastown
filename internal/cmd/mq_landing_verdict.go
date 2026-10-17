@@ -22,60 +22,71 @@ var (
 )
 
 // landingVerdictActor returns who records a manual landing verdict. The
-// verdict overrides what git could not decide, so it is a human decision:
-// any autonomous agent role (polecat, refinery, witness, deacon, mayor, dog)
-// is refused; a human shell (no GT_ROLE) or a crew workspace may record it.
-// A polecat BD_ACTOR is refused even without GT_ROLE. This is a guard against
-// agents taking the exit by mistake, not an authentication boundary.
+// verdict overrides what git could not decide, so it is a human decision
+// (humanOrCrewActor).
 func landingVerdictActor() (string, error) {
-	actor := strings.TrimSpace(os.Getenv("BD_ACTOR"))
-	if isPolecatActor(actor) {
-		return "", fmt.Errorf("refusing landing verdict from polecat %s: only a human (overseer) or crew may record it", actor)
-	}
-	if env := strings.TrimSpace(os.Getenv(EnvGTRole)); env != "" {
-		if role, _, _ := parseRoleString(env); role != RoleCrew {
-			return "", fmt.Errorf("refusing landing verdict from agent role %q: only a human (overseer) or crew may record it", env)
-		}
-	}
-	if actor == "" {
-		if user := strings.TrimSpace(os.Getenv("USER")); user != "" {
-			return "human:" + user, nil
-		}
-		return "human", nil
-	}
-	return actor, nil
+	return humanOrCrewActor("landing verdict")
 }
 
-// errNotInteractive refuses a landing verdict without a human at a terminal.
-var errNotInteractive = errors.New("a landing verdict is a human action: run it from an interactive terminal (stdin and stdout must be a TTY)")
+// humanOrCrewActor returns the actor of a human-only action (a landing
+// verdict, gt polecat nuke --force on unproven work): a human shell or a crew
+// workspace (gtCaller.exempt). Any autonomous agent role (polecat, refinery,
+// witness, deacon, mayor, dog, boot, unknown) is refused; a polecat BD_ACTOR
+// or GT_POLECAT is refused even with a crew GT_ROLE. This is a guard against
+// agents taking the exit by mistake, not an authentication boundary.
+func humanOrCrewActor(action string) (string, error) {
+	c := gtCallerFrom(os.Getenv)
+	if !c.exempt() {
+		return "", fmt.Errorf("refusing %s from %s: only a human (overseer) or crew may do this", action, c.describe())
+	}
+	if c.actor != "" {
+		return c.actor, nil
+	}
+	if user := strings.TrimSpace(os.Getenv("USER")); user != "" {
+		return "human:" + user, nil
+	}
+	return "human", nil
+}
 
-// landingVerdictTTY reports whether stdin and stdout are terminals; tests
+// errNotInteractive refuses a human-only action without a human at a terminal.
+var errNotInteractive = errors.New("this is a human action: run it from an interactive terminal (stdin and stdout must be a TTY)")
+
+// humanConfirmTTY reports whether stdin and stdout are terminals; tests
 // override it.
-var landingVerdictTTY = func() bool {
+var humanConfirmTTY = func() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
-// landingVerdictInput/Output are the prompt streams; tests override them.
+// humanConfirmInput/Output are the prompt streams; tests override them.
 var (
-	landingVerdictInput  io.Reader = os.Stdin
-	landingVerdictOutput io.Writer = os.Stdout
+	humanConfirmInput  io.Reader = os.Stdin
+	humanConfirmOutput io.Writer = os.Stdout
 )
 
-// confirmLandingInteractively is the second guard of the manual exit: a TTY
-// and the MR ID typed again. There is no flag to skip it.
-func confirmLandingInteractively(mrID, verdict string) error {
-	if !landingVerdictTTY() {
-		return errNotInteractive
+// confirmHumanInteractively is the second guard of a human-only action: a TTY
+// and the expected text typed again. There is no flag to skip it. Every error
+// names the action (e.g. "landing verdict", "gt polecat nuke --force");
+// errors.Is(err, errNotInteractive) still holds without a TTY.
+func confirmHumanInteractively(action, prompt, expected string) error {
+	if !humanConfirmTTY() {
+		return fmt.Errorf("%s: %w", action, errNotInteractive)
 	}
-	_, _ = fmt.Fprintf(landingVerdictOutput, "Record landing verdict %q on MR %s? This overrides what git could not decide.\nType the MR ID to confirm: ", verdict, mrID)
-	line, err := bufio.NewReader(landingVerdictInput).ReadString('\n')
+	_, _ = fmt.Fprint(humanConfirmOutput, prompt)
+	line, err := bufio.NewReader(humanConfirmInput).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("reading confirmation: %w", err)
+		return fmt.Errorf("%s: reading confirmation: %w", action, err)
 	}
-	if strings.TrimSpace(line) != mrID {
-		return fmt.Errorf("confirmation did not match MR %s: nothing recorded", mrID)
+	if strings.TrimSpace(line) != expected {
+		return fmt.Errorf("%s: confirmation did not match %q: nothing done", action, expected)
 	}
 	return nil
+}
+
+// confirmLandingInteractively asks the human to type the MR ID again before a
+// landing verdict is recorded.
+func confirmLandingInteractively(mrID, verdict string) error {
+	prompt := fmt.Sprintf("Record landing verdict %q on MR %s? This overrides what git could not decide.\nType the MR ID to confirm: ", verdict, mrID)
+	return confirmHumanInteractively("landing verdict on MR "+mrID, prompt, mrID)
 }
 
 // runMQConfirmLanding records a human verdict on an MR whose landing git

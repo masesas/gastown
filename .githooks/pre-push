@@ -10,7 +10,9 @@
 #    rig repos (gt-pd1c.72). Agents (GT_ROLE/BD_ACTOR/GT_POLECAT/GT_CREW) may
 #    not land while merge_queue.integration_branch_auto_land is off, whatever
 #    GT_INTEGRATION_LAND says. The bash fallback below only runs when no gt
-#    with `hooks pre-push` is on PATH; it is stricter for agents (no land).
+#    with `hooks pre-push` is on PATH; it is stricter for agents (no land, and
+#    without the merge queue no agent other than crew may delete polecat/*;
+#    gt-pd1c.78).
 #
 # Local hooks can be skipped by the pusher; protect the real remote with
 # branch protection (docs/HOOKS.md, "Rig pre-push guard").
@@ -37,6 +39,104 @@ for v in GT_ROLE BD_ACTOR GT_POLECAT GT_CREW; do
     is_agent=1
   fi
 done
+
+# Caller classification, the same as the Go guard (gtCallerFrom, gt-pd1c.78;
+# internal/cmd/caller_identity_parity_test.go runs one env matrix on both).
+# Every identity variable that is set makes a claim; conflicts are read the
+# strictest way: the caller is exempt (human-equivalent) only when every claim
+# is crew, or BD_ACTOR=overseer while GT_ROLE and GT_POLECAT are empty.
+# Otherwise the role is the agent role the other claims agree on, or
+# "conflicting-identity".
+
+# parse_role mirrors parseRoleString: sets pr_role and pr_name (polecat name).
+parse_role() {
+  local s="$1"
+  while [[ "$s" == *//* ]]; do s="${s//\/\//\/}"; done
+  s="${s%/}"
+  pr_name=""
+  case "$s" in
+    mayor|deacon|boot|dog) pr_role="$s"; return ;;
+  esac
+  local parts
+  IFS='/' read -r -a parts <<< "$s"
+  if (( ${#parts[@]} < 2 )); then
+    pr_role="$s"
+    return
+  fi
+  case "${parts[1]}" in
+    boot)
+      if [[ "${parts[0]}" == "deacon" && ${#parts[@]} -eq 2 ]]; then pr_role=boot; else pr_role="$s"; fi ;;
+    witness) pr_role=witness ;;
+    refinery) pr_role=refinery ;;
+    polecats) pr_role=polecat; pr_name="${parts[2]:-}" ;;
+    crew) pr_role=crew ;;
+    *) pr_role=polecat; pr_name="${parts[1]}" ;;
+  esac
+}
+
+c_roles=(); c_exempt=(); c_names=()
+add_claim() { c_roles+=("$1"); c_exempt+=("$2"); c_names+=("$3"); }
+gt_role_v="${GT_ROLE//[[:space:]]/}"
+actor_v="${BD_ACTOR//[[:space:]]/}"
+gt_polecat_v="${GT_POLECAT//[[:space:]]/}"
+gt_crew_v="${GT_CREW//[[:space:]]/}"
+if [[ -n "$gt_role_v" ]]; then
+  parse_role "$gt_role_v"
+  ex=0; [[ "$pr_role" == "crew" ]] && ex=1
+  nm=""; [[ "$pr_role" == "polecat" ]] && nm="$pr_name"
+  add_claim "$pr_role" "$ex" "$nm"
+fi
+if [[ -n "$actor_v" ]]; then
+  if [[ "$actor_v" =~ ^[^/]+/polecats/[^/]+$ ]]; then
+    add_claim polecat 0 "${actor_v##*/}"
+  else
+    parse_role "$actor_v"
+    ex=0
+    if [[ "$pr_role" == "crew" ]] || [[ "$pr_role" == "overseer" && -z "$gt_role_v" && -z "$gt_polecat_v" ]]; then
+      ex=1
+    fi
+    nm=""; [[ "$pr_role" == "polecat" ]] && nm="$pr_name"
+    add_claim "$pr_role" "$ex" "$nm"
+  fi
+fi
+[[ -n "$gt_polecat_v" ]] && add_claim polecat 0 "$gt_polecat_v"
+[[ -n "$gt_crew_v" ]] && add_claim crew 1 ""
+
+caller_role=""; caller_name=""; is_exempt=1
+if [[ "$is_agent" == "1" ]]; then
+  exempt_role=crew; agent_seen=0
+  for i in "${!c_roles[@]}"; do
+    r="${c_roles[$i]}"; n="${c_names[$i]}"
+    if [[ "${c_exempt[$i]}" == "1" ]]; then
+      [[ "$r" == "overseer" ]] && exempt_role=overseer
+      continue
+    fi
+    if [[ "$agent_seen" == "0" ]]; then
+      agent_seen=1; caller_role="$r"; caller_name="$n"
+    elif [[ "$r" != "$caller_role" ]]; then
+      caller_role=conflicting-identity; caller_name=""
+    elif [[ -n "$n" && -n "$caller_name" && "$n" != "$caller_name" ]]; then
+      caller_role=conflicting-identity; caller_name=""
+    elif [[ -z "$caller_name" ]]; then
+      caller_name="$n"
+    fi
+  done
+  if [[ "$agent_seen" == "0" ]]; then
+    caller_role="$exempt_role"
+  else
+    is_exempt=0
+  fi
+fi
+
+# owns_branch: the caller is the polecat whose branch this is (polecat/<name>,
+# polecat/<name>/..., or polecat/<name>-<suffix>), as gtCaller.ownsPolecatBranch.
+owns_branch() {
+  local b="$1" rest
+  [[ "$caller_role" == "polecat" && -n "$caller_name" ]] || return 1
+  [[ "$b" == "polecat/$caller_name" || "$b" == "polecat/$caller_name/"* ]] && return 0
+  rest="${b#polecat/}"
+  [[ "$rest" != */* && "$rest" == *-* && "${rest%-*}" == "$caller_name" ]]
+}
 
 zero=0000000000000000000000000000000000000000
 input=$(cat)
@@ -125,6 +225,36 @@ fi
 while read local_ref local_sha remote_ref remote_sha; do
   [[ -z "$remote_ref" ]] && continue
   branch="${remote_ref#refs/heads/}"
+  # Without gt the merge queue cannot be read, so the polecat branch deletion
+  # rule cannot be proven: agents other than crew may not delete polecat/*.
+  if [[ "$is_exempt" == "0" && "$local_sha" == "$zero" && "$branch" == polecat/* ]]; then
+    echo "BLOCKED: agents may not delete $branch without gt (no gt with 'hooks pre-push' on PATH):"
+    echo "the merge queue cannot be read to prove its work is safe to discard."
+    echo "Landed polecat branches are deleted by the refinery or 'gt mq post-merge', preserved ones by"
+    echo "'gt polecat prune --remote'; anything else needs a human or crew."
+    exit 1
+  fi
+  # A rewrite (not a fast-forward) of polecat/* by an agent other than crew,
+  # the refinery and the owning polecat discards the old tip like a deletion
+  # (gt-pd1c.78 round 1, H1); without gt it cannot be proven safe.
+  if [[ "$is_exempt" == "0" && "$caller_role" != "refinery" && "$branch" == polecat/* && \
+        "$local_sha" != "$zero" && "$remote_sha" != "$zero" ]] && ! owns_branch "$branch"; then
+    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      echo "BLOCKED: agent rewrite (not a fast-forward) of $branch, a polecat branch it does not own"
+      echo "(no gt with 'hooks pre-push' on PATH): the old tip cannot be proven safe to discard."
+      exit 1
+    fi
+  fi
+  # Only the refinery, crew and humans update merge targets. Without gt the
+  # rig's merge-queue setting cannot be read, so a polecat's direct landing is
+  # refused too.
+  if [[ "$is_exempt" == "0" && "$caller_role" != "refinery" && "$local_sha" != "$zero" && \
+        ( "$branch" == "$default_branch" || "$branch" == integration/* ) ]]; then
+    echo "BLOCKED: push to $branch refused: agent role '${caller_role}' may not update the default branch"
+    echo "or integration/* (no gt with 'hooks pre-push' on PATH). Only the refinery lands work there;"
+    echo "crew and humans push directly."
+    exit 1
+  fi
   # Agents may not delete merge targets here: deleting integration/x first
   # would hide a later land from the check below.
   if [[ "$is_agent" == "1" && "$local_sha" == "$zero" && \

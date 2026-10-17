@@ -220,7 +220,7 @@ This is THE command for dispatching work. **There is NO `{{ cmd }} polecat spawn
 
 **Other polecat commands:**
 - `{{ cmd }} polecat list` — List polecats
-- `{{ cmd }} polecat nuke <rig>/<name> --force` — Kill session + remove worktree
+- `{{ cmd }} polecat nuke <rig>/<name>` — Kill session + remove worktree (safety checks). `--force` skips them; agents may use it only when the polecat branch is provably safe to delete (landed, or no open MR and nothing landed), otherwise a human or crew confirms at a terminal
 - `{{ cmd }} polecat status <rig>/<name>` — Show polecat status
 
 ### Beads
@@ -309,7 +309,7 @@ gh pr create --repo $(git remote get-url origin | sed 's/.*github.com[:/]\(.*\)\
 | Close/complete a bead | `bd close <id>` | ~~bd complete~~ (not a command), ~~bd update --status done~~ (invalid status) |
 | Dispatch work to polecat | `{{ cmd }} sling <bead> <rig>` | ~~gt polecat spawn~~ (not a command) |
 | Message another agent | `{{ cmd }} nudge <target> "msg"` | ~~tmux send-keys~~ (unreliable) |
-| Kill stuck polecat | `{{ cmd }} polecat nuke <rig>/<name> --force` | ~~gt polecat kill~~ (not a command) |
+| Kill stuck polecat | `{{ cmd }} polecat nuke <rig>/<name>` (`--force` only when its branch is provably safe) | ~~gt polecat kill~~ (not a command) |
 | Pause rig (daemon won't restart) | `{{ cmd }} rig park <rig>` | ~~gt rig stop~~ (daemon will restart it) |
 | Permanently disable rig | `{{ cmd }} rig dock <rig>` | ~~gt rig park~~ (temporary only) |
 | Create issues | `bd create "title"` | ~~gt issue create~~ (not a command) |

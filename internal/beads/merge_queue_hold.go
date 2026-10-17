@@ -78,6 +78,9 @@ type HoldDetail struct {
 	MR     *Issue // deciding MR (nil for HoldNone)
 	Rig    string // HoldUnverified only
 	Reason string // HoldUnverified only
+	// Evidence is what decided a HoldLanded verdict (recorded bead signal,
+	// git, or a human verdict); empty for other holds (gt-pd1c.78).
+	Evidence LandingEvidence
 }
 
 // mergeQueueHoldDetail is the one implementation of MergeQueueHoldOf.
@@ -101,10 +104,10 @@ func mergeQueueHoldDetail(mrs []*Issue, resolve ProverResolver) HoldDetail {
 				prover = resolve(rig)
 			}
 		}
-		verdict, reason := mrLandingVerdictReason(IssueStatus(strings.TrimSpace(mr.Status)), fields, prover)
+		verdict, reason, evidence := mrLandingVerdictReason(IssueStatus(strings.TrimSpace(mr.Status)), fields, prover)
 		switch verdict {
 		case verdictLanded:
-			return HoldDetail{Hold: HoldLanded, MRID: mr.ID, MR: mr}
+			return HoldDetail{Hold: HoldLanded, MRID: mr.ID, MR: mr, Evidence: evidence}
 		case verdictUnknown:
 			if unverified == nil {
 				unverified = &HoldDetail{Hold: HoldUnverified, MRID: mr.ID, MR: mr, Rig: rig, Reason: holdReason(reason)}

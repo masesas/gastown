@@ -1,0 +1,133 @@
+package beads
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+// gt-pd1c.78: the merge queue's verdict on a polecat branch is the same
+// predicate (MergeQueueHoldOf) over the MRs submitted from that branch, in any
+// source bead's group.
+func TestMergeQueueBranchHold(t *testing.T) {
+	mr := func(id, status, desc string) *Issue { return &Issue{ID: id, Status: status, Description: desc} }
+	idx := MergeQueueIndex{
+		"gt-a": {
+			mr("mr-open", "open", "branch: polecat/a/gt-a\ntarget: main\nsource_issue: gt-a\ncommit_sha: ca\n"),
+		},
+		"gt-b": {
+			mr("mr-merged", "closed", "branch: polecat/b/gt-b\ntarget: main\nsource_issue: gt-b\ncommit_sha: cb\nclose_reason: merged\n"),
+		},
+		"gt-c": {
+			mr("mr-rejected", "closed", "branch: polecat/c/gt-c\ntarget: main\nsource_issue: gt-c\ncommit_sha: cc\nclose_reason: rejected\nlanding: not_landed\n"),
+		},
+		"gt-d": {
+			mr("mr-bare", "closed", "branch: polecat/d/gt-d\ntarget: main\nsource_issue: gt-d\ncommit_sha: cd\n"),
+		},
+		// Same branch submitted for two source beads: one pending MR holds it.
+		"gt-e1": {mr("mr-e1", "closed", "branch: polecat/e\ntarget: main\nsource_issue: gt-e1\ncommit_sha: ce1\nclose_reason: rejected\nlanding: not_landed\n")},
+		"gt-e2": {mr("mr-e2", "open", "branch: polecat/e\ntarget: main\nsource_issue: gt-e2\ncommit_sha: ce2\n")},
+	}
+	q := NewMergeQueue(idx, nil, nil)
+	cases := []struct {
+		branch string
+		want   MergeQueueHold
+		mrID   string
+	}{
+		{"polecat/a/gt-a", HoldPending, "mr-open"},
+		{"polecat/b/gt-b", HoldLanded, "mr-merged"},
+		{"polecat/c/gt-c", HoldNone, ""},
+		{"polecat/d/gt-d", HoldUnverified, "mr-bare"},
+		{"polecat/e", HoldPending, "mr-e2"},
+		{"polecat/never-submitted", HoldNone, ""},
+		{" polecat/a/gt-a ", HoldPending, "mr-open"},
+	}
+	for _, c := range cases {
+		d, err := q.BranchHold(c.branch)
+		if err != nil {
+			t.Fatalf("%s: %v", c.branch, err)
+		}
+		if d.Hold != c.want || d.MRID != c.mrID || (c.mrID != "" && (d.MR == nil || d.MR.ID != c.mrID)) {
+			t.Errorf("BranchHold(%q) = (%v, %q), want (%v, %q)", c.branch, d.Hold, d.MRID, c.want, c.mrID)
+		}
+		if d.Hold == HoldUnverified && d.Reason == "" {
+			t.Errorf("BranchHold(%q): an unverified hold must explain itself", c.branch)
+		}
+	}
+	if _, err := q.BranchHold(""); err == nil {
+		t.Error("an empty branch must be an error (fail closed)")
+	}
+	if _, err := NewMergeQueue(nil, os.ErrPermission, nil).BranchHold("polecat/a/gt-a"); err == nil {
+		t.Error("an unreadable queue must be an error (fail closed)")
+	}
+	var nilQueue *MergeQueue
+	if _, err := nilQueue.BranchHold("polecat/a/gt-a"); err == nil {
+		t.Error("a nil queue must be an error (fail closed)")
+	}
+}
+
+// gt-pd1c.78 round 1 (H2): the predicate says what decided a landed verdict,
+// so callers that discard work can insist on git proof.
+func TestMergeQueueBranchHoldEvidence(t *testing.T) {
+	mr := func(id, desc string) *Issue { return &Issue{ID: id, Status: "closed", Description: desc} }
+	idx := MergeQueueIndex{
+		"gt-r": {mr("mr-rec", "branch: polecat/r\ntarget: main\nsource_issue: gt-r\nrig: gastown\ncommit_sha: cr\nclose_reason: merged\n")},
+		"gt-m": {mr("mr-mc", "branch: polecat/m\ntarget: main\nsource_issue: gt-m\nrig: gastown\ncommit_sha: cm\nmerge_commit: abc\n")},
+		"gt-g": {mr("mr-git", "branch: refs/heads/polecat/g\ntarget: main\nsource_issue: gt-g\nrig: gastown\ncommit_sha: c000000000000000000000000000000000000000\n")},
+		"gt-h": {mr("mr-human", "branch: polecat/h\ntarget: main\nsource_issue: gt-h\nrig: gastown\nlanding: landed\n")},
+	}
+	q := NewMergeQueue(idx, nil, func(string) MergeProver { return fakeProver{"c000000000000000000000000000000000000000": true} })
+	cases := map[string]LandingEvidence{
+		"polecat/r":            EvidenceRecorded,
+		"polecat/m":            EvidenceRecorded,
+		"polecat/g":            EvidenceGit, // MR branch stored as refs/heads/...: same branch
+		"refs/heads/polecat/g": EvidenceGit,
+		"polecat/h":            EvidenceHumanVerdict,
+	}
+	for branch, want := range cases {
+		d, err := q.BranchHold(branch)
+		if err != nil || d.Hold != HoldLanded || d.Evidence != want {
+			t.Errorf("BranchHold(%q) = (%v, %q, %v), want landed by %q", branch, d.Hold, d.Evidence, err, want)
+		}
+	}
+}
+
+// patchOnly: the commit is not reachable from the target, but an equivalent
+// patch is (rebase/squash merge).
+type patchOnly struct{}
+
+func (patchOnly) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	return notOnTarget{}
+}
+func (patchOnly) PatchEquivalentOnPushTarget(remote, branch, commit, base string) (bool, error) {
+	return true, nil
+}
+
+// gt-pd1c.78 round 2: landing by patch equivalence is git evidence, and git
+// can be asked behind a recorded merged signal.
+func TestMergeQueueGitEvidence(t *testing.T) {
+	sha := "d" + strings.Repeat("0", 39)
+	squashed := &Issue{ID: "mr-sq", Status: "closed", Description: "branch: polecat/s\ntarget: main\nsource_issue: gt-s\nrig: gastown\ncommit_sha: " + sha + "\n"}
+	recorded := &Issue{ID: "mr-rec", Status: "closed", Description: "branch: polecat/r\ntarget: main\nsource_issue: gt-r\nrig: gastown\ncommit_sha: " + sha + "\nclose_reason: merged\n"}
+	idx := MergeQueueIndex{"gt-s": {squashed}, "gt-r": {recorded}}
+	q := NewMergeQueue(idx, nil, func(string) MergeProver { return patchOnly{} })
+	if d, err := q.BranchHold("polecat/s"); err != nil || d.Hold != HoldLanded || d.Evidence != EvidenceGit {
+		t.Fatalf("squash-landed MR: %+v %v, want landed by git", d, err)
+	}
+	if d, _ := q.BranchHold("polecat/r"); d.Evidence != EvidenceRecorded {
+		t.Fatalf("recorded MR: evidence %q", d.Evidence)
+	}
+	if !q.GitProvesLanded(recorded) {
+		t.Fatal("git proves the recorded MR landed (patch equivalent)")
+	}
+	notOn := NewMergeQueue(idx, nil, func(string) MergeProver { return fakeProver{} })
+	if notOn.GitProvesLanded(recorded) {
+		t.Fatal("git does not prove a commit that is nowhere on the target")
+	}
+	if NewMergeQueue(idx, nil, nil).GitProvesLanded(recorded) || NewMergeQueue(nil, os.ErrPermission, nil).GitProvesLanded(recorded) {
+		t.Fatal("no prover or an unread queue proves nothing")
+	}
+	if q.GitProvesLanded(nil) {
+		t.Fatal("nil MR proves nothing")
+	}
+}
