@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -140,6 +142,11 @@ func (c *StalledPolecatCheck) Fix(ctx *CheckContext) error {
 
 	var lastErr error
 	for _, s := range c.stalledPolecats {
+		rigBeads := beads.New(filepath.Dir(beads.ResolveBeadsDir(filepath.Join(ctx.TownRoot, s.rigName))))
+		if reason := polecat.ReviewOnlyPushSkipReason(rigBeads.Show, s.branch); reason != "" {
+			fmt.Printf("  skipping push of %s/%s: %s\n", s.rigName, s.name, reason)
+			continue
+		}
 		polecatGit := git.NewGit(s.clonePath)
 		if err := polecatGit.Push("origin", s.branch, false); err != nil {
 			lastErr = fmt.Errorf("pushing %s/%s branch %s: %w", s.rigName, s.name, s.branch, err)

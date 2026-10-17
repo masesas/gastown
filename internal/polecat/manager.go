@@ -1195,6 +1195,34 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	return m.removeWithOptionsLocked(name, force, nuclear, selfNuke)
 }
 
+// pushBranchBeforeRemoval is the best-effort push of the polecat's branch to
+// remote before removing the worktree. This preserves committed work that
+// hasn't been pushed yet — without this, nuking a stalled polecat (e.g., after
+// disk space recovery) permanently loses any commits on the branch. The push
+// is non-blocking: failures are warnings, not errors, so nuke still proceeds.
+// See: disk-space-resilience.
+func (m *Manager) pushBranchBeforeRemoval(clonePath string) {
+	polecatGit := git.NewGit(clonePath)
+	branch, brErr := polecatGit.CurrentBranch()
+	if brErr != nil || branch == "" {
+		return
+	}
+	pushed, unpushedCount, checkErr := polecatGit.BranchPushedToRemote(branch, "origin")
+	if checkErr != nil || pushed || unpushedCount == 0 {
+		return
+	}
+	if reason := m.ReviewOnlyPushSkipReason(branch); reason != "" {
+		style.PrintWarning("not pushing before removal: %s", reason)
+		return
+	}
+	if pushErr := polecatGit.Push("origin", branch, false); pushErr != nil {
+		style.PrintWarning("could not push branch %s before removal (%d unpushed commit(s)): %v",
+			branch, unpushedCount, pushErr)
+		style.PrintWarning("WORK AT RISK: branch %s has %d unpushed commit(s) in worktree %s",
+			branch, unpushedCount, clonePath)
+	}
+}
+
 func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke bool) error {
 	if !m.exists(name) {
 		return ErrPolecatNotFound
@@ -1288,23 +1316,7 @@ func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke 
 		}
 	}
 
-	// Best-effort: Push the polecat's branch to remote before removing the worktree.
-	// This preserves committed work that hasn't been pushed yet — without this,
-	// nuking a stalled polecat (e.g., after disk space recovery) permanently loses
-	// any commits on the branch. The push is non-blocking: failures are warnings,
-	// not errors, so nuke still proceeds. See: disk-space-resilience.
-	polecatGit := git.NewGit(clonePath)
-	if branch, brErr := polecatGit.CurrentBranch(); brErr == nil && branch != "" {
-		pushed, unpushedCount, checkErr := polecatGit.BranchPushedToRemote(branch, "origin")
-		if checkErr == nil && !pushed && unpushedCount > 0 {
-			if pushErr := polecatGit.Push("origin", branch, false); pushErr != nil {
-				style.PrintWarning("could not push branch %s before removal (%d unpushed commit(s)): %v",
-					branch, unpushedCount, pushErr)
-				style.PrintWarning("WORK AT RISK: branch %s has %d unpushed commit(s) in worktree %s",
-					branch, unpushedCount, clonePath)
-			}
-		}
-	}
+	m.pushBranchBeforeRemoval(clonePath)
 
 	// Get repo base to remove the worktree properly
 	repoGit, err := m.repoBase()

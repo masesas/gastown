@@ -80,8 +80,8 @@ func findReviewOnlyWork(cwd, agentID string, candidates ...reviewOnlyCandidate) 
 // reviewOnlyCommitRefusal is the gt done error for commits on review-only work.
 func reviewOnlyCommitRefusal(reviewBeadID, baseRef string) error {
 	return fmt.Errorf("cannot complete review-only issue %s with commits ahead of %s: review-only work must not commit, push or open a merge request\n"+
-		"Recover: save your findings outside the repo, drop the commits with `git reset --hard %s` (discards them), add a REPORT:/FINDINGS: comment with head_sha: <new HEAD> to %s, then run gt done again",
-		reviewBeadID, baseRef, baseRef, reviewBeadID)
+		"Recover: save your findings outside the repo, drop the commits with `git reset --hard %s` (discards them), record them with: %s, then run gt done again",
+		reviewBeadID, baseRef, baseRef, reviewEvidenceCommentCommand(reviewBeadID))
 }
 
 // reviewOnlySubmitRefusal is the gt mq submit error for review-only work.
