@@ -73,3 +73,43 @@ func TestPushPolecatBranchBeforeNukePreservesOrdinaryWork(t *testing.T) {
 		t.Fatal("nuke no longer preserves unpushed commits of ordinary work (gt-4vr)")
 	}
 }
+
+func TestDeleteNukedPolecatBranchKeepsUnverifiedWork(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		failAll  bool
+		desc     string
+		wantKept bool
+	}{
+		{"unverified: branch kept", true, "", true},
+		{"review-only confirmed: branch deleted", false, "review_only: true", false},
+		{"ordinary: branch deleted", false, "Implement the thing.", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			const branch = "polecat/pipboy/gt-leg+abc"
+			r, mgr := newNukePushFixture(t, map[string]string{"gt-leg": tt.desc}, tt.failAll)
+			clone, _ := testutil.NewUnpushedPolecatBranch(t, branch)
+			cloneGit := git.NewGit(clone)
+			if err := cloneGit.Checkout("main"); err != nil {
+				t.Fatalf("checkout main: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(r.Path, "mayor"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(clone, filepath.Join(r.Path, "mayor", "rig")); err != nil {
+				t.Fatal(err)
+			}
+
+			decision := mgr.ReviewOnlyWorkDecision("", branch)
+			deleteNukedPolecatBranch(r, branch, decision)
+
+			exists, err := cloneGit.BranchExists(branch)
+			if err != nil {
+				t.Fatalf("BranchExists: %v", err)
+			}
+			if exists != tt.wantKept {
+				t.Fatalf("local branch kept = %v, want %v (decision %+v)", exists, tt.wantKept, decision)
+			}
+		})
+	}
+}

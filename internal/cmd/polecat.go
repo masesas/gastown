@@ -1858,17 +1858,18 @@ func dryRunNukeSummary(total, blocked int) string {
 // guardrail): it tries to preserve unpushed commits on the polecat branch.
 // Push failures are non-fatal because this cleanup path already passed its
 // safety gates. Review-only work is never pushed (gt-pd1c.69).
-func pushPolecatBranchBeforeNuke(r *rig.Rig, mgr *polecat.Manager, polecatInfo *polecat.Polecat, branchToDelete string) {
+func pushPolecatBranchBeforeNuke(r *rig.Rig, mgr *polecat.Manager, polecatInfo *polecat.Polecat, branchToDelete string) polecat.ReviewOnlyDecision {
 	if branchToDelete == "" {
-		return
+		return polecat.ReviewOnlyDecision{}
 	}
 	hookedIssue := ""
 	if polecatInfo != nil {
 		hookedIssue = polecatInfo.Issue
 	}
-	if reason := mgr.ReviewOnlyPushSkipReason(branchToDelete, hookedIssue); reason != "" {
-		fmt.Printf("  %s skipping best-effort push: %s\n", style.Dim.Render("○"), reason)
-		return
+	decision := mgr.ReviewOnlyWorkDecision("", branchToDelete, hookedIssue)
+	if !decision.PreserveAllowed() {
+		fmt.Printf("  %s skipping best-effort push: %s\n", style.Dim.Render("○"), decision.Reason)
+		return decision
 	}
 	var pushGit *git.Git
 	// Try worktree first (may still exist), then bare repo fallback.
@@ -1886,7 +1887,7 @@ func pushPolecatBranchBeforeNuke(r *rig.Rig, mgr *polecat.Manager, polecatInfo *
 		}
 	}
 	if pushGit == nil {
-		return
+		return decision
 	}
 	refspec := branchToDelete + ":" + branchToDelete
 	if err := pushGit.Push("origin", refspec, false); err != nil {
@@ -1894,6 +1895,30 @@ func pushPolecatBranchBeforeNuke(r *rig.Rig, mgr *polecat.Manager, polecatInfo *
 	} else {
 		fmt.Printf("  %s pushed branch %s before nuke\n", style.Success.Render("✓"), branchToDelete)
 	}
+	return decision
+}
+
+// deleteNukedPolecatBranch is nuke Step 4: delete the local branch (the
+// worktree is already gone). Remote branch is never deleted during nuke — the
+// refinery owns remote branch cleanup after successful merge (gt mq
+// post-merge). This prevents the race where nuke deletes the branch before
+// the refinery has a chance to merge it. (gt-v5ku)
+func deleteNukedPolecatBranch(r *rig.Rig, branchToDelete string, decision polecat.ReviewOnlyDecision) {
+	if branchToDelete == "" {
+		return
+	}
+	if decision.KeepLocalBranch() {
+		fmt.Printf("  %s keeping local branch %s: %s\n", style.Warning.Render("⚠"), branchToDelete, decision.Reason)
+		fmt.Printf("    Push or delete it by hand once the bead status is readable.\n")
+		return
+	}
+	repoGit := getRepoGitForRig(r.Path)
+	if err := repoGit.DeleteBranch(branchToDelete, true); err != nil {
+		fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
+	} else {
+		fmt.Printf("  %s deleted local branch %s\n", style.Success.Render("✓"), branchToDelete)
+	}
+	fmt.Printf("  %s remote branch preserved for refinery merge\n", style.Dim.Render("○"))
 }
 
 func nukePolecatFull(polecatName, rigName string, mgr *polecat.Manager, r *rig.Rig) error {
@@ -1939,7 +1964,7 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 	}
 
 	// Step 2.75: Best-effort push before nuke (gt-4vr guardrail).
-	pushPolecatBranchBeforeNuke(r, mgr, polecatInfo, branchToDelete)
+	preserveDecision := pushPolecatBranchBeforeNuke(r, mgr, polecatInfo, branchToDelete)
 
 	// Step 3: Delete worktree (nuclear=true to bypass safety checks for stale polecats)
 	if err := mgr.RemoveWithOptions(polecatName, opts.Force, true, false); err != nil {
@@ -1953,21 +1978,9 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 		fmt.Printf("  %s deleted worktree\n", style.Success.Render("✓"))
 	}
 
-	// Step 4: Delete local branch (if we know it)
-	// Local branch can always be deleted (worktree is already gone).
-	// Remote branch is never deleted during nuke — the refinery owns
-	// remote branch cleanup after successful merge (gt mq post-merge).
-	// This prevents the race where nuke deletes the branch before the
-	// refinery has a chance to merge it. (gt-v5ku)
-	if branchToDelete != "" {
-		repoGit := getRepoGitForRig(r.Path)
-		if err := repoGit.DeleteBranch(branchToDelete, true); err != nil {
-			fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
-		} else {
-			fmt.Printf("  %s deleted local branch %s\n", style.Success.Render("✓"), branchToDelete)
-		}
-		fmt.Printf("  %s remote branch preserved for refinery merge\n", style.Dim.Render("○"))
-	}
+	// Step 4: Delete local branch (if we know it). Kept when the review-only
+	// status of its work could not be verified (gt-pd1c.69).
+	deleteNukedPolecatBranch(r, branchToDelete, preserveDecision)
 
 	// Step 5: Purge closed ephemeral beads (wisps) accumulated during sessions.
 	// Without this, closed wisps from mol-polecat-work steps, mol-witness-patrol

@@ -12,6 +12,8 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	gtgit "github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/polecat"
+	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/util"
 )
@@ -118,12 +120,35 @@ func (d *Daemon) checkpointRigPolecats(rigName string) (int, int) {
 		if workDir == "" {
 			continue // Neither layout has a usable .git — skip silently.
 		}
-		if d.checkpointWorktree(workDir, rigName, polecatName) {
+		if d.checkpointPolecat(rigName, polecatName, workDir) {
 			checkpointed++
 		}
 	}
 
 	return scanned, checkpointed
+}
+
+// checkpointPolecat checkpoints one polecat worktree unless its work is
+// review-only or that cannot be verified (gt-pd1c.69): a checkpoint commit on
+// a review leg makes gt done refuse it, and skipping only defers a local
+// commit, so skipping on an unreadable status loses nothing.
+func (d *Daemon) checkpointPolecat(rigName, polecatName, workDir string) bool {
+	statusOut, err := runGitCmd(workDir, "status", "--porcelain")
+	if err != nil || strings.TrimSpace(statusOut) == "" {
+		return d.checkpointWorktree(workDir, rigName, polecatName)
+	}
+	branch, err := runGitCmd(workDir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		d.logger.Printf("checkpoint_dog: cannot read branch in %s/%s: %v; skipping", rigName, polecatName, err)
+		return false
+	}
+	rigPath := filepath.Join(d.config.TownRoot, rigName)
+	mgr := polecat.NewManager(&rig.Rig{Name: rigName, Path: rigPath}, gtgit.NewGit(rigPath), nil)
+	if decision := mgr.ReviewOnlyWorkDecision(polecatName, strings.TrimSpace(branch)); !decision.PreserveAllowed() {
+		d.logger.Printf("checkpoint_dog: skipping %s/%s: %s", rigName, polecatName, decision.Reason)
+		return false
+	}
+	return d.checkpointWorktree(workDir, rigName, polecatName)
 }
 
 // checkpointWorktree creates a WIP checkpoint commit for a single worktree.

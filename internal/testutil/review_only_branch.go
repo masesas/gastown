@@ -47,7 +47,26 @@ func RemoteHasBranch(t *testing.T, remotePath, branch string) bool {
 // fails with a non-"not found" error (beads unavailable).
 func InstallBDShowStub(t *testing.T, descriptions map[string]string, failAll bool) {
 	t.Helper()
+	InstallBDShowStubWithHooked(t, descriptions, nil, failAll)
+}
+
+// InstallBDShowStubWithHooked is InstallBDShowStub whose
+// `bd list --status=hooked` answers with the given issue IDs (each must be in
+// descriptions), i.e. the beads currently hooked to whoever asks.
+func InstallBDShowStubWithHooked(t *testing.T, descriptions map[string]string, hookedIDs []string, failAll bool) {
+	t.Helper()
 	dir := t.TempDir()
+	hooked := make([]map[string]string, 0, len(hookedIDs))
+	for _, id := range hookedIDs {
+		hooked = append(hooked, map[string]string{
+			"id": id, "title": id, "status": "hooked", "issue_type": "task", "description": descriptions[id],
+		})
+	}
+	hookedData, err := json.Marshal(hooked)
+	if err != nil {
+		t.Fatalf("marshal hooked: %v", err)
+	}
+	reviewOnlyFixtureWrite(t, filepath.Join(dir, "hooked.json"), string(hookedData))
 	for id, desc := range descriptions {
 		data, err := json.Marshal([]map[string]string{{
 			"id": id, "title": id, "status": "hooked", "issue_type": "task", "description": desc,
@@ -75,9 +94,14 @@ if [ "$1" = "show" ]; then
   echo "Issue $2 not found" >&2
   exit 1
 fi
+if [ "$1" = "list" ]; then
+  case "$*" in
+    *--status=hooked*) cat %q/hooked.json; exit 0 ;;
+  esac
+fi
 echo '[]'
 exit 0
-`, fail, dir, dir)
+`, fail, dir, dir, dir)
 	binDir := t.TempDir()
 	reviewOnlyFixtureWrite(t, filepath.Join(binDir, "bd"), script)
 	if err := os.Chmod(filepath.Join(binDir, "bd"), 0o755); err != nil {
