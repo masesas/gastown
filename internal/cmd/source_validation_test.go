@@ -385,6 +385,12 @@ func assertBDLogNotContains(t *testing.T, log, beadsDir, args string) {
 
 func resetMqSubmitFlagsForTest(t *testing.T) {
 	t.Helper()
+	// Hermetic caller identity: earlier tests in the package (gt prime) may
+	// leave GT_POLECAT/GT_ROLE/BD_ACTOR in the process env, and gt mq submit
+	// resolves the caller's hook from them (gt-pd1c.69).
+	for _, key := range []string{"GT_POLECAT", "GT_ROLE", "BD_ACTOR"} {
+		t.Setenv(key, "")
+	}
 	oldBranch, oldIssue, oldEpic := mqSubmitBranch, mqSubmitIssue, mqSubmitEpic
 	oldPriority := mqSubmitPriority
 	oldNoCleanup, oldSkipDeps, oldResubmit := mqSubmitNoCleanup, mqSubmitSkipDeps, mqSubmitResubmit

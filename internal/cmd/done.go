@@ -157,16 +157,9 @@ func resolveDonePolecatWorktreeAt(cwd string) (donePolecatWorktree, error) {
 		return donePolecatWorktree{}, err
 	}
 
-	actorRig, actorName, err := donePolecatActorIdentity(os.Getenv("BD_ACTOR"))
+	actorRig, actorName, err := polecatEnvIdentity()
 	if err != nil {
 		return donePolecatWorktree{}, err
-	}
-	roleRig, roleName, err := donePolecatEnvIdentity(os.Getenv("GT_ROLE"), os.Getenv("GT_RIG"), os.Getenv("GT_POLECAT"))
-	if err != nil {
-		return donePolecatWorktree{}, err
-	}
-	if actorRig != roleRig || actorName != roleName {
-		return donePolecatWorktree{}, fmt.Errorf("gt done identity mismatch: BD_ACTOR=%s/polecats/%s but GT_ROLE/GT_RIG/GT_POLECAT resolve to %s/polecats/%s", actorRig, actorName, roleRig, roleName)
 	}
 	if err := doneRejectGitEnvOverrides(); err != nil {
 		return donePolecatWorktree{}, err
@@ -199,6 +192,24 @@ func resolveDonePolecatWorktreeAt(cwd string) (donePolecatWorktree, error) {
 	}
 
 	return donePolecatWorktree{}, fmt.Errorf("gt done must be run from assigned polecat worktree %s; current git root is %s", strings.Join(candidates, " or "), gitRoot)
+}
+
+// polecatEnvIdentity resolves the calling polecat from BD_ACTOR and
+// GT_ROLE/GT_RIG/GT_POLECAT, which must agree. It is the one identity path
+// for gt done and gt mq submit (gt-pd1c.69).
+func polecatEnvIdentity() (rig, name string, err error) {
+	actorRig, actorName, err := donePolecatActorIdentity(os.Getenv("BD_ACTOR"))
+	if err != nil {
+		return "", "", err
+	}
+	roleRig, roleName, err := donePolecatEnvIdentity(os.Getenv("GT_ROLE"), os.Getenv("GT_RIG"), os.Getenv("GT_POLECAT"))
+	if err != nil {
+		return "", "", err
+	}
+	if actorRig != roleRig || actorName != roleName {
+		return "", "", fmt.Errorf("gt done identity mismatch: BD_ACTOR=%s/polecats/%s but GT_ROLE/GT_RIG/GT_POLECAT resolve to %s/polecats/%s", actorRig, actorName, roleRig, roleName)
+	}
+	return actorRig, actorName, nil
 }
 
 func donePolecatWorktreeCandidates(townRoot, rigName, polecatName string) ([]string, error) {
@@ -703,16 +714,19 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Review-only work (gt-pd1c.69): the target bead (--issue, else the branch)
 	// or any bead hooked to this polecat. Resolved before the auto-commit
-	// safety net so a review leg is never auto-committed. An unverifiable
-	// status fails closed: no auto-commit here, and COMPLETED refuses once the
-	// source issue has been validated below.
+	// safety net so a confirmed review leg is never auto-committed. An
+	// unverifiable status keeps the safety net (ordinary work must not be lost
+	// to a bd outage); COMPLETED still refuses below, before any push.
 	reviewOnlyTarget := doneIssue
 	if reviewOnlyTarget == "" {
 		reviewOnlyTarget = parseBranchName(branch).Issue
 	}
-	reviewOnlyBead, reviewOnlyErr := findReviewOnlyWork(cwd, sender, reviewOnlyCandidate{ID: reviewOnlyTarget})
+	// A branch-derived target may name a purged bead (stale branch reuse);
+	// the stale-branch guard below then switches to the hook (hq-l0fj).
+	reviewOnlyBead, reviewOnlyErr := findReviewOnlyWork(cwd, sender,
+		reviewOnlyCandidate{ID: reviewOnlyTarget, IgnoreMissing: doneIssue == ""})
 	if reviewOnlyErr != nil {
-		style.PrintWarning("%v; skipping the auto-commit safety net", reviewOnlyErr)
+		style.PrintWarning("%v", reviewOnlyErr)
 	}
 
 	// Auto-detect cleanup status if not explicitly provided
@@ -799,7 +813,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	//
 	// Auto-commit ensures work is NEVER lost regardless of exit type or agent behavior.
 	// The commit message is clearly marked as an auto-save so reviewers know.
-	if doneCleanupStatus == "uncommitted" && (reviewOnlyBead != "" || reviewOnlyErr != nil) {
+	if doneCleanupStatus == "uncommitted" && reviewOnlyBead != "" {
 		fmt.Printf("\n%s Uncommitted changes left in the worktree are NOT auto-committed: review-only work produces no commits\n\n", style.Bold.Render("⚠"))
 	} else if doneCleanupStatus == "uncommitted" {
 		// Re-check to get file details (cleanup detection already confirmed uncommitted changes)
@@ -2451,13 +2465,26 @@ func selectAssignedIssue(branchIssue string, assigned []string) (string, bool) {
 // the current rig, the target rig for rig agents, then town beads. The assigned
 // work bead is authoritative; agent-bead hook slots are intentionally ignored.
 func findAssignedBeadsForAgent(workDir, agentID string) ([]string, error) {
+	return findAgentBeadsAcrossLocations(workDir, agentID, queryAssignedBeadsE)
+}
+
+// findHookedBeadsForAgent is findAssignedBeadsForAgent restricted to beads in
+// status hooked: the agent's current hook. in_progress beads are left out, so
+// a stale assignment under a reused polecat name does not count (gt-pd1c.69).
+func findHookedBeadsForAgent(workDir, agentID string) ([]string, error) {
+	return findAgentBeadsAcrossLocations(workDir, agentID, queryHookedBeadsE)
+}
+
+// findAgentBeadsAcrossLocations walks the gt hook assignment locations with
+// the given per-location query and returns the first non-empty answer.
+func findAgentBeadsAcrossLocations(workDir, agentID string, queryLocation func(*beads.Beads, string) ([]*beads.Issue, error)) ([]string, error) {
 	if agentID == "" {
 		return nil, nil
 	}
 
 	var firstErr error
 	query := func(bd *beads.Beads) []string {
-		issues, err := queryAssignedBeadsE(bd, agentID)
+		issues, err := queryLocation(bd, agentID)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -2509,6 +2536,19 @@ func findAssignedBeadsForAgent(workDir, agentID string) ([]string, error) {
 func queryAssignedBeads(bd *beads.Beads, agentID string) []*beads.Issue {
 	issues, _ := queryAssignedBeadsE(bd, agentID)
 	return issues
+}
+
+// queryHookedBeadsE returns the agent's beads in status hooked.
+func queryHookedBeadsE(bd *beads.Beads, agentID string) ([]*beads.Issue, error) {
+	hooked, err := bd.List(beads.ListOptions{
+		Status:   beads.StatusHooked,
+		Assignee: agentID,
+		Priority: -1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing hooked assignments: %w", err)
+	}
+	return hooked, nil
 }
 
 // queryAssignedBeadsE is queryAssignedBeads with errors surfaced: an empty

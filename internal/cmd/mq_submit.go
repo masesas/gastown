@@ -152,9 +152,9 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 	// submitted issue nor any bead hooked to the caller may be review-only.
 	// Checked before any MR bead exists; --resubmit and --skip-deps do not
 	// bypass it, and lookup failures refuse.
-	submitter := detectActor()
-	if submitter == "unknown" {
-		submitter = ""
+	submitter, err := reviewOnlyCallerAgent()
+	if err != nil {
+		return fmt.Errorf("refusing merge-queue submit: %w", err)
 	}
 	if reviewBead, err := findReviewOnlyWork(cwd, submitter, reviewOnlyCandidate{ID: issueID, Issue: sourceIssue}); err != nil {
 		return fmt.Errorf("refusing merge-queue submit: %w", err)

@@ -591,7 +591,9 @@ re-dispatch, or after the previous polecat was nuked) keeps it and refreshes the
 assignment timestamp; detach, burn and a failed sling's rollback keep it too.
 `gt prime` shows a REVIEW-ONLY directive. `gt done` and `gt mq submit` refuse
 commits and merge requests when the target bead (`--issue` or the branch) or
-any bead hooked to the caller is review-only; a lookup failure refuses too.
+any bead currently hooked (status `hooked`) to the caller is review-only; a
+lookup failure, or a polecat session whose identity cannot be resolved, refuses
+too.
 `gt done` never auto-commits leftover files of review-only work; complete with
 a `REPORT:`/`FINDINGS:` comment carrying `head_sha: <HEAD>` and no new commits.
 Parsing fails closed: any `review_only` line with a value other than an explicit
