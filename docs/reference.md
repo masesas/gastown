@@ -700,7 +700,8 @@ gt hooks pre-push <remote> [<url>]  # Git pre-push guard (stdin = git pre-push l
 The two `--confirm-*` flags are the only manual exit for an issue held as
 *unverified* by the merge queue: its MR is closed but git cannot decide whether
 the work landed (no git prover for the rig, no `commit_sha`/`target` on the
-MR, or a git error other than "commit not on the target"). The overseer does
+MR, or a git answer short of a definite "not on the target and no equivalent
+patch", see below). The overseer does
 not have to look for them: every witness patrol (`gt patrol scan`, parked-bead
 phase) mails the overseer (`High`, subject `UNVERIFIED_HOLD: <issue> (MR <mr>)
 needs an overseer verdict`) with the issue, MR, rig, reason, age since the MR
@@ -729,9 +730,62 @@ If applying the verdict fails after it was recorded, rerun the same command
 (the verdict is then proof) or let the witness orphan scan / `gt doctor --fix`
 settle the issue.
 
-Git proof is definite only in a complete clone. In a shallow or partial clone
-(gastown's `.repo.git` is cloned with `--depth 1`) a commit object that is
-absent after fetching the target proves nothing, so such MRs stay unverified.
+Git proof (`git.(*Git).VerifyPushedCommitReachableFromPushTarget` and
+`PatchEquivalentOnPushTarget`, used through `beads.MergeProver` /
+`beads.PatchProver`) answers in this order:
+
+0. Only a full hex `commit_sha`/`base_sha` (40 or 64 characters, as `gt done`
+   and `gt mq submit` record them) and a plain
+   `target` (segments of `^[A-Za-z0-9][A-Za-z0-9._-]*$` separated by `/`)
+   are handed to git; any other value is unverified without running git.
+1. The recorded `commit_sha` is reachable from `origin/<target>` (or from the
+   default branch when the target was deleted): landed.
+2. Not reachable, but the work is on the target as equivalent patches
+   (`git patch-id --stable`, as `git cherry` uses): every non-merge commit of
+   the MR has an equal patch on the target (rebase, cherry-pick), or the
+   combined diff `merge-base..commit_sha` equals one target commit (squash):
+   landed. When the MR records `base_sha` (the target tip at submission),
+   only target commits after it count, so an older commit with the same
+   one-line or since-reverted patch cannot prove the landing.
+3. Not reachable, no equivalent patch, and no target commit message has a
+   line equal to the subject of one of the MR's commits: definitely not
+   landed. A shared subject (a rebase that resolved conflicts keeps it, a
+   squash usually lists it) leaves the MR unverified.
+
+Anything git cannot decide stays unverified (an error never counts as "not
+landed"):
+- the remote or branch cannot be read or fetched;
+- the commit object is absent, in a partial or shallow clone or because its
+  patches cannot be compared;
+- `base_sha` is not an ancestor of the target;
+- only part of the MR's commits have an equal patch;
+- the commit has no diff;
+- more than 2000 commits would have to be compared;
+- the prover has no patch check.
+
+Every git command of the merge-queue prover (reachability and patch check)
+runs with a 60 s timeout and at most 16 MiB of output. On timeout the whole
+git process group is killed (ssh and remote helpers included), and output
+pipes are waited for at most 5 s more. Local patch-check commands also run
+with `GIT_NO_LAZY_FETCH=1`, so a partial clone never fetches a missing
+object. Hitting any of these limits makes the answer unverified. The
+refinery's and `gt done`'s own post-push verification keeps running without
+these bounds.
+
+In a shallow clone (gastown's `.repo.git` is cloned with `--depth 1`) "not
+reachable" counts only when every shallow boundary that is reachable from the
+target is an ancestor of the commit, i.e. the commit was made after the
+clone's boundary. With merges, the commit's own history can be cut at
+another boundary; that only leaves more MRs unverified, never fewer. A commit
+that predates the boundary stays unverified. Gastown never deepens
+`.repo.git` itself; an operator who wants such MRs decided by git can make
+the clone complete once with
+`git -C <rig>/.repo.git fetch --unshallow origin <branch>`. That costs the
+branch's full history in disk and download, and the refinery and polecat
+worktrees keep working on the deeper repository. A rebase that resolved
+conflicts with a reworded subject, or a squash whose message does not list
+the MR's subjects and whose context lines changed, still reads as not landed
+unless the MR records `merge_commit` (the normal refinery close does).
 
 #### Integration Branch Commands
 

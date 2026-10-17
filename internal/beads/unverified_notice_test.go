@@ -95,7 +95,7 @@ func TestIsSafeID(t *testing.T) {
 
 // One computation: Detail gives hold, MR, rig and a display-safe reason.
 func TestMergeQueueDetail_UnverifiedReasonIsSafe(t *testing.T) {
-	mr := &Issue{ID: "gt-wisp-9", Status: "closed", Description: "source_issue: gt-1\nrig: gastown\ntarget: main\ncommit_sha: c1\n"}
+	mr := &Issue{ID: "gt-wisp-9", Status: "closed", Description: "source_issue: gt-1\nrig: gastown\ntarget: main\ncommit_sha: c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1\n"}
 	gitErr := errors.New("fatal: unable to access 'https://x-access-token:ghp_secret@github.com/o/r/'\nline two " + strings.Repeat("x", 600))
 	q := NewMergeQueue(MergeQueueIndex{"gt-1": {mr}}, nil, func(string) MergeProver { return errProver{gitErr} })
 	d, err := q.Detail("gt-1")

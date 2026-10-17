@@ -165,7 +165,7 @@ func (f fakeLanded) VerifyPushedCommitReachableFromPushTarget(remote, branch, co
 // its commit is on the target. Running post-merge (closeTerminalMR) heals the
 // source; if the commit is not on the target the source stays open.
 func TestCloseTerminalMR_BareClosedMRWithLandedCommitClosesSource(t *testing.T) {
-	fields := "commit_sha: abc123\\n"
+	fields := "commit_sha: abc1234000000000000000000000000000000000\\n"
 	logPath := installTerminalMRBDStub(t, terminalMRIssues("closed", fields))
 	res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{
 		Reason: string(CloseReasonMerged), Prover: fakeLanded(true),

@@ -161,10 +161,10 @@ type ProverResolver func(rig string) MergeProver
 //   - git healer, for MRs closed without post-merge (bare `bd close`): the
 //     commit_sha recorded at submit (not the branch's current tip) must be
 //     reachable from origin/<target>, falling back to the default branch when
-//     the target was deleted. Known limits: squash/rebase merges and PR mode
-//     rewrite the commit, so this can only under-report (our rigs merge
-//     --no-ff/ff); an MR whose head was already in the target at submit
-//     (no new commits) would over-report, but gt done does not submit those.
+//     the target was deleted, or its work must be on the target as an
+//     equivalent patch (rebase/squash merge, PatchProver; gt-pd1c.81). An MR
+//     whose head was already in the target at submit (no new commits) would
+//     over-report, which the base_sha check guards against.
 //
 // An MR without a recorded commit/target, or without a prover, is not proven.
 func MRWorkLanded(mr *Issue, prover MergeProver) bool {
@@ -232,7 +232,7 @@ func mrLandingVerdict(status IssueStatus, fields *MRFields, prover MergeProver) 
 
 // mrLandingVerdictReason decides whether an MR's work landed, in this order:
 // structured merged signal (written only by closeTerminalMR) > definite git
-// answer > human verdict (MRFields.Landing, terminal MRs only) > unknown. A
+// answer (reachability, then patch equivalence) > human verdict (MRFields.Landing, terminal MRs only) > unknown. A
 // recorded verdict therefore never overrides git: a false `landing:` written
 // by hand cannot reopen work git proves landed, nor close work git proves did
 // not land. For verdictUnknown the reason says why git could not decide.
@@ -268,10 +268,18 @@ func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, st
 		return verdictUnknown, "no commit_sha or target recorded on the MR"
 	case prover == nil:
 		return verdictUnknown, "no git prover for rig " + strings.TrimSpace(fields.Rig)
+	case !IsGitObjectName(commit):
+		return verdictUnknown, "commit_sha is not a hex git object name"
+	case !IsSafeRefName(target):
+		return verdictUnknown, "target is not a plain branch name"
+	}
+	base := strings.TrimSpace(fields.BaseSHA)
+	if base != "" && !IsGitObjectName(base) {
+		return verdictUnknown, "base_sha is not a hex git object name"
 	}
 	// A commit already in the target when the MR was submitted carried no new
 	// work; reachability would then be a false positive.
-	if base := strings.TrimSpace(fields.BaseSHA); base != "" {
+	if base != "" {
 		if a, ok := prover.(ancestorChecker); ok {
 			isAnc, err := a.IsAncestor(commit, base)
 			if err != nil {
@@ -287,10 +295,41 @@ func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, st
 	case err == nil:
 		return verdictLanded, ""
 	case IsCommitNotOnTarget(err):
-		return verdictNotLanded, ""
+		return patchLandingVerdict(target, commit, base, prover)
 	default:
 		return verdictUnknown, "git could not verify the commit against the target: " + err.Error()
 	}
+}
+
+// patchLandingVerdict is the second git proof, run only after a definite "the
+// commit is not reachable from the target": a rebase or squash merge rewrites
+// the commit, so "not landed" also needs "no equivalent patch on the target"
+// (gt-pd1c.81). A prover without the check cannot rule a rewrite out.
+func patchLandingVerdict(target, commit, base string, prover MergeProver) (landingVerdict, string) {
+	pp, ok := prover.(PatchProver)
+	if !ok {
+		return verdictUnknown, "commit is not on the target and the prover cannot check for a rebase/squash merge"
+	}
+	equivalent, err := pp.PatchEquivalentOnPushTarget("origin", target, commit, base)
+	switch {
+	case err != nil:
+		return verdictUnknown, "commit is not on the target and git could not rule out a rebase/squash merge: " + err.Error()
+	case equivalent:
+		return verdictLanded, ""
+	default:
+		return verdictNotLanded, ""
+	}
+}
+
+// PatchProver is implemented by MergeProvers that can recognise work landed
+// by a rebase or squash merge (*git.Git and the mergeproof provers do).
+// PatchEquivalentOnPushTarget returns (true, nil) when an equivalent patch of
+// commit is on remote/branch, (false, nil) when there definitely is none, and
+// an error when git cannot tell; landing decisions treat the error as unknown.
+// base is the MR's base_sha or "": when set, only target commits after it may
+// be the equivalent (an older commit with the same patch proves nothing).
+type PatchProver interface {
+	PatchEquivalentOnPushTarget(remote, branch, commit, base string) (bool, error)
 }
 
 // ancestorChecker is optionally implemented by a MergeProver (*git.Git does).

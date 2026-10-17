@@ -255,8 +255,8 @@ reset, reopen or re-dispatch held work:
 |------------------|---------------------|
 | MR pending | held: parked, left for the Refinery |
 | MR landed (merged, or its commit is on the target) | closed |
-| Only MRs closed without landing, proven by git (commit not on the target) | free: reopened for rework |
-| MRs closed, landing not decidable (no prover, no recorded commit, git error) | held (unverified): parked, never reopened; the overseer is mailed by the witness patrol and it is listed by `gt doctor`; decided by an overseer |
+| Only MRs closed without landing, proven by git (commit not on the target, no equivalent patch) | free: reopened for rework |
+| MRs closed, landing not decidable (no prover, no recorded commit, git error, shallow history, partial patch match, shared subject) | held (unverified): parked, never reopened; the overseer is mailed by the witness patrol and it is listed by `gt doctor`; decided by an overseer |
 | Merge queue unreadable | fail closed: nothing is reset or dispatched |
 
 The merge queue is always read town-wide (every beads DB): an MR lives in the
@@ -270,10 +270,14 @@ whose MR landed but was closed by hand (bare `bd close`) is closed (also by
 `gt doctor --fix`), and one held as *unverified* is announced to the overseer
 (see below).
 
-"Not landed" must be definite: git fetched the target and the commit is not
-reachable from it. An absent commit object after the fetch counts only in a
-complete clone; in a shallow or partial clone (gastown's `.repo.git` is
-`--depth 1`) it proves nothing. When git cannot decide, the issue stays
+"Not landed" must be definite. Git must have fetched the target, the commit
+must not be reachable from it, and no equivalent patch may be on it (a rebase
+or squash merge rewrites the commit, so its work is matched by
+`git patch-id`). An absent commit object never proves "not landed", because
+its patches cannot be compared. In a shallow clone (gastown's `.repo.git` is
+`--depth 1`) "not reachable" counts only for a commit made after the clone's
+shallow boundary. Older commits may sit below the boundary, so they stay
+undecided. When git cannot decide, the issue stays
 *unverified* and only a human verdict releases it:
 `gt mq reject <rig> <mr> --confirm-not-landed` reopens it for rework,
 `gt mq post-merge <rig> <mr> --confirm-landed` closes it. Both need an
@@ -297,10 +301,19 @@ Known limitation: the structured merged signal (`close_reason: merged` or a
 value written by hand with `bd update` makes the patrol close the issue as
 landed (cross-check planned in gt-pd1c.78, stage 2).
 
-Known limitation: reachability compares the commit recorded at submit. A
-rebase or squash merge rewrites that commit, so such an MR closed by a bare
-`bd close` (without `merge_commit`) reads as definitely not landed and its
-issue is reopened.
+Known limitations: patch matching recognises a plain rebase, a cherry-pick
+and a squash of the MR's combined diff, counting only target commits after
+the MR's `base_sha`. A rebase that resolved conflicts, or a squash whose
+surrounding lines changed, produces different patches. Such an MR stays
+undecided when a target commit message carries one of the MR's commit
+subjects. If the subject was reworded too, the MR still reads as not landed
+when it was closed by a bare `bd close` without `merge_commit`, and its issue
+is reopened. If only some of the MR's commits match, the MR stays undecided.
+Git proof commands are bounded (60 s per git command with the whole process
+group killed on timeout, 16 MiB of output, no lazy fetch in partial clones);
+hitting a bound leaves the MR undecided. Gastown
+never deepens the shallow `.repo.git` on its own (see `docs/reference.md` for
+the one-time `fetch --unshallow`).
 
 ## What "Recycle" Means
 
