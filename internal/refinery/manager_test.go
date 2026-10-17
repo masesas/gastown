@@ -589,7 +589,7 @@ func TestManager_RejectMR_ClearsMatchingActiveMR(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
-	useIsolatedMergeQueue(t, b)
+	useIsolatedMergeQueueNotLanded(t, b) // a rejected MR whose work git proves not landed reopens its source
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}
@@ -609,7 +609,7 @@ func TestManager_RejectMR_ClearsMatchingActiveMR(t *testing.T) {
 	mrIssue, err := b.Create(beads.CreateOptions{
 		Title:       "MR for feature X",
 		Labels:      []string{"gt:merge-request"},
-		Description: "branch: polecat/test/gt-xyz\nsource_issue: " + srcIssue.ID + "\nworker: test\ntarget: main\nagent_bead: " + agentIssue.ID,
+		Description: "branch: polecat/test/gt-xyz\nsource_issue: " + srcIssue.ID + "\nworker: test\ntarget: main\nagent_bead: " + agentIssue.ID + "\ncommit_sha: " + notLandedMRCommit,
 	})
 	if err != nil {
 		t.Fatalf("create MR issue: %v", err)
@@ -791,7 +791,7 @@ func TestManager_TerminalCloseDoesNotClearNewerActiveMR(t *testing.T) {
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
-	useIsolatedMergeQueue(t, b)
+	useIsolatedMergeQueueNotLanded(t, b) // a rejected MR whose work git proves not landed reopens its source
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}
@@ -811,7 +811,7 @@ func TestManager_TerminalCloseDoesNotClearNewerActiveMR(t *testing.T) {
 	mrIssue, err := b.Create(beads.CreateOptions{
 		Title:       "MR for feature X",
 		Labels:      []string{"gt:merge-request"},
-		Description: "branch: polecat/test/gt-xyz\nsource_issue: " + srcIssue.ID + "\nworker: test\ntarget: main\nagent_bead: " + agentIssue.ID,
+		Description: "branch: polecat/test/gt-xyz\nsource_issue: " + srcIssue.ID + "\nworker: test\ntarget: main\nagent_bead: " + agentIssue.ID + "\ncommit_sha: " + notLandedMRCommit,
 	})
 	if err != nil {
 		t.Fatalf("create MR issue: %v", err)

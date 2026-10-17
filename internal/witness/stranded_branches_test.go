@@ -84,11 +84,11 @@ func strandedMR(id, status, branch, commit, extra string) *beads.Issue {
 func strandedQueue() *beads.MergeQueue {
 	idx := beads.MergeQueueIndex{}
 	for _, mr := range []*beads.Issue{
-		strandedMR("mr-1", "closed", "polecat/rej/gt-1", tipRej, "close_reason: rejected\n"),
-		strandedMR("mr-2", "closed", "polecat/sup/gt-2", tipSup, "close_reason: superseded\n"),
-		strandedMR("mr-3", "closed", "polecat/con/gt-3", tipCon, "close_reason: conflict\n"),
-		strandedMR("mr-4", "closed", "polecat/raw/gt-4", tipRaw, ""),
-		strandedMR("mr-5", "open", "polecat/open/gt-5", tipOpen, ""),
+		strandedMR("mr-1", "closed", "polecat/rej/gt-1+mvcf8o91", tipRej, "close_reason: rejected\n"),
+		strandedMR("mr-2", "closed", "polecat/sup/gt-2+mvcf8o91", tipSup, "close_reason: superseded\n"),
+		strandedMR("mr-3", "closed", "polecat/con/gt-3+mvcf8o91", tipCon, "close_reason: conflict\n"),
+		strandedMR("mr-4", "closed", "polecat/raw/gt-4+mvcf8o91", tipRaw, ""),
+		strandedMR("mr-5", "open", "polecat/open/gt-5+mvcf8o91", tipOpen, ""),
 	} {
 		src := beads.ParseMRFields(mr).SourceIssue
 		idx[src] = append(idx[src], mr)
@@ -97,17 +97,17 @@ func strandedQueue() *beads.MergeQueue {
 }
 
 var strandedRefs = map[string]string{
-	"refs/heads/main":                                           tipMain,
-	"refs/heads/polecat/landed":                                 tipMain, // on a merge target
-	"refs/heads/polecat/rej/gt-1":                               tipRej,
-	"refs/heads/polecat/sup/gt-2":                               tipSup,
-	"refs/heads/polecat/con/gt-3":                               tipCon,
-	"refs/heads/polecat/raw/gt-4":                               tipRaw,
-	"refs/heads/polecat/ghost":                                  tipNoMR, // no MR, owner dead
-	"refs/heads/polecat/alive":                                  tipLive, // no MR, owner alive
-	"refs/heads/polecat/open/gt-5":                              tipOpen,
-	"refs/heads/polecat/arch/gt-6":                              tipArch, // archived
-	"refs/gt/archive/polecat/arch/gt-6/1760000000-999999999999": tipArch,
+	"refs/heads/main":                                                    tipMain,
+	"refs/heads/polecat/landed":                                          tipMain, // on a merge target
+	"refs/heads/polecat/rej/gt-1+mvcf8o91":                               tipRej,
+	"refs/heads/polecat/sup/gt-2+mvcf8o91":                               tipSup,
+	"refs/heads/polecat/con/gt-3+mvcf8o91":                               tipCon,
+	"refs/heads/polecat/raw/gt-4+mvcf8o91":                               tipRaw,
+	"refs/heads/polecat/ghost":                                           tipNoMR, // no MR, owner dead
+	"refs/heads/polecat/alive":                                           tipLive, // no MR, owner alive
+	"refs/heads/polecat/open/gt-5+mvcf8o91":                              tipOpen,
+	"refs/heads/polecat/arch/gt-6+mvcf8o91":                              tipArch, // archived
+	"refs/gt/archive/polecat/arch/gt-6+mvcf8o91/1760000000-999999999999": tipArch,
 }
 
 var strandedNow = time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
@@ -142,11 +142,11 @@ func (r *strandedRecorder) reconciler(state branchReportState) *branchReconciler
 func seenLongAgo() branchReportState {
 	old := strandedNow.Add(-3 * time.Hour)
 	return branchReportState{
-		"polecat/rej/gt-1": {Tip: tipRej, Class: string(beads.TipRejected), FirstSeen: old},
-		"polecat/sup/gt-2": {Tip: tipSup, Class: string(beads.TipSuperseded), FirstSeen: old},
-		"polecat/con/gt-3": {Tip: tipCon, Class: string(beads.TipConflict), FirstSeen: old},
-		"polecat/raw/gt-4": {Tip: tipRaw, Class: string(beads.TipNoVerdict), FirstSeen: old},
-		"polecat/ghost":    {Tip: tipNoMR, Class: string(beads.TipNoMR), FirstSeen: old},
+		"polecat/rej/gt-1+mvcf8o91": {Tip: tipRej, Class: string(beads.TipRejected), FirstSeen: old},
+		"polecat/sup/gt-2+mvcf8o91": {Tip: tipSup, Class: string(beads.TipSuperseded), FirstSeen: old},
+		"polecat/con/gt-3+mvcf8o91": {Tip: tipCon, Class: string(beads.TipConflict), FirstSeen: old},
+		"polecat/raw/gt-4+mvcf8o91": {Tip: tipRaw, Class: string(beads.TipNoVerdict), FirstSeen: old},
+		"polecat/ghost":             {Tip: tipNoMR, Class: string(beads.TipNoMR), FirstSeen: old},
 	}
 }
 
@@ -157,7 +157,7 @@ func TestReconcileStrandedBranchesReportsToMayor(t *testing.T) {
 	if len(res.Errors) != 0 {
 		t.Fatalf("errors: %v", res.Errors)
 	}
-	wantReported := []string{"polecat/con/gt-3", "polecat/ghost", "polecat/raw/gt-4", "polecat/rej/gt-1", "polecat/sup/gt-2"}
+	wantReported := []string{"polecat/con/gt-3+mvcf8o91", "polecat/ghost", "polecat/raw/gt-4+mvcf8o91", "polecat/rej/gt-1+mvcf8o91", "polecat/sup/gt-2+mvcf8o91"}
 	if strings.Join(res.Reported, ",") != strings.Join(wantReported, ",") {
 		t.Fatalf("reported = %v, want %v", res.Reported, wantReported)
 	}
@@ -179,7 +179,7 @@ func TestReconcileStrandedBranchesReportsToMayor(t *testing.T) {
 	abandon := `gt polecat abandon testrig/`
 	for b, l := range lines {
 		offers := strings.Contains(l, abandon)
-		wantOffer := b == "polecat/rej/gt-1" || b == "polecat/sup/gt-2"
+		wantOffer := b == "polecat/rej/gt-1+mvcf8o91" || b == "polecat/sup/gt-2+mvcf8o91"
 		if offers != wantOffer {
 			t.Errorf("%s: abandon offered=%v, want %v: %q", b, offers, wantOffer, l)
 		}
@@ -190,11 +190,11 @@ func TestReconcileStrandedBranchesReportsToMayor(t *testing.T) {
 	if len(lines) != len(wantReported) {
 		t.Fatalf("one line per branch, got %v\n%s", lines, msg.Body)
 	}
-	if !strings.Contains(lines["polecat/rej/gt-1"], abandon+`polecat/rej/gt-1 --reason`) {
-		t.Errorf("abandon must be the exact command: %q", lines["polecat/rej/gt-1"])
+	if !strings.Contains(lines["polecat/rej/gt-1+mvcf8o91"], abandon+`polecat/rej/gt-1+mvcf8o91 --reason`) {
+		t.Errorf("abandon must be the exact command: %q", lines["polecat/rej/gt-1+mvcf8o91"])
 	}
-	if !strings.Contains(lines["polecat/raw/gt-4"], "ANOMALY") {
-		t.Errorf("an MR closed by hand that did not land is an anomaly: %q", lines["polecat/raw/gt-4"])
+	if !strings.Contains(lines["polecat/raw/gt-4+mvcf8o91"], "ANOMALY") {
+		t.Errorf("an MR closed by hand that did not land is an anomaly: %q", lines["polecat/raw/gt-4+mvcf8o91"])
 	}
 	for _, skipped := range []string{"polecat/landed", "polecat/alive", "polecat/open", "polecat/arch"} {
 		if strings.Contains(msg.Body, skipped) {
@@ -256,10 +256,10 @@ func TestReconcileStrandedBranchesGraceAndDedup(t *testing.T) {
 
 	// A new tip restarts the grace (the polecat pushed more work).
 	state = seenLongAgo()
-	state["polecat/rej/gt-1"] = branchReport{Tip: tipCon, Class: string(beads.TipRejected), FirstSeen: strandedNow.Add(-5 * time.Hour)}
+	state["polecat/rej/gt-1+mvcf8o91"] = branchReport{Tip: tipCon, Class: string(beads.TipRejected), FirstSeen: strandedNow.Add(-5 * time.Hour)}
 	rec = &strandedRecorder{}
 	r = rec.reconciler(state)
-	if res := r.run(); containsStr(res.Reported, "polecat/rej/gt-1") {
+	if res := r.run(); containsStr(res.Reported, "polecat/rej/gt-1+mvcf8o91") {
 		t.Fatalf("a changed tip must restart the grace: %v", res.Reported)
 	}
 
@@ -279,8 +279,8 @@ func TestReconcileStrandedBranchesFailures(t *testing.T) {
 	rec := &strandedRecorder{sendErr: errors.New("mail down")}
 	r := rec.reconciler(seenLongAgo())
 	res := r.run()
-	if len(res.Errors) == 0 || !r.state["polecat/rej/gt-1"].NotifiedAt.IsZero() {
-		t.Fatalf("send failure: errors=%v state=%+v", res.Errors, r.state["polecat/rej/gt-1"])
+	if len(res.Errors) == 0 || !r.state["polecat/rej/gt-1+mvcf8o91"].NotifiedAt.IsZero() {
+		t.Fatalf("send failure: errors=%v state=%+v", res.Errors, r.state["polecat/rej/gt-1+mvcf8o91"])
 	}
 	// Unreadable merge queue: nothing reported, error surfaced.
 	rec = &strandedRecorder{}
@@ -495,18 +495,18 @@ func TestReconcileStrandedBranchesSourceSettled(t *testing.T) {
 		return beads.NewMergeQueue(idx, nil, func(string) beads.MergeProver { return notLandedProver{} })
 	}
 	res := r.run()
-	if containsStr(res.Reported, "polecat/rej/gt-1") || containsStr(res.Reported, "polecat/con/gt-3") {
+	if containsStr(res.Reported, "polecat/rej/gt-1+mvcf8o91") || containsStr(res.Reported, "polecat/con/gt-3+mvcf8o91") {
 		t.Fatalf("settled sources must not be reported: %v", res.Reported)
 	}
-	if !containsStr(res.Reported, "polecat/sup/gt-2") || !containsStr(res.Reported, "polecat/raw/gt-4") {
+	if !containsStr(res.Reported, "polecat/sup/gt-2+mvcf8o91") || !containsStr(res.Reported, "polecat/raw/gt-4+mvcf8o91") {
 		t.Fatalf("open sources are still reported: %v", res.Reported)
 	}
 	r = rec.reconciler(seenLongAgo())
 	r.terminal = func(string) (bool, error) { return false, errors.New("bd down") }
-	if res := r.run(); len(res.Errors) == 0 || containsStr(res.Reported, "polecat/rej/gt-1") {
+	if res := r.run(); len(res.Errors) == 0 || containsStr(res.Reported, "polecat/rej/gt-1+mvcf8o91") {
 		t.Fatalf("unreadable source: %+v", res)
 	}
-	if _, kept := r.state["polecat/rej/gt-1"]; !kept {
+	if _, kept := r.state["polecat/rej/gt-1+mvcf8o91"]; !kept {
 		t.Fatal("an unknown answer must keep the branch's state (its backoff)")
 	}
 }

@@ -137,12 +137,15 @@ func TestGitLandingVerdictValidatesInputs(t *testing.T) {
 }
 
 func TestSafeRefAndObjectNames(t *testing.T) {
-	for _, s := range []string{"main", "integration/gt-epic", "polecat/rust/gt-1.2_x"} {
+	// Real generated polecat branches carry '+' (polecat/<name>/<issue>+<suffix>)
+	// or the legacy '@' separator (internal/polecat/branch_name.go).
+	for _, s := range []string{"main", "integration/gt-epic", "polecat/rust/gt-1.2_x",
+		"polecat/mirelurk/kp-znd+mvcf8o91", "polecat/s2test/kp-s2b+t1", "polecat/nux/gt-1@mvcf8o91", "polecat/nux-mvcf8o91"} {
 		if !IsSafeRefName(s) {
 			t.Errorf("IsSafeRefName(%q) = false", s)
 		}
 	}
-	for _, s := range []string{"", "-x", "a/-b", "a//b", "a/../b", "/a", "a/", "a b", ".hidden"} {
+	for _, s := range []string{"", "-x", "+x", "a/+b", "a/-b", "a//b", "a/../b", "/a", "a/", "a b", ".hidden", "a.lock", "a@{1}", "HEAD", "a:b"} {
 		if IsSafeRefName(s) {
 			t.Errorf("IsSafeRefName(%q) = true", s)
 		}

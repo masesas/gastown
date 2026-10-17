@@ -61,7 +61,7 @@ func TestPrePushGuardPolecatBranchDeletion(t *testing.T) {
 	f := newPrePushFixture(t)
 	f.archived = archiveTip(t, f, "polecat/old/gt-9", f.integrationOnTopBad)
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
-	const branch = "polecat/nux/gt-1"
+	const branch = "polecat/nux/gt-1+mvcf8o91"
 	del := func(tip string) []prePushUpdate {
 		return []prePushUpdate{prePushUpd("refs/heads/"+branch, testZeroSHA, tip)}
 	}
@@ -278,7 +278,7 @@ func archiveTip(t *testing.T, f prePushFixture, branch, commit string) string {
 func TestPrePushGuardArchiveRefs(t *testing.T) {
 	f := newPrePushFixture(t)
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
-	const branch = "polecat/nux/gt-1"
+	const branch = "polecat/nux/gt-1+mvcf8o91"
 	ref := "refs/gt/archive/" + branch + "/1760000000-" + f.good[:12]
 	create := prePushUpd(ref, f.good, testZeroSHA)
 	mayor := []string{"GT_ROLE", "mayor"}
@@ -345,7 +345,7 @@ func TestPrePushGuardArchiveRefs(t *testing.T) {
 func TestPrePushGuardAbandonSequence(t *testing.T) {
 	f := newPrePushFixture(t)
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
-	const branch = "polecat/nux/gt-1"
+	const branch = "polecat/nux/gt-1+mvcf8o91"
 	rejected := mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: rejected\n"))
 	ref := "refs/gt/archive/" + branch + "/1760000000-" + f.good[:12]
 	mayor := []string{"GT_ROLE", "mayor"}
@@ -369,7 +369,7 @@ func TestPrePushGuardFakeIntegrationBranchIsNotATarget(t *testing.T) {
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
 	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":refs/heads/refs/heads/integration/pwn")
 	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":refs/heads/refs/heads/main")
-	del := []prePushUpdate{prePushUpd("refs/heads/polecat/nux/gt-1", testZeroSHA, f.good)}
+	del := []prePushUpdate{prePushUpd("refs/heads/polecat/nux/gt-1+mvcf8o91", testZeroSHA, f.good)}
 	err := coordinatorGuard(f, plain, mqWith(), "GT_ROLE", "myrig/witness").check(del)
 	if err == nil || !strings.Contains(err.Error(), "no MR recorded this tip") {
 		t.Fatalf("tip only on a fake integration branch must not count as covered: %v", err)

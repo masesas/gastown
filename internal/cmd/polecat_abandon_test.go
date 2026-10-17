@@ -8,6 +8,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	gitpkg "github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/polecat"
 )
 
 // gt-pd1c.78 tahap 2: gt polecat abandon is the one way an agent discards
@@ -24,7 +25,7 @@ type abandonFixture struct {
 
 func newAbandonFixture(t *testing.T) *abandonFixture {
 	t.Helper()
-	a := &abandonFixture{f: newPrePushFixture(t), branch: "polecat/nux/gt-1", notes: map[string]string{},
+	a := &abandonFixture{f: newPrePushFixture(t), branch: polecat.FormatGeneratedBranchName("nux", "gt-1", "mvcf8o91"), notes: map[string]string{},
 		at: time.Unix(1760000000, 0)}
 	a.repo = gitpkg.NewGit(a.f.repo)
 	runGitForMQSubmitTest(t, a.f.repo, "push", "-q", "origin", a.f.good+":refs/heads/"+a.branch)

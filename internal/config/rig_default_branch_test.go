@@ -14,6 +14,10 @@ func TestRigDefaultBranch(t *testing.T) {
 		`{"default_branch":"-x"}`:           "",
 		`{"default_branch":"a/../b"}`:       "",
 		`{"default_branch":"a b"}`:          "",
+		`{"default_branch":"release+2"}`:    "release+2",
+		`{"default_branch":"+main"}`:        "",
+		`{"default_branch":"a.lock"}`:       "",
+		`{"default_branch":"HEAD"}`:         "",
 		`{broken`:                           "",
 		`{"type":"rig"}`:                    "",
 	} {

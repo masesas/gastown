@@ -22,7 +22,8 @@ import (
 const IntegrationBranchPrefix = "integration/"
 
 // ArchiveRefPrefix is the namespace of abandoned polecat branch tips on the
-// remote: refs/gt/archive/<branch>/<unix-seconds>-<short-sha>. Agents create
+// remote: refs/gt/archive/<branch>/<unix-seconds>-<short-sha>, e.g.
+// refs/gt/archive/polecat/nux/gt-1+mvcf8o91/1760000000-abcdef012345. Agents create
 // archive refs only through gt polecat abandon; deleting or rewriting them
 // (pruning) is for humans and crew.
 const ArchiveRefPrefix = "refs/gt/archive/"
@@ -165,9 +166,10 @@ func CoveredByTargets(g PreservationGit, commit string, tips RemoteTips) bool {
 
 // ArchiveRef is the archive ref for tip of branch at time at:
 // refs/gt/archive/<branch>/<unix>-<first 12 hex of tip>. branch must be a
-// polecat/* branch whose segments are beads.IsSafeID and tip a full object
-// name; anything else is refused so the ref can never carry an option or a
-// path escape.
+// polecat/* branch that passes beads.IsSafeRefName (the one ref-name rule, so
+// real generated branches such as polecat/<name>/<issue>+<suffix> are
+// archived) and tip a full object name; anything else is refused so the ref
+// can never carry an option or a path escape.
 func ArchiveRef(branch string, at time.Time, tip string) (string, error) {
 	branch = strings.TrimSpace(branch)
 	tip = strings.ToLower(strings.TrimSpace(tip))

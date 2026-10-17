@@ -21,7 +21,7 @@ func TestPrePushGuardRefineryPostMergeDelete(t *testing.T) {
 	f := newPrePushFixture(t)
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
 	refinery := []string{"GT_ROLE", "myrig/refinery", "BD_ACTOR", "myrig/refinery"}
-	const branch = "polecat/nux/gt-1"
+	const branch = "polecat/nux/gt-1+mvcf8o91"
 	del := func(tip string) []prePushUpdate {
 		return []prePushUpdate{prePushUpd("refs/heads/"+branch, testZeroSHA, tip)}
 	}
