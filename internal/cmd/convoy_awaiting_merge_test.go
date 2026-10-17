@@ -165,6 +165,11 @@ func (p stubProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, co
 	return stubNotOnTarget{fmt.Sprintf("commit %s not on %s/%s", commit, remote, branch)}
 }
 
+// PatchEquivalentOnPushTarget: no rebase/squash either, so "not landed" is definite.
+func (p stubProver) PatchEquivalentOnPushTarget(remote, branch, commit string) (bool, error) {
+	return false, nil
+}
+
 // stubNotOnTarget is a definite "not reachable" (like git.CommitNotOnBranchError).
 type stubNotOnTarget struct{ msg string }
 

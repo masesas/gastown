@@ -30,6 +30,12 @@ func (f fakeProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, co
 	return notOnTarget{}
 }
 
+// PatchEquivalentOnPushTarget: the fixtures merge without rewriting commits,
+// so no unreachable commit has an equivalent patch on the target.
+func (f fakeProver) PatchEquivalentOnPushTarget(remote, branch, commit string) (bool, error) {
+	return false, nil
+}
+
 // notOnTarget is a definite "commit not reachable" (like git.CommitNotOnBranchError).
 type notOnTarget struct{}
 

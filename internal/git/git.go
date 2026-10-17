@@ -2203,6 +2203,12 @@ func (g *Git) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit s
 		return fmt.Errorf("verified_push_failed: unable to verify commit %s on %s/%s: %w", shortSHA(commit), remote, branch, err)
 	}
 	if !reachable {
+		// In a shallow clone the walk may stop at a shallow boundary before
+		// reaching the commit: "not an ancestor" is definite only when no
+		// boundary can hide the path (gt-pd1c.81).
+		if decidable, why := g.ancestryDecidable("FETCH_HEAD", commit); !decidable {
+			return fmt.Errorf("verified_push_failed: %s clone cannot decide whether commit %s is on %s/%s (remote tip %s)", why, shortSHA(commit), remote, branch, shortSHA(tip))
+		}
 		return &CommitNotOnBranchError{msg: fmt.Sprintf("verified_push_failed: commit %s not on %s/%s (remote tip %s)", shortSHA(commit), remote, branch, shortSHA(tip))}
 	}
 	return nil

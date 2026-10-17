@@ -19,6 +19,11 @@ func (notLandedProver) VerifyPushedCommitReachableFromPushTarget(remote, branch,
 	return notOnTarget{}
 }
 
+// PatchEquivalentOnPushTarget: no rebase/squash either, so "not landed" is definite.
+func (notLandedProver) PatchEquivalentOnPushTarget(remote, branch, commit string) (bool, error) {
+	return false, nil
+}
+
 type notOnTarget struct{}
 
 func (notOnTarget) Error() string           { return "commit not on target" }

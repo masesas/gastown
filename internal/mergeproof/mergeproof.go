@@ -28,9 +28,10 @@ func RigGit(rigPath string) (*git.Git, error) {
 }
 
 type memoProver struct {
-	g    *git.Git
-	mu   sync.Mutex
-	seen map[string]error
+	g         *git.Git
+	mu        sync.Mutex
+	seen      map[string]error
+	patchSeen map[string]patchAnswer
 }
 
 // IsAncestor forwards to git (beads.MRFieldsLanded's no-new-work guard).
@@ -57,6 +58,46 @@ func (m *memoProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, c
 	return err
 }
 
+type patchAnswer struct {
+	equivalent bool
+	err        error
+}
+
+// PatchEquivalentOnPushTarget forwards to git (beads.PatchProver: rebase or
+// squash merges), memoized like reachability and with the same fallback to
+// the default branch.
+func (m *memoProver) PatchEquivalentOnPushTarget(remote, branch, commit string) (bool, error) {
+	key := remote + "\x00" + branch + "\x00" + commit
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if a, ok := m.patchSeen[key]; ok {
+		return a.equivalent, a.err
+	}
+	ok, err := m.g.PatchEquivalentOnPushTarget(remote, branch, commit)
+	if !ok {
+		if def := m.g.RemoteDefaultBranch(); def != "" && def != branch {
+			defOK, defErr := m.g.PatchEquivalentOnPushTarget(remote, def, commit)
+			ok, err = combinePatchFallback(ok, err, defOK, defErr)
+		}
+	}
+	m.patchSeen[key] = patchAnswer{equivalent: ok, err: err}
+	return ok, err
+}
+
+// combinePatchFallback merges the target and default-branch patch answers: an
+// equivalent patch on either is landed; "none" is definite only when both
+// answers are definite; any failure keeps the answer uncertain.
+func combinePatchFallback(targetOK bool, targetErr error, defaultOK bool, defaultErr error) (bool, error) {
+	switch {
+	case targetOK || (defaultOK && defaultErr == nil):
+		return true, nil
+	case targetErr != nil:
+		return false, targetErr
+	default:
+		return false, defaultErr
+	}
+}
+
 // combineFallback merges the target and default-branch answers: reachable from
 // either is landed; "not reachable" is definite only when both are definite
 // (beads.IsCommitNotOnTarget); any other failure keeps the answer uncertain.
@@ -78,7 +119,7 @@ func ForRigPath(rigPath string) beads.MergeProver {
 	if err != nil {
 		return nil
 	}
-	return &memoProver{g: g, seen: make(map[string]error)}
+	return &memoProver{g: g, seen: make(map[string]error), patchSeen: make(map[string]patchAnswer)}
 }
 
 // Resolver returns a ProverResolver for rigs under townRoot (<town>/<rig>).
