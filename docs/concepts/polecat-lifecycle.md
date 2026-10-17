@@ -302,13 +302,17 @@ value written by hand with `bd update` makes the patrol close the issue as
 landed (cross-check planned in gt-pd1c.78, stage 2).
 
 Known limitations: patch matching recognises a plain rebase, a cherry-pick
-and a squash of the MR's combined diff. A rebase that resolved conflicts, or
-a squash whose surrounding lines changed on the target, produces different
-patches. Such an MR, closed by a bare `bd close` without `merge_commit`, still
-reads as not landed and its issue is reopened. If only some of the MR's
-commits match, the MR stays undecided. Gastown never deepens the shallow
-`.repo.git` on its own (see `docs/reference.md` for the one-time
-`fetch --unshallow`).
+and a squash of the MR's combined diff, counting only target commits after
+the MR's `base_sha`. A rebase that resolved conflicts, or a squash whose
+surrounding lines changed, produces different patches. Such an MR stays
+undecided when a target commit message carries one of the MR's commit
+subjects. If the subject was reworded too, the MR still reads as not landed
+when it was closed by a bare `bd close` without `merge_commit`, and its issue
+is reopened. If only some of the MR's commits match, the MR stays undecided.
+Patch checks are bounded (60 s per git command, 16 MiB of output, no lazy
+fetch in partial clones); hitting a bound leaves the MR undecided. Gastown
+never deepens the shallow `.repo.git` on its own (see `docs/reference.md` for
+the one-time `fetch --unshallow`).
 
 ## What "Recycle" Means
 

@@ -81,7 +81,7 @@ func TestLandingProofShallowCommitBelowBoundaryIsUncertain(t *testing.T) {
 	if !strings.Contains(err.Error(), "shallow") {
 		t.Errorf("uncertainty should name the shallow clone: %v", err)
 	}
-	if _, perr := g.PatchEquivalentOnPushTarget("origin", "main", landed); perr == nil || !strings.Contains(perr.Error(), "shallow") {
+	if _, perr := g.PatchEquivalentOnPushTarget("origin", "main", landed, ""); perr == nil || !strings.Contains(perr.Error(), "shallow") {
 		t.Fatalf("patch check in a shallow clone that cannot decide must be uncertain, got %v", perr)
 	}
 }
@@ -102,7 +102,7 @@ func TestLandingProofShallowCommitAboveBoundaryIsDefinite(t *testing.T) {
 	if err := g.VerifyPushedCommitReachableFromPushTarget("origin", "main", local); !isNotOnBranch(err) {
 		t.Fatalf("commit above the shallow boundary should be definitely not on main, got %v", err)
 	}
-	onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", local)
+	onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", local, "")
 	if err != nil || onTarget {
 		t.Fatalf("no equivalent patch on main: want (false, nil), got (%v, %v)", onTarget, err)
 	}
@@ -123,7 +123,7 @@ func TestLandingProofSquashMergeIsPatchEquivalent(t *testing.T) {
 	if err := g.VerifyPushedCommitReachableFromPushTarget("origin", "main", head); !isNotOnBranch(err) {
 		t.Fatalf("squashed head is not an ancestor of main, want definite not-on-branch, got %v", err)
 	}
-	onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", head)
+	onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", head, "")
 	if err != nil || !onTarget {
 		t.Fatalf("squash merge: want (true, nil), got (%v, %v)", onTarget, err)
 	}
@@ -141,7 +141,7 @@ func TestLandingProofRebaseIsPatchEquivalent(t *testing.T) {
 	lpGit(t, work, "push", "-q", "origin", "rebased:main")
 	g := NewGit(work)
 
-	onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", head)
+	onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", head, "")
 	if err != nil || !onTarget {
 		t.Fatalf("rebase merge: want (true, nil), got (%v, %v)", onTarget, err)
 	}
@@ -158,7 +158,7 @@ func TestLandingProofPartialPatchIsUncertain(t *testing.T) {
 	lpGit(t, work, "push", "-q", "origin", "main")
 	g := NewGit(work)
 
-	if onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", head); err == nil || !strings.Contains(err.Error(), "only 1 of 2") {
+	if onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", head, ""); err == nil || !strings.Contains(err.Error(), "only 1 of 2") {
 		t.Fatalf("partially applied work must be uncertain, got (%v, %v)", onTarget, err)
 	}
 }
@@ -176,7 +176,7 @@ func TestLandingProofCompleteCloneNotLanded(t *testing.T) {
 	if err := g.VerifyPushedCommitReachableFromPushTarget("origin", "main", head); !isNotOnBranch(err) {
 		t.Fatalf("want definite not-on-branch, got %v", err)
 	}
-	onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", head)
+	onTarget, err := g.PatchEquivalentOnPushTarget("origin", "main", head, "")
 	if err != nil || onTarget {
 		t.Fatalf("want (false, nil), got (%v, %v)", onTarget, err)
 	}
@@ -192,7 +192,7 @@ func TestLandingProofUnreachableRemoteIsUncertain(t *testing.T) {
 	if err == nil || isNotOnBranch(err) {
 		t.Fatalf("unreachable remote must be uncertain, got %v", err)
 	}
-	if onTarget, perr := g.PatchEquivalentOnPushTarget("gone", "main", head); perr == nil {
+	if onTarget, perr := g.PatchEquivalentOnPushTarget("gone", "main", head, ""); perr == nil {
 		t.Fatalf("unreachable remote must be uncertain, got (%v, nil)", onTarget)
 	}
 }
@@ -218,7 +218,7 @@ func TestLandingProofShallowUnrelatedBoundaryIsIgnored(t *testing.T) {
 	if err := g.VerifyPushedCommitReachableFromPushTarget("origin", "main", local); !isNotOnBranch(err) {
 		t.Fatalf("want definite not-on-branch despite the side boundary, got %v", err)
 	}
-	if ok, err := g.PatchEquivalentOnPushTarget("origin", "main", local); err != nil || ok {
+	if ok, err := g.PatchEquivalentOnPushTarget("origin", "main", local, ""); err != nil || ok {
 		t.Fatalf("want (false, nil), got (%v, %v)", ok, err)
 	}
 }
@@ -239,7 +239,7 @@ func TestLandingProofPatchCheckUncertainInputs(t *testing.T) {
 		"commit with no diff": {"main", empty},
 	}
 	for name, c := range cases {
-		if ok, err := g.PatchEquivalentOnPushTarget("origin", c[0], c[1]); err == nil {
+		if ok, err := g.PatchEquivalentOnPushTarget("origin", c[0], c[1], ""); err == nil {
 			t.Errorf("%s: want an uncertain error, got (%v, nil)", name, ok)
 		}
 	}

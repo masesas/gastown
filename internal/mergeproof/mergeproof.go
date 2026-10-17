@@ -3,6 +3,7 @@
 package mergeproof
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,11 +29,13 @@ func RigGit(rigPath string) (*git.Git, error) {
 }
 
 type memoProver struct {
-	g         *git.Git
-	mu        sync.Mutex
-	seen      map[string]error
-	patchSeen map[string]patchAnswer
+	g       *git.Git
+	reaches memo[error]
+	patches memo[patchAnswer]
 }
+
+// errProofAborted answers callers that waited for a computation that panicked.
+var errProofAborted = errors.New("landing proof aborted")
 
 // IsAncestor forwards to git (beads.MRFieldsLanded's no-new-work guard).
 func (m *memoProver) IsAncestor(ancestor, descendant string) (bool, error) {
@@ -41,21 +44,17 @@ func (m *memoProver) IsAncestor(ancestor, descendant string) (bool, error) {
 
 func (m *memoProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
 	key := remote + "\x00" + branch + "\x00" + commit
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err, ok := m.seen[key]; ok {
-		return err
-	}
-	err := m.g.VerifyPushedCommitReachableFromPushTarget(remote, branch, commit)
-	if err != nil {
-		// Integration branches are deleted after landing: the work then lives
-		// on the default branch.
-		if def := m.g.RemoteDefaultBranch(); def != "" && def != branch {
-			err = combineFallback(err, m.g.VerifyPushedCommitReachableFromPushTarget(remote, def, commit))
+	return m.reaches.do(key, func() error {
+		err := m.g.VerifyPushedCommitReachableFromPushTarget(remote, branch, commit)
+		if err != nil {
+			// Integration branches are deleted after landing: the work then
+			// lives on the default branch.
+			if def := m.g.RemoteDefaultBranch(); def != "" && def != branch {
+				err = combineFallback(err, m.g.VerifyPushedCommitReachableFromPushTarget(remote, def, commit))
+			}
 		}
-	}
-	m.seen[key] = err
-	return err
+		return err
+	}, errProofAborted)
 }
 
 type patchAnswer struct {
@@ -66,22 +65,19 @@ type patchAnswer struct {
 // PatchEquivalentOnPushTarget forwards to git (beads.PatchProver: rebase or
 // squash merges), memoized like reachability and with the same fallback to
 // the default branch.
-func (m *memoProver) PatchEquivalentOnPushTarget(remote, branch, commit string) (bool, error) {
-	key := remote + "\x00" + branch + "\x00" + commit
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if a, ok := m.patchSeen[key]; ok {
-		return a.equivalent, a.err
-	}
-	ok, err := m.g.PatchEquivalentOnPushTarget(remote, branch, commit)
-	if !ok {
-		if def := m.g.RemoteDefaultBranch(); def != "" && def != branch {
-			defOK, defErr := m.g.PatchEquivalentOnPushTarget(remote, def, commit)
-			ok, err = combinePatchFallback(ok, err, defOK, defErr)
+func (m *memoProver) PatchEquivalentOnPushTarget(remote, branch, commit, base string) (bool, error) {
+	key := remote + "\x00" + branch + "\x00" + commit + "\x00" + base
+	a := m.patches.do(key, func() patchAnswer {
+		ok, err := m.g.PatchEquivalentOnPushTarget(remote, branch, commit, base)
+		if !ok {
+			if def := m.g.RemoteDefaultBranch(); def != "" && def != branch {
+				defOK, defErr := m.g.PatchEquivalentOnPushTarget(remote, def, commit, base)
+				ok, err = combinePatchFallback(ok, err, defOK, defErr)
+			}
 		}
-	}
-	m.patchSeen[key] = patchAnswer{equivalent: ok, err: err}
-	return ok, err
+		return patchAnswer{equivalent: ok, err: err}
+	}, patchAnswer{err: errProofAborted})
+	return a.equivalent, a.err
 }
 
 // combinePatchFallback merges the target and default-branch patch answers: an
@@ -119,7 +115,7 @@ func ForRigPath(rigPath string) beads.MergeProver {
 	if err != nil {
 		return nil
 	}
-	return &memoProver{g: g, seen: make(map[string]error), patchSeen: make(map[string]patchAnswer)}
+	return &memoProver{g: g}
 }
 
 // Resolver returns a ProverResolver for rigs under townRoot (<town>/<rig>).

@@ -19,11 +19,11 @@ func TestMergeQueueHoldFor_ClassifiesEveryMRShape(t *testing.T) {
 		wantMR   string
 	}{
 		{"gt-work1", nil, HoldLanded, "gt-wisp-merged"},           // close_reason merged
-		{"gt-work4", []string{"c4"}, HoldLanded, "gt-wisp-bare"},  // bare bd close, commit on target
+		{"gt-work4", []string{"c4c4c4c"}, HoldLanded, "gt-wisp-bare"},  // bare bd close, commit on target
 		{"gt-work4", nil, HoldNone, ""},                           // bare close, not on target
 		{"gt-work2", nil, HoldNone, ""},                           // rejected, never landed
 		{"gt-work3", nil, HoldPending, "gt-wisp-open"},            // open MR
-		{"gt-work3", []string{"c3"}, HoldPending, "gt-wisp-open"}, // open MR: the refinery owns it even if its commit landed
+		{"gt-work3", []string{"c3c3c3c"}, HoldPending, "gt-wisp-open"}, // open MR: the refinery owns it even if its commit landed
 		{"gt-unknown", nil, HoldNone, ""},                         // no MR at all
 	}
 	for _, c := range cases {
@@ -325,8 +325,8 @@ func TestMergeQueue_UnverifiedExplainsAndGuardPointsToExit(t *testing.T) {
 
 // round 4 (B1): a recorded human verdict is proof for the one rule.
 func TestMergeQueueHold_HumanVerdictDecides(t *testing.T) {
-	notLanded := []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\ntarget: main\ncommit_sha: c1\nlanding: not_landed\n"}}
-	landed := []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\ntarget: main\ncommit_sha: c1\nlanding: landed\n"}}
+	notLanded := []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\ntarget: main\ncommit_sha: c1c1c1c\nlanding: not_landed\n"}}
+	landed := []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\ntarget: main\ncommit_sha: c1c1c1c\nlanding: landed\n"}}
 	if hold, _ := MergeQueueHoldOf(notLanded, nil); hold != HoldNone {
 		t.Fatalf("not_landed verdict: hold = %v, want none", hold)
 	}
@@ -346,9 +346,9 @@ func TestMergeQueueHold_HumanVerdictDecides(t *testing.T) {
 // `landing:` written by hand never overrides a definite git answer.
 func TestMergeQueueHold_GitBeatsHumanVerdict(t *testing.T) {
 	mr := func(landing string) []*Issue {
-		return []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\nrig: gastown\ntarget: main\ncommit_sha: c1\nlanding: " + landing + "\n"}}
+		return []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\nrig: gastown\ntarget: main\ncommit_sha: c1c1c1c\nlanding: " + landing + "\n"}}
 	}
-	landedGit := resolverFor("c1") // git: c1 is on the target
+	landedGit := resolverFor("c1c1c1c") // git: c1c1c1c is on the target
 	notLandedGit := resolverFor()  // git: definitely not on the target
 	unknownGit := ProverResolver(func(string) MergeProver { return failingProver{} })
 	cases := []struct {
@@ -377,10 +377,10 @@ func TestUnverifiedReason(t *testing.T) {
 		want   string
 	}{
 		"no commit":  {"target: main\n", nil, "no commit_sha or target"},
-		"no prover":  {"rig: gastown\ntarget: main\ncommit_sha: c1\n", nil, "no git prover for rig gastown"},
-		"git error":  {"target: main\ncommit_sha: c1\n", failingProver{}, "git could not verify"},
-		"decided":    {"target: main\ncommit_sha: c1\n", fakeProver{}, ""},
-		"by verdict": {"target: main\ncommit_sha: c1\nlanding: landed\n", nil, ""},
+		"no prover":  {"rig: gastown\ntarget: main\ncommit_sha: c1c1c1c\n", nil, "no git prover for rig gastown"},
+		"git error":  {"target: main\ncommit_sha: c1c1c1c\n", failingProver{}, "git could not verify"},
+		"decided":    {"target: main\ncommit_sha: c1c1c1c\n", fakeProver{}, ""},
+		"by verdict": {"target: main\ncommit_sha: c1c1c1c\nlanding: landed\n", nil, ""},
 	}
 	for name, c := range cases {
 		got := UnverifiedReason(&Issue{ID: "mr", Status: "closed", Description: "source_issue: gt-x\n" + c.desc}, c.prover)

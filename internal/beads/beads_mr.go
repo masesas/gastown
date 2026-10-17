@@ -268,10 +268,18 @@ func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, st
 		return verdictUnknown, "no commit_sha or target recorded on the MR"
 	case prover == nil:
 		return verdictUnknown, "no git prover for rig " + strings.TrimSpace(fields.Rig)
+	case !IsGitObjectName(commit):
+		return verdictUnknown, "commit_sha is not a hex git object name"
+	case !IsSafeRefName(target):
+		return verdictUnknown, "target is not a plain branch name"
+	}
+	base := strings.TrimSpace(fields.BaseSHA)
+	if base != "" && !IsGitObjectName(base) {
+		return verdictUnknown, "base_sha is not a hex git object name"
 	}
 	// A commit already in the target when the MR was submitted carried no new
 	// work; reachability would then be a false positive.
-	if base := strings.TrimSpace(fields.BaseSHA); base != "" {
+	if base != "" {
 		if a, ok := prover.(ancestorChecker); ok {
 			isAnc, err := a.IsAncestor(commit, base)
 			if err != nil {
@@ -287,7 +295,7 @@ func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, st
 	case err == nil:
 		return verdictLanded, ""
 	case IsCommitNotOnTarget(err):
-		return patchLandingVerdict(target, commit, prover)
+		return patchLandingVerdict(target, commit, base, prover)
 	default:
 		return verdictUnknown, "git could not verify the commit against the target: " + err.Error()
 	}
@@ -297,12 +305,12 @@ func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, st
 // commit is not reachable from the target": a rebase or squash merge rewrites
 // the commit, so "not landed" also needs "no equivalent patch on the target"
 // (gt-pd1c.81). A prover without the check cannot rule a rewrite out.
-func patchLandingVerdict(target, commit string, prover MergeProver) (landingVerdict, string) {
+func patchLandingVerdict(target, commit, base string, prover MergeProver) (landingVerdict, string) {
 	pp, ok := prover.(PatchProver)
 	if !ok {
 		return verdictUnknown, "commit is not on the target and the prover cannot check for a rebase/squash merge"
 	}
-	equivalent, err := pp.PatchEquivalentOnPushTarget("origin", target, commit)
+	equivalent, err := pp.PatchEquivalentOnPushTarget("origin", target, commit, base)
 	switch {
 	case err != nil:
 		return verdictUnknown, "commit is not on the target and git could not rule out a rebase/squash merge: " + err.Error()
@@ -318,8 +326,10 @@ func patchLandingVerdict(target, commit string, prover MergeProver) (landingVerd
 // PatchEquivalentOnPushTarget returns (true, nil) when an equivalent patch of
 // commit is on remote/branch, (false, nil) when there definitely is none, and
 // an error when git cannot tell; landing decisions treat the error as unknown.
+// base is the MR's base_sha or "": when set, only target commits after it may
+// be the equivalent (an older commit with the same patch proves nothing).
 type PatchProver interface {
-	PatchEquivalentOnPushTarget(remote, branch, commit string) (bool, error)
+	PatchEquivalentOnPushTarget(remote, branch, commit, base string) (bool, error)
 }
 
 // ancestorChecker is optionally implemented by a MergeProver (*git.Git does).

@@ -6,7 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
 )
@@ -215,5 +218,67 @@ func TestCombinePatchFallback(t *testing.T) {
 		if ok != c.wantOK || (err != nil) != c.wantErr {
 			t.Errorf("case %d: combinePatchFallback = (%v, %v), want (%v, err=%v)", i, ok, err, c.wantOK, c.wantErr)
 		}
+	}
+}
+
+// gt-pd1c.81 review: one computation per key, shared by concurrent callers,
+// with no lock held while it runs (another key proceeds meanwhile).
+func TestMemoSingleFlightPerKey(t *testing.T) {
+	var m memo[int]
+	var runs atomic.Int32
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]int, 8)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = m.do("slow", func() int {
+				runs.Add(1)
+				close(started)
+				<-release
+				return 42
+			}, -1)
+		}(i)
+	}
+	<-started
+	if got := m.do("other", func() int { return 7 }, -1); got != 7 {
+		t.Fatalf("another key blocked or wrong: %d", got)
+	}
+	close(release)
+	wg.Wait()
+	if runs.Load() != 1 {
+		t.Fatalf("slow key computed %d times, want 1", runs.Load())
+	}
+	for i, r := range results {
+		if r != 42 {
+			t.Fatalf("caller %d got %d", i, r)
+		}
+	}
+}
+
+// A computation that panics never hands a zero value (nil error = "landed")
+// to its waiters.
+func TestMemoPanicFailsClosed(t *testing.T) {
+	var m memo[error]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	waiter := make(chan error, 1)
+	go func() {
+		defer func() { _ = recover() }()
+		m.do("k", func() error {
+			close(started)
+			<-release
+			panic("boom")
+		}, errProofAborted)
+	}()
+	<-started
+	go func() { waiter <- m.do("k", func() error { return nil }, errProofAborted) }()
+	// Give the waiter time to join the in-flight call before it panics.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	if err := <-waiter; err == nil {
+		t.Fatal("waiter of a panicked computation got nil (would read as landed)")
 	}
 }

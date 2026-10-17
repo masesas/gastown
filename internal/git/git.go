@@ -107,31 +107,7 @@ func (g *Git) run(args ...string) (string, error) {
 // runRaw executes a git command and returns stdout byte-exact. Use it for
 // machine-readable output (e.g. -z) where trimming would corrupt the data.
 func (g *Git) runRaw(args ...string) (string, error) {
-	if err := g.guardUnsafeTownRootMutation(args); err != nil {
-		return "", err
-	}
-
-	// If gitDir is set (bare repo), prepend --git-dir flag
-	if g.gitDir != "" {
-		args = append([]string{"--git-dir=" + g.gitDir}, args...)
-	}
-
-	cmd := exec.Command("git", args...)
-	util.SetDetachedProcessGroup(cmd)
-	if g.workDir != "" {
-		cmd.Dir = g.workDir
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return "", g.wrapError(err, stdout.String(), stderr.String(), args)
-	}
-
-	return stdout.String(), nil
+	return g.runCmd(runOptions{}, args...)
 }
 
 // pushTimeout is the maximum time a git push is allowed to run before being
@@ -142,36 +118,8 @@ const pushTimeout = 60 * time.Second
 // runWithTimeout executes a git command with a deadline. If the command does
 // not finish within the timeout, the process is killed and an error is returned.
 func (g *Git) runWithTimeout(timeout time.Duration, args ...string) (_ string, _ error) { //nolint:unparam // string return kept for consistency with Run()
-	if err := g.guardUnsafeTownRootMutation(args); err != nil {
-		return "", err
-	}
-
-	if g.gitDir != "" {
-		args = append([]string{"--git-dir=" + g.gitDir}, args...)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", args...)
-	util.SetDetachedProcessGroup(cmd)
-	if g.workDir != "" {
-		cmd.Dir = g.workDir
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("git %s timed out after %v (remote may be unreachable)", args[0], timeout)
-		}
-		return "", g.wrapError(err, stdout.String(), stderr.String(), args)
-	}
-
-	return strings.TrimSpace(stdout.String()), nil
+	out, err := g.runCmd(runOptions{timeout: timeout}, args...)
+	return strings.TrimSpace(out), err
 }
 
 // runWithEnv executes a git command with additional environment variables.
@@ -182,48 +130,86 @@ func (g *Git) runWithEnv(args []string, extraEnv []string) (_ string, _ error) {
 // runWithEnvAndTimeout executes a git command with extra env vars and an
 // optional timeout. Pass 0 for no timeout.
 func (g *Git) runWithEnvAndTimeout(args []string, extraEnv []string, timeout time.Duration) (_ string, _ error) {
+	out, err := g.runCmd(runOptions{env: extraEnv, timeout: timeout}, args...)
+	return strings.TrimSpace(out), err
+}
+
+// runOptions are the optional knobs of runCmd. The zero value runs git
+// without a deadline, extra environment, stdin or output limit.
+type runOptions struct {
+	timeout   time.Duration // kill git after this long; 0 = no deadline
+	env       []string      // extra environment, appended to os.Environ()
+	stdin     *string       // fed to git's stdin when set
+	maxOutput int           // stdout byte limit; 0 = unlimited
+}
+
+// ErrGitOutputTooLarge is returned (wrapped) when a git command's stdout
+// exceeds runOptions.maxOutput; git is stopped and its output discarded.
+var ErrGitOutputTooLarge = errors.New("git output exceeds the size limit")
+
+// limitedBuffer is a bytes.Buffer that refuses to grow beyond max bytes.
+type limitedBuffer struct {
+	buf      bytes.Buffer
+	max      int
+	exceeded bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.max > 0 && b.buf.Len()+len(p) > b.max {
+		b.exceeded = true
+		return 0, ErrGitOutputTooLarge
+	}
+	return b.buf.Write(p)
+}
+
+// runCmd is the one place gastown executes git: the town-root mutation
+// guard, --git-dir, the detached process group, the working directory and
+// error wrapping apply to every command; opts adds a deadline, environment,
+// stdin and an output limit. It returns stdout byte-exact.
+func (g *Git) runCmd(opts runOptions, args ...string) (string, error) {
 	if err := g.guardUnsafeTownRootMutation(args); err != nil {
 		return "", err
 	}
+	subcommand, _ := gitSubcommand(args)
 
+	// If gitDir is set (bare repo), prepend --git-dir flag
 	if g.gitDir != "" {
 		args = append([]string{"--git-dir=" + g.gitDir}, args...)
 	}
 
-	var cmd *exec.Cmd
-	var cancel context.CancelFunc
-	if timeout > 0 {
-		var ctx context.Context
-		ctx, cancel = context.WithTimeout(context.Background(), timeout)
-		cmd = exec.CommandContext(ctx, "git", args...)
-	} else {
-		cmd = exec.Command("git", args...)
-	}
-	if cancel != nil {
+	ctx := context.Background()
+	if opts.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.timeout)
 		defer cancel()
 	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	util.SetDetachedProcessGroup(cmd)
-
 	if g.workDir != "" {
 		cmd.Dir = g.workDir
 	}
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
+	if len(opts.env) > 0 {
+		cmd.Env = append(os.Environ(), opts.env...)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	if opts.stdin != nil {
+		cmd.Stdin = strings.NewReader(*opts.stdin)
+	}
+
+	stdout := &limitedBuffer{max: opts.maxOutput}
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
+
 	err := cmd.Run()
-	if err != nil {
-		if timeout > 0 {
-			// Check if the context's deadline was exceeded
-			if errors.Is(err, context.DeadlineExceeded) {
-				return "", fmt.Errorf("git %s timed out after %v (remote may be unreachable)", args[0], timeout)
-			}
-		}
-		return "", g.wrapError(err, stdout.String(), stderr.String(), args)
+	switch {
+	case stdout.exceeded:
+		return "", fmt.Errorf("git %s: %w (%d bytes)", subcommand, ErrGitOutputTooLarge, opts.maxOutput)
+	case err != nil && opts.timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "", fmt.Errorf("git %s timed out after %v (remote may be unreachable)", subcommand, opts.timeout)
+	case err != nil:
+		return "", g.wrapError(err, stdout.buf.String(), stderr.String(), args)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.buf.String(), nil
 }
 
 func (g *Git) guardUnsafeTownRootMutation(args []string) error {
