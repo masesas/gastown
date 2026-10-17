@@ -304,3 +304,40 @@ func TestIsCommitNotOnTarget(t *testing.T) {
 		t.Fatal("only a definite not-on-target answer counts")
 	}
 }
+
+// round 4 (B1): an unverified hold explains itself and points to the exit.
+func TestMergeQueue_UnverifiedExplainsAndGuardPointsToExit(t *testing.T) {
+	installMergedMRBDStub(t, pendingMRRows, closedMRRows)
+	idx, _ := New(t.TempDir()).MergeRequestsBySource()
+	q := NewMergeQueue(idx, nil, nil)
+	mrID, rig, reason := q.Unverified("gt-work4")
+	if mrID != "gt-wisp-bare" || rig != "gastown" || !strings.Contains(reason, "no git prover") {
+		t.Fatalf("Unverified = (%q, %q, %q)", mrID, rig, reason)
+	}
+	if mrID, _, _ := q.Unverified("gt-work3"); mrID != "" {
+		t.Fatal("a pending hold is not unverified")
+	}
+	err := q.CheckSubmission("gt-work4", "polecat/x/gt-work4")
+	if err == nil || strings.Contains(err.Error(), "until the MR merges") || !strings.Contains(err.Error(), "--confirm-not-landed") {
+		t.Fatalf("unverified refusal = %v, want the manual exit, not 'until the MR merges'", err)
+	}
+}
+
+// round 4 (B1): a recorded human verdict is proof for the one rule.
+func TestMergeQueueHold_HumanVerdictDecides(t *testing.T) {
+	notLanded := []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\ntarget: main\ncommit_sha: c1\nlanding: not_landed\n"}}
+	landed := []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\ntarget: main\ncommit_sha: c1\nlanding: landed\n"}}
+	if hold, _ := MergeQueueHoldOf(notLanded, nil); hold != HoldNone {
+		t.Fatalf("not_landed verdict: hold = %v, want none", hold)
+	}
+	if hold, _ := MergeQueueHoldOf(landed, nil); hold != HoldLanded {
+		t.Fatalf("landed verdict: hold = %v, want landed", hold)
+	}
+	open := []*Issue{{ID: "mr1", Status: "open", Description: "source_issue: gt-x\nlanding: not_landed\n"}}
+	if hold, _ := MergeQueueHoldOf(open, nil); hold != HoldPending {
+		t.Fatalf("a verdict never overrides an open MR, got %v", hold)
+	}
+	if out := ParseMRFields(&Issue{Description: FormatMRFields(&MRFields{Branch: "b", Landing: LandingLanded, LandingBy: "overseer"})}); out == nil || out.Landing != "landed" || out.LandingBy != "overseer" {
+		t.Fatalf("landing fields do not round-trip: %+v", out)
+	}
+}

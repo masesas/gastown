@@ -28,8 +28,9 @@ import (
 // is fixed.
 type NullAssigneeCheck struct {
 	FixableCheck
-	affected []nullAssigneeRow // reopened by Fix
-	landed   []nullAssigneeRow // closed by Fix: parked beads whose MR landed
+	affected   []nullAssigneeRow // reopened by Fix
+	landed     []nullAssigneeRow // closed by Fix: parked beads whose MR landed
+	unverified []nullAssigneeRow // never fixed: a human verdict is needed
 }
 
 type nullAssigneeRow struct {
@@ -37,7 +38,9 @@ type nullAssigneeRow struct {
 	Title     string
 	UpdatedAt string
 	RigDB     string // Dolt database name (= rig name)
-	MRID      string // landed MR, for beads closed by Fix
+	MRID      string // deciding MR (landed: closed by Fix; unverified: needs a verdict)
+	MRRig     string // rig of the deciding MR (for the exit command)
+	Reason    string // why landing is unverified
 }
 
 // NewNullAssigneeCheck creates a new null-assignee steps check.
@@ -98,7 +101,7 @@ func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
 // closed by Fix, the rest is reopened by Fix. An unreadable merge queue makes
 // nothing fixable (fail closed).
 func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, readQueue func(string) *beads.MergeQueue) *CheckResult {
-	c.affected, c.landed = nil, nil
+	c.affected, c.landed, c.unverified = nil, nil, nil
 	if len(rows) == 0 {
 		return c.okResult()
 	}
@@ -113,13 +116,13 @@ func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, 
 			Category: c.Category(),
 		}
 	}
-	reopen, landed, pending := splitMergeQueueHeld(rows, queue)
-	c.affected, c.landed = reopen, landed
-	if len(reopen) == 0 && len(landed) == 0 {
+	reopen, landed, pending, unverified := splitMergeQueueHeld(rows, queue)
+	c.affected, c.landed, c.unverified = reopen, landed, unverified
+	if len(reopen) == 0 && len(landed) == 0 && len(unverified) == 0 {
 		return c.okResult()
 	}
 
-	details := make([]string, 0, len(reopen)+len(landed)+1)
+	details := make([]string, 0, len(reopen)+len(landed)+len(unverified)+1)
 	for _, row := range reopen {
 		details = append(details, fmt.Sprintf("[%s] %s — %s (updated: %s)",
 			row.RigDB, row.ID, shortenTitle(row.Title, 60), row.UpdatedAt))
@@ -128,19 +131,27 @@ func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, 
 		details = append(details, fmt.Sprintf("[%s] %s — MR %s landed, bead still open: will be closed",
 			row.RigDB, row.ID, row.MRID))
 	}
+	for _, row := range unverified {
+		rig := row.MRRig
+		if rig == "" {
+			rig = row.RigDB
+		}
+		details = append(details, fmt.Sprintf("[%s] %s — UNVERIFIED: MR %s is closed but its landing cannot be decided (%s; updated: %s). Not fixed automatically; an overseer decides: `gt mq reject %s %s --confirm-not-landed` (reopen for rework) or `gt mq post-merge %s %s --confirm-landed` (close)",
+			row.RigDB, row.ID, row.MRID, row.Reason, row.UpdatedAt, rig, row.MRID, rig, row.MRID))
+	}
 	if len(pending) > 0 {
-		details = append(details, fmt.Sprintf("%d more held by the merge queue (awaiting merge) — not touched", len(pending)))
+		details = append(details, fmt.Sprintf("%d more held by a pending MR (awaiting merge) — not touched", len(pending)))
 	}
 
 	return &CheckResult{
 		Name:   c.Name(),
 		Status: StatusWarning,
 		Message: fmt.Sprintf(
-			"%d in_progress bead(s) with NULL assignee to reopen, %d whose MR landed to close",
-			len(reopen), len(landed),
+			"%d in_progress bead(s) with NULL assignee to reopen, %d whose MR landed to close, %d unverified (need an overseer verdict)",
+			len(reopen), len(landed), len(unverified),
 		),
 		Details:  details,
-		FixHint:  "Run 'gt doctor --fix' to reopen them for re-dispatch and close landed work",
+		FixHint:  "Run 'gt doctor --fix' to reopen broken beads and close landed work; unverified beads need the commands listed",
 		Category: c.Category(),
 	}
 }
@@ -155,22 +166,26 @@ func (c *NullAssigneeCheck) okResult() *CheckResult {
 }
 
 // splitMergeQueueHeld sorts rows by their merge-queue hold
-// (beads.MergeQueueHold): none (reopen), landed (close), pending (leave).
-func splitMergeQueueHeld(rows []nullAssigneeRow, queue *beads.MergeQueue) (reopen, landed, pending []nullAssigneeRow) {
+// (beads.MergeQueueHold): none (reopen), landed (close), pending (leave: the
+// MR is still in the queue), unverified (leave, but report: the MR is closed
+// and only a human verdict can decide).
+func splitMergeQueueHeld(rows []nullAssigneeRow, queue *beads.MergeQueue) (reopen, landed, pending, unverified []nullAssigneeRow) {
 	for _, row := range rows {
 		hold, mrID, _ := queue.Hold(row.ID)
 		switch hold {
 		case beads.HoldLanded:
 			row.MRID = mrID
 			landed = append(landed, row)
-		case beads.HoldPending, beads.HoldUnverified:
-			// Waiting for its merge, or landing not decidable: never reopen.
+		case beads.HoldPending:
 			pending = append(pending, row)
+		case beads.HoldUnverified:
+			row.MRID, row.MRRig, row.Reason = queue.Unverified(row.ID)
+			unverified = append(unverified, row)
 		default:
 			reopen = append(reopen, row)
 		}
 	}
-	return reopen, landed, pending
+	return reopen, landed, pending, unverified
 }
 
 // nullAssigneeFixQueryFor resets exactly the given beads (still in_progress

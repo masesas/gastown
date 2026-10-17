@@ -680,6 +680,13 @@ type MRFields struct {
 	CloseReason string // Reason for closing: merged, rejected, conflict, superseded
 	AgentBead   string // Agent bead ID that created this MR (for traceability)
 
+	// Landing is a human verdict on a terminal MR whose landing git could not
+	// decide (beads.HoldUnverified, gt-pd1c.59): "landed" or "not_landed",
+	// recorded by `gt mq post-merge --confirm-landed` / `gt mq reject
+	// --confirm-not-landed`. LandingBy is who recorded it.
+	Landing   string
+	LandingBy string
+
 	// Conflict resolution fields (for priority scoring)
 	RetryCount      int    // Number of conflict-resolution cycles
 	LastConflictSHA string // SHA of main when conflict occurred
@@ -762,6 +769,12 @@ func ParseMRFields(issue *Issue) *MRFields {
 			hasFields = true
 		case "close_reason", "close-reason", "closereason":
 			fields.CloseReason = value
+			hasFields = true
+		case "landing":
+			fields.Landing = value
+			hasFields = true
+		case "landing_by", "landing-by", "landingby":
+			fields.LandingBy = value
 			hasFields = true
 		case "agent_bead", "agent-bead", "agentbead":
 			fields.AgentBead = value
@@ -850,6 +863,12 @@ func FormatMRFields(fields *MRFields) string {
 	if fields.CloseReason != "" {
 		lines = append(lines, "close_reason: "+fields.CloseReason)
 	}
+	if fields.Landing != "" {
+		lines = append(lines, "landing: "+fields.Landing)
+	}
+	if fields.LandingBy != "" {
+		lines = append(lines, "landing_by: "+fields.LandingBy)
+	}
 	if fields.AgentBead != "" {
 		lines = append(lines, "agent_bead: "+fields.AgentBead)
 	}
@@ -911,6 +930,10 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 		"merge-commit":      true,
 		"mergecommit":       true,
 		"close_reason":      true,
+		"landing":           true,
+		"landing_by":        true,
+		"landing-by":        true,
+		"landingby":         true,
 		"close-reason":      true,
 		"closereason":       true,
 		"agent_bead":        true,

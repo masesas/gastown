@@ -169,6 +169,30 @@ func (q *MergeQueue) Hold(issueID string) (MergeQueueHold, string, error) {
 	return hold, mrID, nil
 }
 
+// Unverified explains a HoldUnverified bead: the deciding MR, its rig, and why
+// git cannot decide whether its work landed. Empty mrID when the bead is not
+// held as unverified.
+func (q *MergeQueue) Unverified(issueID string) (mrID, rig, reason string) {
+	hold, id, err := q.Hold(issueID)
+	if err != nil || hold != HoldUnverified {
+		return "", "", ""
+	}
+	for _, mr := range q.MergeRequests(issueID) {
+		if mr.ID != id {
+			continue
+		}
+		var prover MergeProver
+		if fields := ParseMRFields(mr); fields != nil {
+			rig = strings.TrimSpace(fields.Rig)
+			if q.resolve != nil {
+				prover = q.resolve(rig)
+			}
+		}
+		return id, rig, UnverifiedReason(mr, prover)
+	}
+	return id, "", "deciding MR not found"
+}
+
 // MergeRequests returns the MRs (any status) whose source is issueID.
 func (q *MergeQueue) MergeRequests(issueID string) []*Issue {
 	if q == nil {
@@ -202,6 +226,9 @@ func (q *MergeQueue) CheckSubmission(issueID, branch string) error {
 			mrBranch = strings.TrimSpace(fields.Branch)
 		}
 		if mrBranch != branch {
+			if hold == HoldUnverified {
+				return fmt.Errorf("%s is held by the merge queue: MR %s from branch %q is closed but git cannot tell whether its work landed; an overseer must decide with `gt mq reject <rig> %s --confirm-not-landed` or `gt mq post-merge <rig> %s --confirm-landed`", issueID, mr.ID, mrBranch, mr.ID, mr.ID)
+			}
 			return fmt.Errorf("%s is held by the merge queue: MR %s (%s) from branch %q; the refinery owns it until the MR merges or is rejected", issueID, mr.ID, hold, mrBranch)
 		}
 	}

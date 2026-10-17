@@ -256,7 +256,7 @@ reset, reopen or re-dispatch held work:
 | MR pending | held: parked, left for the Refinery |
 | MR landed (merged, or its commit is on the target) | closed |
 | Only MRs closed without landing, proven by git (commit not on the target) | free: reopened for rework |
-| MRs closed, landing not decidable (no prover, no recorded commit, git error) | held (unverified): parked, never reopened |
+| MRs closed, landing not decidable (no prover, no recorded commit, git error) | held (unverified): parked, never reopened; reported by `gt doctor`, decided by an overseer |
 | Merge queue unreadable | fail closed: nothing is reset or dispatched |
 
 The merge queue is always read town-wide (every beads DB): an MR lives in the
@@ -266,6 +266,18 @@ and `gt mq submit` from any other branch are refused; the owner's own branch
 may resubmit (FIX_NEEDED). `gt mq reject` reopens a parked issue, and repeating
 it repeats the release. A parked issue whose MR landed but was closed by hand
 (bare `bd close`) is closed by the witness orphan scan, or by `gt doctor --fix`.
+
+"Not landed" must be definite: git fetched the target and the commit is not
+reachable from it (an absent commit object after the fetch counts). When git
+cannot decide, the issue stays *unverified* and only a human verdict releases
+it: `gt mq reject <rig> <mr> --confirm-not-landed` reopens it for rework,
+`gt mq post-merge <rig> <mr> --confirm-landed` closes it. Both record
+`landing:` on the MR and are refused for agent roles (see `docs/reference.md`).
+
+Known limitation: reachability compares the commit recorded at submit. A
+rebase or squash merge rewrites that commit, so such an MR closed by a bare
+`bd close` (without `merge_commit`) reads as definitely not landed and its
+issue is reopened.
 
 ## What "Recycle" Means
 

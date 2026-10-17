@@ -690,10 +690,22 @@ gt mq submit                 # Submit current branch to merge queue
 gt mq status <id>            # Show detailed merge request status
 gt mq retry <id>             # Retry a failed merge request
 gt mq reject <id>            # Reject a merge request
+gt mq reject <rig> <mr> --confirm-not-landed  # Overseer verdict: closed MR did not land (releases an unverified hold)
+gt mq post-merge <rig> <mr> --confirm-landed  # Overseer verdict: closed MR landed (closes its issue)
 gt mq check-scope <rig> <mr-id>  # Verify the MR only changes merge_queue.allowed_paths
 gt mq check-scope --range <old-sha> <new-sha> [--rig <rig>]  # Same check on the two-dot diff old..new
 gt hooks pre-push <remote> [<url>]  # Git pre-push guard (stdin = git pre-push lines); run by the managed rig hook
 ```
+
+The two `--confirm-*` flags are the only manual exit for an issue held as
+*unverified* by the merge queue: its MR is closed but git cannot decide whether
+the work landed (no git prover for the rig, no `commit_sha`/`target` on the
+MR, or a git error other than "commit not on the target"). `gt doctor`
+(`null-assignee-steps`) lists such issues with the MR, the reason and both
+commands. The verdict is written on the MR (`landing: landed|not_landed`,
+`landing_by:`) and then the normal rule acts on it. It is refused for agent
+roles (polecat, refinery, witness, deacon, mayor) and for MRs whose landing is
+already decided; a human shell or crew workspace records it.
 
 #### Integration Branch Commands
 

@@ -2182,6 +2182,16 @@ func (g *Git) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit s
 	if _, err := g.run("fetch", "--no-tags", fetchTarget, "refs/heads/"+branch); err != nil {
 		return fmt.Errorf("verified_push_failed: unable to fetch %s/%s for ancestry check: %w", remote, branch, err)
 	}
+	// The branch was fetched, so every commit reachable from it is now in the
+	// clone: an absent commit object is a definite "not on the branch"
+	// (gt-pd1c.59). Only a failed check stays uncertain.
+	exists, err := g.commitObjectExists(commit)
+	if err != nil {
+		return fmt.Errorf("verified_push_failed: unable to look up commit %s: %w", shortSHA(commit), err)
+	}
+	if !exists {
+		return &CommitNotOnBranchError{msg: fmt.Sprintf("verified_push_failed: commit %s not on %s/%s (commit absent after fetching the branch, remote tip %s)", shortSHA(commit), remote, branch, shortSHA(tip))}
+	}
 	reachable, err := g.IsAncestor(commit, "FETCH_HEAD")
 	if err != nil {
 		return fmt.Errorf("verified_push_failed: unable to verify commit %s on %s/%s: %w", shortSHA(commit), remote, branch, err)
@@ -2302,13 +2312,44 @@ func (g *Git) Rev(ref string) (string, error) {
 func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
 	_, err := g.run("merge-base", "--is-ancestor", ancestor, descendant)
 	if err != nil {
-		// Exit code 1 means not an ancestor, not an error
-		if strings.Contains(err.Error(), "exit status 1") {
+		// Exit code 1 means not an ancestor, not an error. Any other code
+		// (128: unknown commit, broken repo) is an error.
+		if isNotAncestorExit(err) {
 			return false, nil
 		}
 		return false, err
 	}
 	return true, nil
+}
+
+// gitExitCode returns the exit code of a failed git process, if err carries one.
+func gitExitCode(err error) (int, bool) {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
+}
+
+// isNotAncestorExit reports whether `git merge-base --is-ancestor` exited 1.
+func isNotAncestorExit(err error) bool {
+	code, ok := gitExitCode(err)
+	return ok && code == 1
+}
+
+// commitObjectExists reports whether the commit object is in this clone.
+// `git cat-file -e <full-sha>` exits 0 when the object exists and 1 when it
+// does not; anything else (128: invalid or ambiguous name, broken repo) is an
+// error.
+func (g *Git) commitObjectExists(commit string) (bool, error) {
+	_, err := g.run("cat-file", "-e", commit)
+	if err == nil {
+		return true, nil
+	}
+	if code, ok := gitExitCode(err); ok && code == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // MergeBase returns the best common ancestor of a and b (git merge-base).

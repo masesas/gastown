@@ -37,7 +37,7 @@ var doctorTestIndex = beads.MergeQueueIndex{
 // landed one (MR closed by hand) is closed by the fix; the rest is reopened.
 func TestSplitMergeQueueHeld(t *testing.T) {
 	rows := []nullAssigneeRow{{ID: "gt-parked", RigDB: "gastown"}, {ID: "gt-broken", RigDB: "gastown"}, {ID: "gt-landed", RigDB: "gastown"}}
-	reopen, landed, pending := splitMergeQueueHeld(rows, beads.NewMergeQueue(doctorTestIndex, nil, notLandedResolver))
+	reopen, landed, pending, _ := splitMergeQueueHeld(rows, beads.NewMergeQueue(doctorTestIndex, nil, notLandedResolver))
 	if len(reopen) != 1 || reopen[0].ID != "gt-broken" {
 		t.Fatalf("reopen = %+v, want only gt-broken (rejected MR, needs re-dispatch)", reopen)
 	}
@@ -109,11 +109,31 @@ func TestNullAssigneeCheck_FixRefusesInvalidLandedID(t *testing.T) {
 	}
 }
 
-// round 3 #1: a bead whose MR landing cannot be decided is never reopened.
-func TestSplitMergeQueueHeld_UnverifiedIsNotReopened(t *testing.T) {
-	idx := beads.MergeQueueIndex{"gt-bare": {{ID: "gt-wisp-mr4", Status: "closed", Description: "source_issue: gt-bare\ntarget: main\ncommit_sha: c4\n"}}}
-	reopen, landed, pending := splitMergeQueueHeld([]nullAssigneeRow{{ID: "gt-bare"}}, beads.NewMergeQueue(idx, nil, nil))
-	if len(reopen) != 0 || len(landed) != 0 || len(pending) != 1 {
-		t.Fatalf("reopen=%v landed=%v pending=%v, want it left alone", reopen, landed, pending)
+// round 4 (B1): a bead whose MR landing cannot be decided is never reopened,
+// and it is reported on its own, with the MR, the reason and the exit.
+func TestNullAssigneeCheck_ReportsUnverifiedSeparately(t *testing.T) {
+	idx := beads.MergeQueueIndex{"gt-bare": {{ID: "gt-wisp-mr4", Status: "closed", Description: "source_issue: gt-bare\nrig: gastown\ntarget: main\ncommit_sha: c4\n"}}}
+	reopen, landed, pending, unverified := splitMergeQueueHeld([]nullAssigneeRow{{ID: "gt-bare"}}, beads.NewMergeQueue(idx, nil, nil))
+	if len(reopen) != 0 || len(landed) != 0 || len(pending) != 0 || len(unverified) != 1 {
+		t.Fatalf("reopen=%v landed=%v pending=%v unverified=%v, want one unverified", reopen, landed, pending, unverified)
+	}
+	c := NewNullAssigneeCheck()
+	res := c.classify(&CheckContext{TownRoot: t.TempDir()},
+		[]nullAssigneeRow{{ID: "gt-bare", RigDB: "gastown", UpdatedAt: "2026-10-01"}},
+		func(string) *beads.MergeQueue { return beads.NewMergeQueue(idx, nil, nil) })
+	if res.Status != StatusWarning || !strings.Contains(res.Message, "1 unverified") {
+		t.Fatalf("result = %+v, want a warning naming the unverified bead", res)
+	}
+	d := strings.Join(res.Details, "\n")
+	for _, want := range []string{"gt-bare", "gt-wisp-mr4", "UNVERIFIED", "no git prover", "2026-10-01", "gt mq reject gastown gt-wisp-mr4 --confirm-not-landed", "gt mq post-merge gastown gt-wisp-mr4 --confirm-landed"} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("details lack %q:\n%s", want, d)
+		}
+	}
+	if strings.Contains(d, "awaiting merge") {
+		t.Fatalf("an unverified MR is closed, not awaiting merge:\n%s", d)
+	}
+	if len(c.affected) != 0 || len(c.landed) != 0 {
+		t.Fatal("unverified beads must not be fixed automatically")
 	}
 }

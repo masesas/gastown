@@ -183,6 +183,37 @@ func MRFieldsLanded(status IssueStatus, fields *MRFields, prover MergeProver) bo
 	return mrLandingVerdict(status, fields, prover) == verdictLanded
 }
 
+// Human landing verdicts (MRFields.Landing).
+const (
+	LandingLanded    = "landed"
+	LandingNotLanded = "not_landed"
+)
+
+// UnverifiedReason explains why git cannot decide whether a terminal MR's work
+// landed, or "" when it can (structured signal, human verdict, or a definite
+// git answer). prover may be nil.
+func UnverifiedReason(mr *Issue, prover MergeProver) string {
+	if mr == nil {
+		return "missing MR"
+	}
+	fields := ParseMRFields(mr)
+	if fields == nil {
+		return "MR has no merge-request fields"
+	}
+	status := IssueStatus(strings.TrimSpace(mr.Status))
+	if mrLandingVerdict(status, fields, prover) != verdictUnknown {
+		return ""
+	}
+	switch {
+	case strings.TrimSpace(fields.CommitSHA) == "" || strings.TrimSpace(fields.Target) == "":
+		return "no commit_sha or target recorded on the MR"
+	case prover == nil:
+		return "no git prover for rig " + strings.TrimSpace(fields.Rig)
+	default:
+		return "git could not verify the commit against the target"
+	}
+}
+
 // landingVerdict is the three-valued answer to "did this MR's work land?".
 // Only a definite verdictNotLanded lets released work be dispatched again.
 type landingVerdict int
@@ -213,6 +244,15 @@ func mrLandingVerdict(status IssueStatus, fields *MRFields, prover MergeProver) 
 	if status.IsTerminal() && (strings.EqualFold(strings.TrimSpace(fields.CloseReason), "merged") ||
 		strings.TrimSpace(fields.MergeCommit) != "") {
 		return verdictLanded
+	}
+	// Human verdict on an MR git could not decide (RecordLandingVerdict).
+	if status.IsTerminal() {
+		switch strings.TrimSpace(fields.Landing) {
+		case LandingLanded:
+			return verdictLanded
+		case LandingNotLanded:
+			return verdictNotLanded
+		}
 	}
 	target := strings.TrimSpace(fields.Target)
 	commit := strings.TrimSpace(fields.CommitSHA)
