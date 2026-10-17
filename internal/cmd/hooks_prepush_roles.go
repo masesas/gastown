@@ -47,7 +47,7 @@ func (g *prePushGuard) checkPolecatUpdate(u prePushUpdate, branch string) error 
 		rig:    rigNameOf(r),
 		branch: branch,
 		tip:    u.RemoteSHA,
-		tips:   g.tipResolver(g.defaultBranches(r, true)),
+		tips:   g.tipResolver(g.coverageDefaults(r)),
 		git:    g.git,
 		queue:  g.loadQueue,
 		owner:  !deletion && c.ownsPolecatBranch(branch),
@@ -82,7 +82,7 @@ func (g *prePushGuard) fastForward(u prePushUpdate) bool {
 // target only on a rig whose merge queue is disabled (gt done, direct
 // strategy). Any agent may create an integration/* branch that carries no new
 // commit (mergeproof.CoveredByTargets), as gt mq integration create does.
-func (g *prePushGuard) checkTargetRole(u prePushUpdate, branch string, r *prePushRig, defaults []string) error {
+func (g *prePushGuard) checkTargetRole(u prePushUpdate, branch string, r *prePushRig) error {
 	c := gtCallerFrom(g.getenv)
 	if c.exempt() || c.role == RoleRefinery {
 		return nil
@@ -91,7 +91,7 @@ func (g *prePushGuard) checkTargetRole(u prePushUpdate, branch string, r *prePus
 		return nil
 	}
 	if u.RemoteSHA == prePushZeroSHA && strings.HasPrefix(branch, integrationBranchPrefix) &&
-		mergeproof.CoveredByTargets(g.git, u.LocalSHA, g.tipResolver(defaults)) {
+		mergeproof.CoveredByTargets(g.git, u.LocalSHA, g.tipResolver(g.coverageDefaults(r))) {
 		return nil
 	}
 	return fmt.Errorf("BLOCKED: push to %s refused: %s may not update the default branch or integration/*. "+

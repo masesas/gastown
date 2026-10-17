@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mergeproof"
@@ -657,6 +658,10 @@ func verifyMQPostMergeProof(rigGit mqPostMergeGit, mr *refinery.MergeRequest, de
 	// The same target check as the landing provers (gt-pd1c.78 G-M7): a
 	// target that is not the default branch or integration/* proves nothing.
 	if err := mergeproof.UntrustedMergeTarget(target, defaultBranch); err != nil {
+		if strings.TrimSpace(defaultBranch) == "" {
+			return fmt.Errorf("merge proof failed for MR %s: %w (the rig's default branch is unknown: set "+
+				"default_branch in <rig>/config.json, or make the remote advertise HEAD)", mr.ID, err)
+		}
 		return fmt.Errorf("merge proof failed for MR %s: %w", mr.ID, err)
 	}
 	if source := strings.TrimSpace(mr.Branch); source != "" && source == target {
@@ -682,6 +687,11 @@ func cleanupMQPostMergeBranch(rigPath string, rigGit mqPostMergeGit, mr *refiner
 	if cleanup.Branch == "" {
 		cleanup.NoBranch = true
 		return cleanup, nil
+	}
+	// The branch comes from a bead field: only a plain branch name is handed
+	// to git (gt-pd1c.78 N3).
+	if !beads.IsSafeRefName(cleanup.Branch) {
+		return cleanup, fmt.Errorf("remote branch delete: MR branch %q is not a plain branch name", cleanup.Branch)
 	}
 	if skipBranchDelete {
 		cleanup.Skipped = true

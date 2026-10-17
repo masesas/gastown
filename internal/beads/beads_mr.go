@@ -379,8 +379,14 @@ type ancestorChecker interface {
 	IsAncestor(ancestor, descendant string) (bool, error)
 }
 
+// sourcelessKey groups MRs without a source_issue in the merge queue index.
+// No bead ID trims to it (it starts with a NUL byte), so no bead's hold sees
+// these MRs; the per-branch lookups do.
+const sourcelessKey = "\x00sourceless"
+
 // MergeRequestsBySource lists pending and closed MRs of this DB grouped by
-// source issue. Any query error is returned so callers can fail closed.
+// source issue (MRs without one under sourcelessKey). Any query error is
+// returned so callers can fail closed.
 func (b *Beads) MergeRequestsBySource() (map[string][]*Issue, error) {
 	pending, err := b.ListPendingMergeRequests()
 	if err != nil {
@@ -392,10 +398,17 @@ func (b *Beads) MergeRequestsBySource() (map[string][]*Issue, error) {
 	}
 	bySource := make(map[string][]*Issue)
 	for _, mr := range append(pending, closed...) {
-		if fields := ParseMRFields(mr); fields != nil && strings.TrimSpace(fields.SourceIssue) != "" {
-			src := strings.TrimSpace(fields.SourceIssue)
-			bySource[src] = append(bySource[src], mr)
+		fields := ParseMRFields(mr)
+		if fields == nil {
+			continue
 		}
+		src := strings.TrimSpace(fields.SourceIssue)
+		if src == "" {
+			// No source: never a bead's hold, but still an MR of its branch
+			// (MergeQueue.TipDisposition, gt-pd1c.78 N2).
+			src = sourcelessKey
+		}
+		bySource[src] = append(bySource[src], mr)
 	}
 	return bySource, nil
 }

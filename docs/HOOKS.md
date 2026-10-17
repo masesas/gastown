@@ -261,7 +261,7 @@ treat crew as an agent, as before.
 | Push | Agent | Human |
 |---|---|---|
 | Push to `polecat/*`, other branches, tags | allowed, nothing checked | allowed |
-| Delete `polecat/*` (agents other than crew), or rewrite it (not a fast-forward) when the agent is not the refinery. The owning polecat's rewrite follows the same rule, but may also discard a tip that no MR recorded (work in progress, a rebase before `gt done`) or whose MR is still open (the rebase that REWORK_REQUEST / MERGE_FAILED ask for); a tip whose MR was decided needs abandon first (tahap 2, S-M2) | the old remote tip is checked; allowed only when discarding it loses no work (gt-pd1c.78): the tip is preserved (ancestor, merge-tree no-op or every patch present, the `gt polecat prune` rule) on the remote default branch or a remote `integration/*` branch; or the tip is **archived** (an `refs/gt/archive/*` ref on the push remote points at it, written by `gt polecat abandon`); or the MR whose `commit_sha` is exactly the tip landed **by git proof** (a landed verdict resting only on `close_reason`/`merge_commit` or a human `landing:` verdict is not trusted for discarding work). Everything else is refused with the one exit of its class (`MergeQueue.TipDisposition`): open MR (the refinery owns the branch), MR of the tip closed as `rejected`/`superseded` (abandon it: `gt polecat abandon <rig>/<branch> --reason ...`), closed for `conflict` or without an official verdict, or no MR for the tip (rework/resubmit; the mayor decides, the witness reports it), landing git cannot decide (overseer verdict), unreadable merge queue. "No open MR and nothing landed" no longer frees a branch (tahap 2). The git proofs run first, so the refinery and `gt mq post-merge` / `gt polecat prune --remote` (which delete only landed tips) never read beads | allowed |
+| Delete `polecat/*` (agents other than crew), or rewrite it (not a fast-forward) when the agent is not the refinery. The owning polecat's rewrite follows the same rule, but may also discard a tip that no MR recorded (work in progress, a rebase before `gt done`) or whose own MR is still open (the rebase that REWORK_REQUEST / MERGE_FAILED ask for). This is per tip: a tip whose MR was decided needs abandon first even while another MR of the branch is open (tahap 2, S-M2, N2). Anyone else is refused while any MR from the branch is open, and abandon too | the old remote tip is checked; allowed only when discarding it loses no work (gt-pd1c.78): the tip is preserved (ancestor, merge-tree no-op or every patch present, the `gt polecat prune` rule) on the remote default branch or a remote `integration/*` branch; or the tip is **archived** (an `refs/gt/archive/*` ref on the push remote points at it, written by `gt polecat abandon`); or the MR whose `commit_sha` is exactly the tip landed **by git proof** (a landed verdict resting only on `close_reason`/`merge_commit` or a human `landing:` verdict is not trusted for discarding work). Everything else is refused with the one exit of its class (`MergeQueue.TipDisposition`): open MR (the refinery owns the branch), MR of the tip closed as `rejected`/`superseded` (abandon it: `gt polecat abandon <rig>/<branch> --reason ...`), closed for `conflict` or without an official verdict, or no MR for the tip (rework/resubmit; the mayor decides, the witness reports it), landing git cannot decide (overseer verdict), unreadable merge queue. "No open MR and nothing landed" no longer frees a branch (tahap 2). The git proofs run first, so the refinery and `gt mq post-merge` / `gt polecat prune --remote` (which delete only landed tips) never read beads | allowed |
 | Create, delete or rewrite an archive ref `refs/gt/archive/<polecat-branch>/<unix>-<sha>` (agents other than crew) | delete and rewrite refused (pruning archives is for a human or crew); create allowed only in `gt polecat abandon`'s shape (the stamp names the pushed commit) and only for a tip whose MR was closed as `rejected` or `superseded` (`TipDisposition.Abandonable`); an unreadable merge queue refuses | allowed |
 | Update the default branch or `integration/*` by an agent other than the refinery or crew (witness, mayor, deacon, dog, boot, polecat, unknown role) | refused. A polecat may push there only when the rig's `merge_queue.enabled` is `false` (`gt done`, direct convoy strategy); any agent may create an `integration/*` branch whose tip is already on a remote target (`gt mq integration create`). The refinery and crew are unchanged | allowed |
 | Default branch or `integration/*` from a repository that runs the managed hook but whose rig cannot be detected | refused (fail closed) | checked as below, without rig settings |
@@ -308,11 +308,22 @@ sha all zeros) is never a land; it is still scope-checked.
   `refs/heads/integration/x` (full name `refs/heads/refs/heads/integration/x`)
   is not an integration branch, and `refs/heads/x/refs/gt/archive/...` is not
   an archive (tahap 2, S-H1).
-- The default branch the landing provers and `gt mq post-merge` trust is the
-  rig's configured `default_branch`; only when that is unset, the branch the
-  remote's own HEAD names (`ls-remote --symref`), never the local
-  `refs/remotes/origin/HEAD`, which any agent in the shared repository can
-  repoint (S-M1).
+- The default branch the landing provers, `gt mq post-merge`, `gt polecat
+  prune --remote` and the pre-push guard trust is the rig's configured
+  `default_branch`; only when that is unset, the branch the push remote's own
+  HEAD names (`ls-remote --symref` on the remote or URL being pushed to),
+  never the local `refs/remotes/origin/HEAD`, which any agent in the shared
+  repository can repoint (S-M1, N1). In the pre-push guard (Go and the bash
+  fallback) an unknown default fails closed: no default branch proves work
+  covered, and `main`, `master` and the remote's HEAD branch are all
+  protected as the default branch for target pushes and land checks. A
+  configured `default_branch` with characters outside letters, digits, `.`,
+  `_`, `-` and `/` (e.g. `+`, `@`) is ignored with a warning.
+- Owner rewrites read the merge queue: when beads (bd) cannot be read, a
+  polecat's rebase of its own branch is refused until it can (fail closed);
+  the bash fallback refuses it always.
+- MRs without a `source_issue` are no bead's hold, but they count for their
+  branch (the per-tip rule and "an MR from the branch is open").
 - Time-of-check/time-of-use: the guard checks the remote tip it reads at push
   time, but a raw `git push --delete` carries no lease: if the branch moves
   between the check and git's update (another push lands), the newer tip is

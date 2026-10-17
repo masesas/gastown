@@ -2,10 +2,12 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // rigBranchName is the shape of a configured default branch: '/'-separated
@@ -31,8 +33,28 @@ func RigDefaultBranch(rigPath string) string {
 		return ""
 	}
 	b := strings.TrimSpace(cfg.DefaultBranch)
+	if b == "" {
+		return ""
+	}
 	if !rigBranchName.MatchString(b) || strings.Contains(b, "..") {
+		warnRejectedDefaultBranch(rigPath, b)
 		return ""
 	}
 	return b
+}
+
+// rejectedDefaultBranchWarned dedups the warning per rig and value.
+var rejectedDefaultBranchWarned sync.Map
+
+// warnRejectedDefaultBranch tells the operator once that a configured
+// default_branch was ignored (names with characters such as '+' or '@' are
+// valid git branch names but are not accepted here): the rig then falls back
+// to the remote's HEAD or the guard's main/master rules.
+func warnRejectedDefaultBranch(rigPath, value string) {
+	key := rigPath + "\x00" + value
+	if _, seen := rejectedDefaultBranchWarned.LoadOrStore(key, true); seen {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %s: default_branch %q is not accepted (letters, digits, '.', '_', '-', '/' only); ignoring it\n",
+		filepath.Join(rigPath, "config.json"), value)
 }

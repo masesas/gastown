@@ -18,19 +18,27 @@
 # Local hooks can be skipped by the pusher; protect the real remote with
 # branch protection (docs/HOOKS.md, "Rig pre-push guard").
 
-# Detect the rig's default branch dynamically.
-# Fallback chain matches Go implementation (git.RemoteDefaultBranch):
-# 1. origin/HEAD symref
-# 2. origin/master (if it exists)
-# 3. origin/main (final fallback)
-default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#refs/remotes/origin/##')
-if [[ -z "$default_branch" ]]; then
-  if git rev-parse --verify origin/master &>/dev/null; then
-    default_branch=master
-  else
-    default_branch=main
-  fi
+# The default branch is the one the push remote's own HEAD names
+# (ls-remote --symref on the remote or URL being pushed to), never the local
+# refs/remotes/origin/HEAD, which anyone with write access to this repository
+# can repoint (gt-pd1c.78 N1, as the Go guard's trustedDefault). When the
+# remote names none, main and master are both treated as the default branch,
+# so an unknown default never weakens a rule (fail closed).
+push_remote="${2:-${1:-origin}}"
+default_branch=""
+if [[ "$push_remote" != -* ]]; then
+  default_branch=$(git ls-remote --symref -- "$push_remote" HEAD 2>/dev/null |
+    awk '$1 == "ref:" && $3 == "HEAD" && $2 ~ /^refs\/heads\// { sub(/^refs\/heads\//, "", $2); print $2; exit }')
 fi
+# is_default: the branch is (treated as) the default branch.
+is_default() {
+  if [[ -n "$default_branch" ]]; then
+    [[ "$1" == "$default_branch" ]]
+  else
+    [[ "$1" == main || "$1" == master ]]
+  fi
+}
+default_label="${default_branch:-main/master}"
 
 # Same identity variables as the Go guard (agentSessionEnvVars).
 is_agent=0
@@ -134,7 +142,6 @@ fi
 # refs whose full name starts with refs/gt/archive/ count (ls-remote matches
 # name tails, so refs/heads/x/refs/gt/archive/... is listed too). An
 # unreadable remote is "not archived" (fail closed).
-push_remote="${2:-${1:-origin}}"
 tip_archived() {
   local sha="$1" refs
   [[ -n "$sha" && "$push_remote" != -* ]] || return 1
@@ -188,10 +195,13 @@ while read local_ref local_sha remote_ref remote_sha; do
   fi
 
   case "$branch" in
-    "${default_branch}"|beads-sync|polecat/*|integration/*)
+    beads-sync|polecat/*|integration/*)
       # Allowed branches
       ;;
     *)
+      if is_default "$branch"; then
+        continue # the default branch is allowed
+      fi
       # Allow feature branches when contributing to upstream (fork workflow).
       # If an 'upstream' remote exists, this is a contribution setup where
       # feature branches are needed for PRs. See: #848
@@ -201,7 +211,7 @@ while read local_ref local_sha remote_ref remote_sha; do
         echo "Blocked push to: $branch"
         echo ""
         echo "Allowed branches:"
-        echo "  ${default_branch}        - Crew workers push here directly"
+        echo "  ${default_label}        - Crew workers push here directly"
         echo "  polecat/*   - Polecat working branches"
         echo "  integration/* - Integration branches"
         echo "  beads-sync  - Beads synchronization"
@@ -239,6 +249,11 @@ while read local_ref local_sha remote_ref remote_sha; do
     exit 1
   fi
   branch="${remote_ref#refs/heads/}"
+  # Merge targets: the default branch (is_default) and integration/*.
+  is_target=0
+  if is_default "$branch" || [[ "$branch" == integration/* ]]; then
+    is_target=1
+  fi
   # Without gt the merge queue cannot be read, so the polecat branch deletion
   # rule cannot be proven: agents other than crew may not delete polecat/*
   # unless its tip is archived (refs/gt/archive/*) on the remote.
@@ -267,7 +282,7 @@ while read local_ref local_sha remote_ref remote_sha; do
   # rig's merge-queue setting cannot be read, so a polecat's direct landing is
   # refused too.
   if [[ "$is_exempt" == "0" && "$caller_role" != "refinery" && "$local_sha" != "$zero" && \
-        ( "$branch" == "$default_branch" || "$branch" == integration/* ) ]]; then
+        "$is_target" == "1" ]]; then
     echo "BLOCKED: push to $branch refused: agent role '${caller_role}' may not update the default branch"
     echo "or integration/* (no gt with 'hooks pre-push' on PATH). Only the refinery lands work there;"
     echo "crew and humans push directly."
@@ -276,21 +291,21 @@ while read local_ref local_sha remote_ref remote_sha; do
   # Agents may not delete merge targets here: deleting integration/x first
   # would hide a later land from the check below.
   if [[ "$is_agent" == "1" && "$local_sha" == "$zero" && \
-        ( "$branch" == "$default_branch" || "$branch" == integration/* ) ]]; then
+        "$is_target" == "1" ]]; then
     echo "BLOCKED: agents may not delete $branch (no gt with 'hooks pre-push' on PATH)."
     exit 1
   fi
   # Agents may not rewrite or rewind merge targets: rewinding integration/x
   # onto the default branch would hide its old tip from the land check.
   if [[ "$is_agent" == "1" && "$local_sha" != "$zero" && "$remote_sha" != "$zero" && \
-        ( "$branch" == "$default_branch" || "$branch" == integration/* ) ]]; then
+        "$is_target" == "1" ]]; then
     if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
       echo "BLOCKED: push to $branch is not a fast-forward (or the remote tip is unknown locally; fetch first)."
       echo "Agents may not rewrite or rewind merge target branches."
       exit 1
     fi
   fi
-  [[ "$branch" == "$default_branch" ]] || continue
+  is_default "$branch" || continue
   if [[ "$is_agent" == "0" && "$GT_INTEGRATION_LAND" == "1" ]]; then
     continue
   fi
@@ -302,9 +317,9 @@ while read local_ref local_sha remote_ref remote_sha; do
   # local tracking refs that may linger after branch deletion.
   # Fail closed: if ls-remote fails (network error), block the push rather than
   # silently allowing unverified integration branch content through.
-  integration_refs=$(git ls-remote --quiet origin "refs/heads/integration/*" 2>&1) || {
+  integration_refs=$(git ls-remote --quiet -- "$push_remote" "refs/heads/integration/*" 2>&1) || {
     echo "WARNING: Cannot verify integration branches (remote unreachable)."
-    echo "Push to $default_branch blocked. Retry when network is available."
+    echo "Push to $branch blocked. Retry when network is available."
     if [[ "$is_agent" == "0" ]]; then
       echo "For an intentional land, GT_INTEGRATION_LAND=1 skips this check."
     fi
@@ -316,7 +331,7 @@ while read local_ref local_sha remote_ref remote_sha; do
   for ref in $(echo "$integration_refs" | awk '$2 ~ /^refs\/heads\/integration\// {print $1}'); do
     if git merge-base --is-ancestor "$ref" "$local_sha" 2>/dev/null && \
        ! git merge-base --is-ancestor "$ref" "$remote_sha" 2>/dev/null; then
-      echo "BLOCKED: Push to $default_branch introduces integration branch content."
+      echo "BLOCKED: Push to $branch introduces integration branch content."
       echo ""
       if [[ "$is_agent" == "1" ]]; then
         echo "Agents may not land integration branches from this hook."

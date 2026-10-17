@@ -386,6 +386,34 @@ git -C "$TMPDIR/remote.git" update-ref "refs/heads/integration/real" "$(get_sha 
 assert_block "A real integration branch is still a land" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha"
 cleanup
 
+# Test 17 (gt-pd1c.78 N1): the fallback never trusts the local origin/HEAD.
+echo "Test 17: Fallback ignores a repointed local origin/HEAD"
+setup_repos
+cd "$TMPDIR/local"
+nogt="$TMPDIR/nogt-bin"
+mkdir -p "$nogt"
+for tool in git sed awk cat; do
+  ln -s "$(command -v "$tool")" "$nogt/$tool"
+done
+git checkout -b integration/epic-17 >/dev/null 2>&1
+echo "epic 17" >> file.txt
+git add file.txt && git commit -m "epic 17" >/dev/null 2>&1
+git -C "$TMPDIR/remote.git" update-ref refs/heads/integration/epic-17 "$(get_sha HEAD)" 2>/dev/null || git push origin integration/epic-17 >/dev/null 2>&1
+git checkout "$DEFAULT_BRANCH" >/dev/null 2>&1
+remote_sha=$(get_sha HEAD)
+git merge --no-ff integration/epic-17 -m "land 17" >/dev/null 2>&1
+local_sha=$(get_sha HEAD)
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/zzz
+# With an upstream remote any branch name is allowed, so only the default
+# branch detection keeps main in the land check.
+git remote add upstream "$TMPDIR/remote.git" >/dev/null 2>&1
+assert_block "Land to the default branch still checked with origin/HEAD -> zzz" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha"
+GT_ROLE=gastown/witness assert_block "Witness push to the default branch still refused with origin/HEAD -> zzz" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha"
+# Remote HEAD unknown: main and master are both protected.
+git -C "$TMPDIR/remote.git" symbolic-ref HEAD refs/heads/nonexistent
+GT_ROLE=gastown/witness assert_block "Witness push to main refused when the remote names no HEAD" run_hook_nogt "refs/heads/$DEFAULT_BRANCH" "$local_sha" "refs/heads/$DEFAULT_BRANCH" "$remote_sha"
+cleanup
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [[ $FAIL -gt 0 ]]; then

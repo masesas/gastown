@@ -2136,7 +2136,7 @@ func (g *Git) RemoteHeadBranch(remote string) (string, error) {
 // NOTE: For named remotes with a separate pushurl, this checks the fetch URL.
 // Use PushRemoteBranchExists to verify branches that were pushed.
 func (g *Git) RemoteBranchExists(remote, branch string) (bool, error) {
-	out, err := g.run("ls-remote", "--heads", remote, branch)
+	out, err := g.run("ls-remote", "--heads", "--", remote, branch)
 	if err != nil {
 		return false, err
 	}
@@ -2146,7 +2146,7 @@ func (g *Git) RemoteBranchExists(remote, branch string) (bool, error) {
 // RemoteBranchTip returns the SHA at refs/heads/<branch> on the remote.
 // An empty SHA with nil error means the branch is missing.
 func (g *Git) RemoteBranchTip(remote, branch string) (string, error) {
-	out, err := g.run("ls-remote", "--heads", remote, branch)
+	out, err := g.run("ls-remote", "--heads", "--", remote, branch)
 	if err != nil {
 		return "", err
 	}
@@ -2163,7 +2163,7 @@ func (g *Git) PushRemoteBranchExists(remote, branch string) (bool, error) {
 	if pushTarget == remote {
 		return g.RemoteBranchExists(remote, branch)
 	}
-	out, err := g.run("ls-remote", "--heads", pushTarget, branch)
+	out, err := g.run("ls-remote", "--heads", "--", pushTarget, branch)
 	if err != nil {
 		return false, err
 	}

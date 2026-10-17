@@ -14,8 +14,8 @@ import (
 // classify one tip of the branch.
 //
 // An unread (or nil) queue and an empty branch are errors, so callers fail
-// closed. MRs without a source_issue are not in the index (TownMergeQueueIndex)
-// and therefore not seen here.
+// closed. MRs without a source_issue are indexed under sourcelessKey, so they
+// are seen here too.
 func (q *MergeQueue) branchHold(branch string) (HoldDetail, error) {
 	if err := q.Err(); err != nil {
 		return HoldDetail{Hold: HoldNone}, err
@@ -68,7 +68,7 @@ const (
 type TipClass string
 
 const (
-	// TipOpen: an MR from the branch is open; the refinery owns the branch.
+	// TipOpen: an MR whose commit is this tip is open (the refinery owns it).
 	TipOpen TipClass = "open"
 	// TipLanded: an MR whose commit is exactly the tip landed.
 	TipLanded TipClass = "landed"
@@ -104,52 +104,50 @@ type TipDisposition struct {
 }
 
 // Abandonable reports whether the tip may be abandoned: its MR was closed
-// with the official verdict rejected or superseded.
+// with the official verdict rejected or superseded, and no MR from the
+// branch is open (the refinery would lose the branch it is merging).
 func (d TipDisposition) Abandonable() bool {
-	return d.Class == TipRejected || d.Class == TipSuperseded
+	return (d.Class == TipRejected || d.Class == TipSuperseded) && !d.BranchOpen()
 }
 
 // tipVerdictRank orders the verdicts of a tip's MRs; the strictest (highest)
 // decides, so one conflict or unofficial close among them refuses abandon.
 var tipVerdictRank = map[TipClass]int{TipSuperseded: 1, TipRejected: 2, TipNoVerdict: 3, TipConflict: 4}
 
-// TipDisposition classifies the tip of branch with the one predicate
-// (branchHold for the branch, mergeQueueHoldDetail for the MRs that recorded
-// exactly this commit). An open MR or an undecidable landing anywhere on the
-// branch wins; a landed MR counts only when its commit is the tip; otherwise
-// the official close verdicts (MRFields.CloseReason, written by
-// closeTerminalMR and SupersedeMR) of the MRs whose commit_sha is the tip
-// decide, strictest first. An unread queue or an empty branch is an error.
+// TipDisposition classifies one tip of branch (gt-pd1c.78, per tip since
+// review round 2, N2): the MRs whose commit_sha is exactly that tip decide,
+// with the one predicate (mergeQueueHoldDetail): an open MR of the tip is
+// TipOpen, a landed one TipLanded, an undecidable one TipUnverified;
+// otherwise the strictest official close verdict of those MRs. A tip no MR
+// recorded is TipNoMR, except that an undecidable landing elsewhere on the
+// branch keeps it TipUnverified (fail closed). An open MR for another tip of
+// the branch does not change the tip's class; it is in Hold (the branch's
+// hold, branchHold), which callers that discard the whole branch check
+// (BranchOpen). An unread queue or an empty branch is an error.
 func (q *MergeQueue) TipDisposition(branch, tip string) (TipDisposition, error) {
 	hold, err := q.branchHold(branch)
 	if err != nil {
 		return TipDisposition{}, err
 	}
-	out := TipDisposition{Hold: hold, MRID: hold.MRID, MR: hold.MR}
+	out := TipDisposition{Hold: hold}
 	tip = strings.TrimSpace(tip)
-	switch {
-	case hold.Hold == HoldPending:
-		out.Class = TipOpen
-		return out, nil
-	case hold.Hold == HoldUnverified:
-		out.Class = TipUnverified
-		return out, nil
-	case hold.Hold == HoldLanded && mrCommitIs(hold.MR, tip):
-		out.Class, out.Evidence = TipLanded, hold.Evidence
-		return out, nil
-	}
 	var tipMRs []*Issue
 	for _, mr := range q.mergeRequestsFromBranch(plainBranch(branch)) {
 		if mrCommitIs(mr, tip) {
 			tipMRs = append(tipMRs, mr)
 		}
 	}
-	out.MRID, out.MR = "", nil
 	if len(tipMRs) == 0 {
 		out.Class = TipNoMR
+		if hold.Hold == HoldUnverified {
+			out.Class, out.MRID, out.MR = TipUnverified, hold.MRID, hold.MR
+		}
 		return out, nil
 	}
 	switch d := mergeQueueHoldDetail(tipMRs, q.resolve); d.Hold {
+	case HoldPending:
+		out.Class, out.MRID, out.MR = TipOpen, d.MRID, d.MR
+		return out, nil
 	case HoldLanded:
 		out.Class, out.MRID, out.MR, out.Evidence = TipLanded, d.MRID, d.MR, d.Evidence
 		return out, nil
@@ -165,6 +163,10 @@ func (q *MergeQueue) TipDisposition(branch, tip string) (TipDisposition, error) 
 	}
 	return out, nil
 }
+
+// BranchOpen reports whether an MR from the branch is open (for any tip):
+// the refinery owns the branch, so it is neither deleted nor abandoned.
+func (d TipDisposition) BranchOpen() bool { return d.Hold.Hold == HoldPending }
 
 // mrCommitIs reports whether mr recorded commit (full object names, case
 // insensitive). An empty commit matches nothing.

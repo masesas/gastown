@@ -184,3 +184,39 @@ func TestLandingVerdictRecordedNoNewWork(t *testing.T) {
 		t.Fatalf("bare close, no new work: %v %q, want not landed", v, ev)
 	}
 }
+
+// gt-pd1c.78 N2: classification is per tip. A rejected MR for T1 stays
+// rejected while MR2 for T2 is open on the same branch (but the branch is
+// open, so not abandonable); an MR without source_issue is still seen.
+func TestTipDispositionPerTip(t *testing.T) {
+	t1 := "1" + strings.Repeat("a", 39)
+	t2 := "2" + strings.Repeat("a", 39)
+	mr := func(id, status, commit, extra string) *Issue {
+		return &Issue{ID: id, Status: status, Description: "branch: polecat/n\ntarget: main\nsource_issue: gt-src\nrig: r\ncommit_sha: " + commit + "\n" + extra}
+	}
+	q := NewMergeQueue(MergeQueueIndex{"gt-src": {mr("mr-1", "closed", t1, "close_reason: rejected\n"), mr("mr-2", "open", t2, "")}},
+		nil, func(string) MergeProver { return fakeProver{} })
+	d1, err := q.TipDisposition("polecat/n", t1)
+	if err != nil || d1.Class != TipRejected || !d1.BranchOpen() || d1.Abandonable() || d1.MRID != "mr-1" {
+		t.Fatalf("T1: %+v %v, want rejected, branch open, not abandonable", d1, err)
+	}
+	if d2, _ := q.TipDisposition("polecat/n", t2); d2.Class != TipOpen || d2.MRID != "mr-2" {
+		t.Fatalf("T2: %+v, want open", d2)
+	}
+	if d0, _ := q.TipDisposition("polecat/n", strings.Repeat("3", 40)); d0.Class != TipNoMR || !d0.BranchOpen() {
+		t.Fatalf("unsubmitted tip on an open branch: %+v", d0)
+	}
+
+	// An MR without source_issue (indexed under sourcelessKey) still counts.
+	installMergedMRBDStub(t, `[{"id":"mr-ns","status":"open","description":"branch: polecat/ns\ntarget: main\ncommit_sha: `+t1+`\n"}]`, `[]`)
+	idx, err := New(t.TempDir()).MergeRequestsBySource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := NewMergeQueue(idx, nil, nil).TipDisposition("polecat/ns", t1); d.Class != TipOpen || d.MRID != "mr-ns" {
+		t.Fatalf("sourceless MR: %+v, want open", d)
+	}
+	if hold, _, _ := NewMergeQueue(idx, nil, nil).Hold(""); hold != HoldNone {
+		t.Fatal("sourceless MRs are no bead's hold")
+	}
+}

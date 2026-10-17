@@ -122,6 +122,26 @@ func TestPrePushGuardOwnerRewrite(t *testing.T) {
 			}
 		})
 	}
+	// N2: per tip. MR1 rejected for the old tip and MR2 open for another
+	// commit: the owner may not rewrite the rejected tip away; an open MR for
+	// the old tip itself is the rework rebase and passes.
+	otherOpen := mrIssue("mr2", "open", branch, f.bad, "")
+	rejectedPlusOpen := func() *beads.MergeQueue {
+		q := mqWithProver(gitLanded{}, mrIssue("mr1", "closed", branch, f.good, "close_reason: rejected\n"), otherOpen)
+		return q()
+	}
+	if err := coordinatorGuard(f, plain, rejectedPlusOpen, owner...).check(rewrite); err == nil || !strings.Contains(err.Error(), "already decided") {
+		t.Fatalf("rejected T1 with MR2 open on the branch: %v", err)
+	}
+	openOwn := mqWith(mrIssue("mr1", "open", branch, f.good, ""), otherOpen)
+	if err := coordinatorGuard(f, plain, openOwn, owner...).check(rewrite); err != nil {
+		t.Fatalf("open MR for the old tip (rework rebase): %v", err)
+	}
+	// Non-owners never discard a branch with an open MR, whatever the tip.
+	del := []prePushUpdate{prePushUpd("refs/heads/"+branch, testZeroSHA, f.good)}
+	if err := coordinatorGuard(f, plain, rejectedPlusOpen, "GT_ROLE", "myrig/witness").check(del); err == nil || !strings.Contains(err.Error(), "mr2 from this branch is open") {
+		t.Fatalf("witness delete while MR2 is open: %v", err)
+	}
 	// An archived decided tip may be rewritten (nothing is lost).
 	archiveTip(t, f, "polecat/nux/gt-1", f.good)
 	if err := coordinatorGuard(f, plain, verdict("close_reason: rejected\n"), owner...).check(rewrite); err != nil {

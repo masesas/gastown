@@ -275,3 +275,15 @@ func TestVerifyMQPostMergeProofTrustsOnlyMergeTargets(t *testing.T) {
 		}
 	}
 }
+
+// gt-pd1c.78 N3: the MR branch is a bead field; only a plain branch name is
+// handed to git.
+func TestCleanupMQPostMergeBranchRejectsUnsafeBranch(t *testing.T) {
+	for _, b := range []string{"-x", "polecat/a b", "polecat/../main", "--delete"} {
+		mr := &refinery.MergeRequest{ID: "gt-mr1", Branch: b, CommitSHA: "abc"}
+		if _, err := cleanupMQPostMergeBranch(t.TempDir(), &fakeMQPostMergeGit{}, mr, false); err == nil ||
+			!strings.Contains(err.Error(), "not a plain branch name") {
+			t.Errorf("branch %q: %v", b, err)
+		}
+	}
+}

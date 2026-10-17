@@ -2332,7 +2332,13 @@ func runPolecatPrune(cmd *cobra.Command, args []string) error {
 // upstream.
 func pruneRemotePolecatBranches(repoGit *git.Git, defaultBranch string, dryRun bool) (int, error) {
 	if strings.TrimSpace(defaultBranch) == "" {
-		defaultBranch = repoGit.RemoteDefaultBranch()
+		// Never the local origin/HEAD (gt-pd1c.78 N1): the remote's own HEAD.
+		if b, err := repoGit.RemoteHeadBranch("origin"); err == nil {
+			defaultBranch = strings.TrimSpace(b)
+		}
+		if defaultBranch == "" {
+			return 0, fmt.Errorf("default branch unknown: set default_branch in the rig's config.json")
+		}
 	}
 	forkBase := ""
 	target := repoGit.CleanDefaultBranchBaseRef("origin", defaultBranch)

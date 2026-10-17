@@ -313,6 +313,13 @@ func (r *branchReconciler) classifyAll(onRemote map[string]string, res *Stranded
 			return nil, false
 		}
 		if q == nil && !archived {
+			// The budget is soft: each git command is bounded by the proof
+			// limits, and the merge queue read (bd) is checked for here,
+			// before it starts, not interrupted.
+			if r.ctx != nil && r.ctx.Err() != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("time budget exhausted before reading the merge queue, no branch reported this patrol"))
+				return nil, false
+			}
 			q = r.queue()
 		}
 		var disp beads.TipDisposition
@@ -356,6 +363,9 @@ func (r *branchReconciler) due(st branchReport) bool {
 // the mayor). A branch without an MR counts only when none of its possible
 // owners is alive; unknown liveness is not reported (it may be worked on).
 func (r *branchReconciler) strandedClass(branch string, disp beads.TipDisposition, q *beads.MergeQueue, res *StrandedBranchesResult) bool {
+	if disp.BranchOpen() {
+		return false // an MR from the branch is open: the refinery owns it
+	}
 	switch disp.Class {
 	case beads.TipRejected, beads.TipSuperseded, beads.TipConflict, beads.TipNoVerdict:
 		return r.sourceStillOpen(disp, q, res)

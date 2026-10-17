@@ -308,7 +308,7 @@ type prePushGit interface {
 	IsAncestor(ancestor, descendant string) (bool, error)
 	MergeBase(a, b string) (string, error)
 	DiffNameOnlyRange(from, to string) ([]string, error)
-	RemoteDefaultBranch() string
+	RemoteHeadBranch(remote string) (string, error)
 }
 
 // prePushGuard evaluates one push.
@@ -337,6 +337,9 @@ type prePushGuard struct {
 	// (branch tips, targets, archives) goes through listRemote, so each
 	// prefix is read once.
 	remoteList mergeproof.RemoteLister
+	// remoteHead caches the push remote's HEAD branch (trustedDefault).
+	remoteHead     string
+	remoteHeadDone bool
 }
 
 // check returns nil when every update may be pushed, else an error naming
@@ -374,7 +377,7 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 		}
 		r = nil // human: fall back to git defaults
 	}
-	defaults := g.defaultBranches(r, agentVar != "")
+	defaults := g.defaultBranches(r)
 	if !containsString(defaults, branch) && !strings.HasPrefix(branch, integrationBranchPrefix) {
 		return nil
 	}
@@ -385,7 +388,7 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 	if deletion {
 		return g.checkAgentDelete(u, branch, defaults)
 	}
-	if err := g.checkTargetRole(u, branch, r, defaults); err != nil {
+	if err := g.checkTargetRole(u, branch, r); err != nil {
 		return err
 	}
 	if agentVar != "" {
@@ -442,23 +445,47 @@ func (g *prePushGuard) loadRigOnce() (*prePushRig, error) {
 	return g.rig, g.rigErr
 }
 
-// defaultBranches returns the branch names treated as the default branch; the
-// first is the one used as merge base. The rig's default_branch when known;
-// otherwise origin/HEAD for humans and, for agents (fail closed), also main
-// and master.
-func (g *prePushGuard) defaultBranches(r *prePushRig, agent bool) []string {
+// trustedDefault is the one default branch the guard trusts as a merge
+// target for coverage proofs (gt-pd1c.78 N1): the rig's configured
+// default_branch, else the branch the push remote's own HEAD names
+// (ls-remote --symref on the push remote or URL), never the local
+// refs/remotes/origin/HEAD that any agent in the repository can repoint.
+// "" when neither is known: no default branch counts as covering work.
+func (g *prePushGuard) trustedDefault(r *prePushRig) string {
 	if r != nil && r.defaultBranch != "" {
-		return []string{r.defaultBranch}
+		return r.defaultBranch
 	}
-	out := []string{g.git.RemoteDefaultBranch()}
-	if agent {
-		for _, b := range []string{"main", "master"} {
-			if !containsString(out, b) {
-				out = append(out, b)
+	if !g.remoteHeadDone {
+		g.remoteHeadDone = true
+		if target, err := g.pushTarget(); err == nil {
+			if b, err := g.git.RemoteHeadBranch(target); err == nil {
+				g.remoteHead = strings.TrimSpace(b)
 			}
 		}
 	}
-	return out
+	return g.remoteHead
+}
+
+// coverageDefaults are the default branches whose tips prove work preserved
+// (mergeproof.RemoteTips.Defaults): only the trusted default, none when it
+// is unknown (fail closed).
+func (g *prePushGuard) coverageDefaults(r *prePushRig) []string {
+	if b := g.trustedDefault(r); b != "" {
+		return []string{b}
+	}
+	return nil
+}
+
+// defaultBranches returns the branch names protected as the default branch
+// (target-role, fast-forward, land, scope and deletion rules); the first is
+// the one used as merge base. The rig's default_branch when configured;
+// otherwise the push remote's HEAD branch plus main and master, so an
+// unknown or misleading default never weakens the push rules.
+func (g *prePushGuard) defaultBranches(r *prePushRig) []string {
+	if r != nil && r.defaultBranch != "" {
+		return []string{r.defaultBranch}
+	}
+	return uniqueNonEmpty(g.trustedDefault(r), "main", "master")
 }
 
 func containsString(list []string, s string) bool {

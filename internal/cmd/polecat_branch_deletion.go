@@ -76,10 +76,19 @@ func (d polecatBranchDeletion) check() error {
 	if err != nil {
 		return d.refuse("cannot read the merge queue: " + firstLine(err.Error()) + " (fail closed)")
 	}
-	if disp.Class == beads.TipLanded && disp.Evidence == beads.EvidenceGit {
+	// The owning polecat may rewrite a tip that no MR recorded or whose own
+	// MR is open (the rebase for REWORK_REQUEST / MERGE_FAILED), whatever
+	// other MRs of the branch say (per tip, N2).
+	if d.owner && (disp.Class == beads.TipNoMR || disp.Class == beads.TipOpen) {
 		return nil
 	}
-	if d.owner && (disp.Class == beads.TipNoMR || disp.Class == beads.TipOpen) {
+	// Anyone else discarding the branch while an MR from it is open would
+	// take it from the refinery.
+	if disp.BranchOpen() {
+		return d.refuse(fmt.Sprintf("MR %s from this branch is open; the refinery owns the branch until it merges",
+			mrIDOfHold(disp.Hold)))
+	}
+	if disp.Class == beads.TipLanded && disp.Evidence == beads.EvidenceGit {
 		return nil
 	}
 	return d.refuse(tipRefusal(d.rig, d.branch, disp))
@@ -120,6 +129,11 @@ func (d polecatBranchDeletion) refuse(why string) error {
 		why += " (git proof unavailable: " + d.noGitProof + ")"
 	}
 	return fmt.Errorf("discarding %s: %s. %s", d.branch, why, polecatDeletionExits)
+}
+
+// mrIDOfHold names the deciding MR of a branch hold (beads.IsSafeID only).
+func mrIDOfHold(h beads.HoldDetail) string {
+	return mrIDOf(beads.TipDisposition{MRID: h.MRID})
 }
 
 // mrIDOf names the deciding MR in a refusal; an ID that is not
