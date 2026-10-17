@@ -618,20 +618,29 @@ reports the push as deferred.
 
 Where the marker counts: attachment fields (`review_only`, `no_merge`,
 `attached_*`, `dispatched_by`, `convoy_id`, `merge_strategy`, `mode`,
-`formula_vars`, ...) are read only from the description's header block. That is
-the first paragraph, outside fenced code blocks, whose first line is a known
-attachment `key: value` field (not indented as code). It ends at the first
-blank line or Markdown block (code fence, `>` quote, `#` heading, list item,
-table row). `gt sling` writes the fields at the top of the description; free text
-above them is tolerated. A `review_only: true` line in a code block, a quote, a
-list item or a later paragraph does not mark the bead, and rewrites leave it
-untouched. `gt sling`, `gt done` and `gt mq submit` warn when such a line is
-ignored. Use `gt sling --review-only` to mark a bead.
-Older gt wrote `attached_args` and non-JSON `formula_vars` values raw, possibly
-over several lines (blank lines, lists, fences included). After such a field,
-the text up to the next known attachment key is read as part of that value, so
-the `no_merge`/`review_only` fields written after it still count. New values
-are always written on one line.
+`formula_vars`, ...) are read from the description's header block. That is the
+first paragraph, outside fenced code blocks and not indented as code, whose
+first line is a field with a strong attachment key: any key except `mode` and
+`convoy`, which are ordinary words a prose line may start with (both are still
+read inside the header). The header ends at the first blank line or Markdown
+block (code fence, `>` quote, `#` heading, list item, table row). Inside it the
+first occurrence of a key wins. `gt sling` writes the fields at the top of the
+description; free text above them is tolerated.
+`review_only` fails closed beyond the header: a `review_only` line also counts
+in any later field paragraph (a paragraph outside fences whose first line has
+an attachment key). Other keys there are not read. A `review_only` line in a
+code block, a quote, a list item or a prose paragraph does not mark the bead.
+`gt sling`, `gt done` and `gt mq submit` warn when such a line is ignored. Use
+`gt sling --review-only` to mark a bead.
+`attached_args` is written as a one-line JSON string (`attached_args: "..."`),
+like `formula_vars` (JSON array). Older gt wrote `attached_args` and
+`formula_vars` raw, possibly over several lines (blank lines, lists, fences
+included). For such a raw value, the header continues at the first later line
+that has a key the old writer put after it, provided that line starts a run of
+field lines up to a blank line or the end. That is how the `no_merge` /
+`review_only` lines after a multi-line value are found. A `review_only` line in
+a further such run counts too (fail closed). Rewriting a bead consolidates its
+fields into the header, and `Set(Parse(description))` is stable after one pass.
 
 Values: only `true` and `false` (any case) are canonical. Any other value
 (`no`, `off`, `0`, `f`, `maybe`, or an empty value) still marks the bead

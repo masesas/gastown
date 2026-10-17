@@ -12,22 +12,17 @@ const (
 // dispatch. An empty type is treated as a task.
 var readinessCheckedTypes = map[string]bool{"": true, "task": true, "feature": true, "bug": true}
 
-// machineFieldKeys are description lines written by tooling rather than the
-// author (attachment and workflow metadata). They do not count as a description.
-var machineFieldKeys = map[string]bool{
-	"attached_molecule": true, "attached-molecule": true, "attachedmolecule": true,
-	"attached_formula": true, "attached-formula": true, "attachedformula": true,
-	"attached_at": true, "attached-at": true, "attachedat": true,
-	"attached_args": true, "attached-args": true, "attachedargs": true,
-	"attached_vars": true, "attached-vars": true, "attachedvars": true,
-	"dispatched_by": true, "dispatched-by": true, "dispatchedby": true,
-	"no_merge": true, "no-merge": true, "nomerge": true,
-	"review_only": true, "review-only": true, "reviewonly": true,
-	"convoy_id": true, "convoy-id": true, "convoyid": true,
-	"merge_strategy": true, "merge-strategy": true, "mergestrategy": true,
-	"convoy_owned": true, "convoy-owned": true, "convoyowned": true,
-	"formula_vars": true, "formula-vars": true, "formulavars": true,
-	"workflow_target": true,
+// isMachineFieldKey reports description keys written by tooling rather than
+// the author (attachment and workflow metadata); such lines do not count as a
+// description. It is derived from attachmentFieldKeys, the one attachment key
+// list, without the weak spellings "mode" and "convoy" (ordinary words in
+// prose), plus workflow_target.
+func isMachineFieldKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "workflow_target" {
+		return true
+	}
+	return canonicalAttachmentKey(k) != "" && !weakAttachmentKeys[k]
 }
 
 // HumanDescription returns desc without tooling metadata lines and without
@@ -36,7 +31,7 @@ func HumanDescription(desc string) string {
 	var kept []string
 	for _, line := range strings.Split(desc, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if i := strings.Index(trimmed, ":"); i > 0 && machineFieldKeys[strings.ToLower(strings.TrimSpace(trimmed[:i]))] {
+		if i := strings.Index(trimmed, ":"); i > 0 && isMachineFieldKey(trimmed[:i]) {
 			continue
 		}
 		kept = append(kept, line)

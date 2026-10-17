@@ -207,14 +207,18 @@ func TestClearReviewOnlyMarkerFailsClosed(t *testing.T) {
 	})
 }
 
-// stubClearConfirm replaces the human confirmation streams for one test.
-func stubClearConfirm(t *testing.T, tty bool, input string) {
-	t.Helper()
-	oldTTY, oldIn, oldOut := humanConfirmTTY, humanConfirmInput, humanConfirmOutput
-	humanConfirmTTY = func() bool { return tty }
-	humanConfirmInput = strings.NewReader(input)
-	humanConfirmOutput = &strings.Builder{}
-	t.Cleanup(func() { humanConfirmTTY, humanConfirmInput, humanConfirmOutput = oldTTY, oldIn, oldOut })
+// testClearDeps returns clear-review-only deps with a scripted confirmation:
+// confirmErr (nil = the human typed the ID) and the expected value it got.
+func testClearDeps(confirmErr error, gotExpected *string) clearReviewOnlyDeps {
+	deps := defaultClearReviewOnlyDeps()
+	deps.confirm = func(action, prompt, expected string) error {
+		if gotExpected != nil {
+			*gotExpected = expected
+		}
+		return confirmErr
+	}
+	deps.now = func() time.Time { return reviewOnlyClearNow }
+	return deps
 }
 
 func TestNormalizeClearReason(t *testing.T) {
@@ -237,48 +241,57 @@ func TestNormalizeClearReason(t *testing.T) {
 }
 
 func TestRunBeadClearReviewOnlyRefusesBeforeAnyLookup(t *testing.T) {
-	prev := beadClearReviewOnlyReason
-	t.Cleanup(func() { beadClearReviewOnlyReason = prev })
+	failIfUsed := testClearDeps(nil, nil)
+	failIfUsed.storeFor = func(string, string) reviewOnlyClearStore {
+		t.Fatal("store used before the checks passed")
+		return nil
+	}
 
 	setReviewOnlyClearCaller(t, EnvGTRole, "gastown/polecats/nux", "BD_ACTOR", "gastown/polecats/nux")
-	beadClearReviewOnlyReason = "my own leg"
-	if err := runBeadClearReviewOnly(nil, []string{"gt-leg1"}); err == nil || !strings.Contains(err.Error(), "refusing to clear review_only") {
+	if err := clearReviewOnlyCommand("gt-leg1", "my own leg", failIfUsed); err == nil || !strings.Contains(err.Error(), "refusing to clear review_only") {
 		t.Fatalf("polecat: err = %v, want a refusal", err)
 	}
 
 	setReviewOnlyClearCaller(t)
-	beadClearReviewOnlyReason = "  "
-	if err := runBeadClearReviewOnly(nil, []string{"gt-leg1"}); err == nil || !strings.Contains(err.Error(), "--reason") {
+	if err := clearReviewOnlyCommand("gt-leg1", "  ", failIfUsed); err == nil || !strings.Contains(err.Error(), "--reason") {
 		t.Fatalf("no reason: err = %v, want --reason required", err)
 	}
-
-	beadClearReviewOnlyReason = "why"
 	for _, id := range []string{"--force", "gt-a/b", "gt a", "../gt-a"} {
-		if err := runBeadClearReviewOnly(nil, []string{id}); err == nil || !strings.Contains(err.Error(), "invalid bead ID") {
+		if err := clearReviewOnlyCommand(id, "why", failIfUsed); err == nil || !strings.Contains(err.Error(), "invalid bead ID") {
 			t.Fatalf("ID %q: err = %v, want invalid bead ID", id, err)
 		}
 	}
 
 	setReviewOnlyClearCaller(t, EnvGTRole, "mayor")
-	if err := runBeadClearReviewOnly(nil, []string{"gt-leg1"}); err == nil || !strings.Contains(err.Error(), "refusing to clear review_only") {
+	if err := clearReviewOnlyCommand("gt-leg1", "why", failIfUsed); err == nil || !strings.Contains(err.Error(), "refusing to clear review_only") {
 		t.Fatalf("mayor: err = %v, want a refusal", err)
 	}
 }
 
-func TestRunBeadClearReviewOnlyNeedsInteractiveConfirmation(t *testing.T) {
-	_, _, descPath := setupMutableBDRawSlingTest(t, "review_only: true\n\nKeep this body.")
-	prev := beadClearReviewOnlyReason
-	t.Cleanup(func() { beadClearReviewOnlyReason = prev })
-	setReviewOnlyClearCaller(t)
-	beadClearReviewOnlyReason = "why"
-
-	stubClearConfirm(t, false, "gt-rawrollback\n")
-	if err := runBeadClearReviewOnly(nil, []string{"gt-rawrollback"}); !errors.Is(err, errNotInteractive) {
-		t.Fatalf("no TTY: err = %v, want errNotInteractive", err)
+func TestDefaultClearDepsUseHumanConfirmation(t *testing.T) {
+	deps := defaultClearReviewOnlyDeps()
+	if deps.confirm == nil || deps.storeFor == nil || deps.now == nil {
+		t.Fatalf("default deps incomplete: %+v", deps)
 	}
-	stubClearConfirm(t, true, "gt-other\n")
-	if err := runBeadClearReviewOnly(nil, []string{"gt-rawrollback"}); err == nil {
-		t.Fatal("mistyped bead ID must refuse")
+	// Without a TTY the default confirmation refuses (no bypass).
+	prevTTY := humanConfirmTTY
+	humanConfirmTTY = func() bool { return false }
+	t.Cleanup(func() { humanConfirmTTY = prevTTY })
+	if err := deps.confirm("clearing review_only on gt-leg1", "prompt", "gt-leg1"); !errors.Is(err, errNotInteractive) {
+		t.Fatalf("default confirm without TTY: %v, want errNotInteractive", err)
+	}
+}
+
+func TestRunBeadClearReviewOnlyNeedsConfirmation(t *testing.T) {
+	_, _, descPath := setupMutableBDRawSlingTest(t, "review_only: true\n\nKeep this body.")
+	setReviewOnlyClearCaller(t)
+
+	var expected string
+	if err := clearReviewOnlyCommand("gt-rawrollback", "why", testClearDeps(errNotInteractive, &expected)); !errors.Is(err, errNotInteractive) {
+		t.Fatalf("refused confirmation: err = %v", err)
+	}
+	if expected != "gt-rawrollback" {
+		t.Fatalf("confirmation must ask for the bead ID, got %q", expected)
 	}
 	if !beads.IsReviewOnly(&beads.Issue{Description: readMutableBDDescription(t, descPath)}) {
 		t.Fatal("a refused confirmation changed the bead")
@@ -287,22 +300,17 @@ func TestRunBeadClearReviewOnlyNeedsInteractiveConfirmation(t *testing.T) {
 
 func TestRunBeadClearReviewOnlyClearsBead(t *testing.T) {
 	_, _, descPath := setupMutableBDRawSlingTest(t, "attached_at: 2026-10-17T00:00:00Z\nreview_only: true\n\nKeep this body.")
-	prev := beadClearReviewOnlyReason
-	t.Cleanup(func() { beadClearReviewOnlyReason = prev })
 	setReviewOnlyClearCaller(t, EnvGTRole, "gastown/crew/max", "BD_ACTOR", "gastown/crew/max")
-	beadClearReviewOnlyReason = "rollback left the marker"
-	stubClearConfirm(t, true, "gt-rawrollback\n")
 
-	if err := runBeadClearReviewOnly(nil, []string{"gt-rawrollback"}); err != nil {
-		t.Fatalf("runBeadClearReviewOnly: %v", err)
+	if err := clearReviewOnlyCommand("gt-rawrollback", "rollback left the marker", testClearDeps(nil, nil)); err != nil {
+		t.Fatalf("clearReviewOnlyCommand: %v", err)
 	}
 	desc := readMutableBDDescription(t, descPath)
 	if beads.IsReviewOnly(&beads.Issue{Description: desc}) || !strings.Contains(desc, "Keep this body.") || !strings.Contains(desc, "attached_at: 2026-10-17T00:00:00Z") {
 		t.Fatalf("description after clear:\n%s", desc)
 	}
 	// Idempotent: a second run is a no-op, not an error, and asks nothing.
-	stubClearConfirm(t, true, "")
-	if err := runBeadClearReviewOnly(nil, []string{"gt-rawrollback"}); err != nil {
+	if err := clearReviewOnlyCommand("gt-rawrollback", "again", testClearDeps(errors.New("must not prompt"), nil)); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 }

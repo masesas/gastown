@@ -103,11 +103,24 @@ type reviewOnlyClearStore interface {
 	Update(id string, opts beads.UpdateOptions) error
 }
 
-// reviewOnlyClearStoreFor returns the beads store that owns beadID; a seam for
-// tests.
-var reviewOnlyClearStoreFor = func(townRoot, beadID string) reviewOnlyClearStore {
+// townReviewOnlyClearStore returns the beads store that owns beadID.
+func townReviewOnlyClearStore(townRoot, beadID string) reviewOnlyClearStore {
 	beadsDir := beads.ResolveBeadsDirForID(filepath.Join(townRoot, ".beads"), beadID)
 	return beads.NewWithBeadsDir(filepath.Dir(beadsDir), beadsDir)
+}
+
+// clearReviewOnlyDeps are the outside effects of gt bead clear-review-only,
+// injected so tests (and a later switch of the human prompt implementation)
+// replace one value instead of package variables.
+type clearReviewOnlyDeps struct {
+	// confirm asks the human to type expected again (TTY required).
+	confirm  func(action, prompt, expected string) error
+	storeFor func(townRoot, beadID string) reviewOnlyClearStore
+	now      func() time.Time
+}
+
+func defaultClearReviewOnlyDeps() clearReviewOnlyDeps {
+	return clearReviewOnlyDeps{confirm: confirmHumanInteractively, storeFor: townReviewOnlyClearStore, now: time.Now}
 }
 
 // reviewOnlyClearOutcome is the result of clearReviewOnlyMarker. ConfirmErr
@@ -157,11 +170,16 @@ func clearReviewOnlyMarker(store reviewOnlyClearStore, beadID, actor, reason str
 }
 
 func runBeadClearReviewOnly(cmd *cobra.Command, args []string) error {
-	beadID := strings.TrimSpace(args[0])
+	return clearReviewOnlyCommand(args[0], beadClearReviewOnlyReason, defaultClearReviewOnlyDeps())
+}
+
+// clearReviewOnlyCommand is gt bead clear-review-only with its dependencies.
+func clearReviewOnlyCommand(rawBeadID, rawReason string, deps clearReviewOnlyDeps) error {
+	beadID := strings.TrimSpace(rawBeadID)
 	if !beads.IsSafeID(beadID) {
 		return fmt.Errorf("invalid bead ID %q", beadID)
 	}
-	reason, err := normalizeClearReason(beadClearReviewOnlyReason)
+	reason, err := normalizeClearReason(rawReason)
 	if err != nil {
 		return err
 	}
@@ -173,7 +191,7 @@ func runBeadClearReviewOnly(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-	store := reviewOnlyClearStoreFor(townRoot, beadID)
+	store := deps.storeFor(townRoot, beadID)
 
 	// Nothing to clear: no prompt, no comment.
 	issue, err := store.Show(beadID)
@@ -185,7 +203,7 @@ func runBeadClearReviewOnly(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	prompt := fmt.Sprintf("Clear review_only on %s? Its work may then be committed, pushed and merged.\nReason: %s\nType the bead ID to confirm: ", beadID, reason)
-	if err := confirmHumanInteractively("clearing review_only on "+beadID, prompt, beadID); err != nil {
+	if err := deps.confirm("clearing review_only on "+beadID, prompt, beadID); err != nil {
 		return err
 	}
 
@@ -196,7 +214,7 @@ func runBeadClearReviewOnly(cmd *cobra.Command, args []string) error {
 	}
 	defer release()
 
-	outcome, err := clearReviewOnlyMarker(store, beadID, actor, reason, time.Now())
+	outcome, err := clearReviewOnlyMarker(store, beadID, actor, reason, deps.now())
 	if err != nil {
 		return err
 	}

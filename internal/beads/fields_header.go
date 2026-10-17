@@ -8,28 +8,40 @@ import "strings"
 // followed by a blank line and the free text. ParseAttachmentFields and
 // SetAttachmentFields read and replace them in the header block only, so a
 // "key: value" line in a fenced or indented code block, a block quote, a list
-// or a later paragraph never counts as a field and is never rewritten.
+// or a later paragraph is not read as a field and is never rewritten. The one
+// exception is review_only, which fails closed (below).
 //
-// The header block is the first paragraph, outside fenced code blocks, whose
-// first line is a field line with a known attachment key (attachmentFieldKeys)
-// and is not indented as code. Free text above it (e.g. text a person put in
-// front of the fields) is tolerated and kept. The block runs to the first
-// blank line or the first line that opens a Markdown block (fence ``` or ~~~,
-// block quote '>', heading '#', list item, table row '|'), with one exception
-// for data written by older gt:
+// Header block. The first paragraph, outside fenced code blocks and not
+// indented as code, whose first line is a field with a strong attachment key:
+// any attachment key except the weak spellings "mode" and "convoy", which are
+// ordinary words that an opening prose line ("Mode: fast please") may start
+// with. Weak keys are still read inside the header. Free text above the header
+// is tolerated and kept. The block runs to the first blank line or the first
+// line that opens a Markdown block (fence ``` or ~~~, block quote '>', heading
+// '#', list item, table row '|'). Within it the first occurrence of a key wins;
+// review_only lines are OR-ed and formula_vars lines are joined.
 //
-// Legacy multi-line values. attached_args (always) and formula_vars (unless
-// in the current one-line JSON form) were once written raw, so their value
-// could span lines, including blank lines, lists, headings and fences. After
-// such a field, every line up to the next line with a known attachment key is
-// continuation text and the header continues there; without a later known
-// key the normal end applies. Continuation lines are ignored by the parser and
-// kept verbatim by SetAttachmentFields. FormatAttachmentFields writes every
-// value on one line, so new descriptions never rely on this.
+// Legacy multi-line values. Older gt wrote attached_args and formula_vars raw,
+// so their value could span lines (blank lines, lists, headings and fences
+// included). FormatAttachmentFields now writes attached_args as a JSON string
+// and formula_vars as a JSON array, always on one line; only a non-JSON value
+// is legacy. After a legacy field, the header continues at the first later
+// line that (1) has a key the old writer put after that field
+// (attachmentKeyOrder) and (2) starts a run of field lines up to a blank line
+// or the end. The lines skipped are continuation text: ignored by the parser,
+// kept verbatim by SetAttachmentFields. Since formula_vars was always written
+// last, only attached_args can continue onto later fields.
+//
+// review_only fails closed. Besides the header, a review_only line counts when
+// it is in a later field paragraph (a paragraph outside fences whose first line
+// has any attachment key, weak or strong) or in a further run that a legacy
+// field could continue onto. Other keys there are not read. Such lines are
+// consolidated into the header by every rewrite and removed by
+// WithoutReviewOnlyMarker. Code blocks, quotes and list items never count.
 
 // attachmentFieldKeys maps every accepted spelling of an attachment key
 // (lowercase) to its canonical name. It is the one key list: the parser, the
-// writer and the review_only helpers all read it.
+// writer, the review_only helpers and readiness's machine keys all read it.
 var attachmentFieldKeys = map[string]string{
 	"attached_molecule": "attached_molecule", "attached-molecule": "attached_molecule", "attachedmolecule": "attached_molecule",
 	"attached_formula": "attached_formula", "attached-formula": "attached_formula", "attachedformula": "attached_formula",
@@ -46,6 +58,18 @@ var attachmentFieldKeys = map[string]string{
 	"formula_vars": "formula_vars", "formula-vars": "formula_vars", "formulavars": "formula_vars",
 }
 
+// weakAttachmentKeys are spellings that do not start a header block.
+var weakAttachmentKeys = map[string]bool{"mode": true, "convoy": true}
+
+// attachmentKeyOrder is the order in which FormatAttachmentFields writes the
+// fields (unchanged since before gt-pd1c.75); legacy continuation only moves
+// forward in it.
+var attachmentKeyOrder = map[string]int{
+	"attached_molecule": 0, "attached_formula": 1, "attached_at": 2, "attached_args": 3,
+	"attached_vars": 4, "dispatched_by": 5, "no_merge": 6, "review_only": 7, "mode": 8,
+	"convoy_id": 9, "merge_strategy": 10, "convoy_owned": 11, "formula_vars": 12,
+}
+
 // canonicalAttachmentKey returns the canonical attachment key for key, or ""
 // when key is not an attachment key.
 func canonicalAttachmentKey(key string) string {
@@ -53,6 +77,11 @@ func canonicalAttachmentKey(key string) string {
 }
 
 func isReviewOnlyKey(key string) bool { return canonicalAttachmentKey(key) == "review_only" }
+
+// isStrongAttachmentKey reports a key spelling that may start a header block.
+func isStrongAttachmentKey(key string) bool {
+	return canonicalAttachmentKey(key) != "" && !weakAttachmentKeys[strings.ToLower(strings.TrimSpace(key))]
+}
 
 // attachmentFieldLine parses a field line whose key is a known attachment key
 // and returns the canonical key.
@@ -65,14 +94,50 @@ func attachmentFieldLine(line string) (key, value string, ok bool) {
 	return key, v, key != ""
 }
 
-// splitAttachmentHeader splits description lines into the free text before
-// the header block, the header block and the lines after it. Without a header
-// block, pre holds every line.
-func splitAttachmentHeader(description string) (pre, header, rest []string) {
+// descriptionLayout is where the attachment fields of a description are.
+type descriptionLayout struct {
+	lines []string
+	// headerStart/headerEnd delimit the header block; headerStart is -1
+	// without one.
+	headerStart, headerEnd int
+	// extraReviewOnly marks review_only lines outside the header that count
+	// (fail closed).
+	extraReviewOnly map[int]bool
+}
+
+func (l descriptionLayout) header() []string {
+	if l.headerStart < 0 {
+		return nil
+	}
+	return l.lines[l.headerStart:l.headerEnd]
+}
+
+// outside returns the lines before and after the header, without the extra
+// review_only lines.
+func (l descriptionLayout) outside() (pre, rest []string) {
+	keep := func(from, to int) []string {
+		var out []string
+		for i := from; i < to; i++ {
+			if !l.extraReviewOnly[i] {
+				out = append(out, l.lines[i])
+			}
+		}
+		return out
+	}
+	if l.headerStart < 0 {
+		return keep(0, len(l.lines)), nil
+	}
+	return keep(0, l.headerStart), keep(l.headerEnd, len(l.lines))
+}
+
+// scanDescription finds the header block and the extra review_only lines.
+func scanDescription(description string) descriptionLayout {
 	lines := strings.Split(description, "\n")
+	layout := descriptionLayout{lines: lines, headerStart: -1, headerEnd: -1, extraReviewOnly: map[int]bool{}}
 	inFence := false
 	paragraphStart := true
-	for i, line := range lines {
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case isFenceLine(trimmed):
@@ -85,25 +150,42 @@ func splitAttachmentHeader(description string) (pre, header, rest []string) {
 			paragraphStart = true
 			continue
 		}
-		if paragraphStart && !isIndentedCode(line) {
-			if _, _, ok := attachmentFieldLine(line); ok {
-				end := attachmentHeaderEnd(lines, i)
-				return lines[:i], lines[i:end], lines[end:]
-			}
+		if !paragraphStart || isIndentedCode(line) {
+			paragraphStart = false
+			continue
 		}
 		paragraphStart = false
+		rawKey, _, isField := headerFieldLine(line)
+		if !isField || canonicalAttachmentKey(rawKey) == "" {
+			continue
+		}
+		if layout.headerStart < 0 && isStrongAttachmentKey(rawKey) {
+			end := layout.scanHeader(i)
+			layout.headerStart, layout.headerEnd = i, end
+			i = end - 1
+			continue
+		}
+		// A later field paragraph: only its review_only lines count.
+		end := fieldParagraphEnd(lines, i)
+		layout.markReviewOnly(i, end)
+		i = end - 1
 	}
-	return lines, nil, nil
+	return layout
 }
 
-// attachmentHeaderEnd returns the index after the header block starting at
-// start (a known attachment field line).
-func attachmentHeaderEnd(lines []string, start int) int {
+// scanHeader returns the end of the header block starting at start, and
+// marks the review_only lines of further legacy continuation runs.
+func (l descriptionLayout) scanHeader(start int) int {
+	lines := l.lines
 	i := start
 	for i < len(lines) {
 		if key, value, ok := attachmentFieldLine(lines[i]); ok && hasLegacyContinuation(key, value) {
-			if next := nextAttachmentFieldLine(lines, i+1); next > 0 {
-				i = next
+			runs := legacyContinuationRuns(lines, i+1, attachmentKeyOrder[key])
+			if len(runs) > 0 {
+				for _, run := range runs[1:] {
+					l.markReviewOnly(run[0], run[1])
+				}
+				i = runs[0][0]
 				continue
 			}
 		}
@@ -115,27 +197,60 @@ func attachmentHeaderEnd(lines []string, start int) int {
 	return i
 }
 
-// hasLegacyContinuation reports whether a field may continue on the next
-// lines because older gt wrote its value raw (see the package comment above).
+func (l descriptionLayout) markReviewOnly(from, to int) {
+	for k := from; k < to; k++ {
+		if key, _, ok := attachmentFieldLine(l.lines[k]); ok && key == "review_only" {
+			l.extraReviewOnly[k] = true
+		}
+	}
+}
+
+// fieldParagraphEnd returns the index after the paragraph starting at start.
+func fieldParagraphEnd(lines []string, start int) int {
+	end := start + 1
+	for end < len(lines) && !endsAttachmentHeader(lines[end]) {
+		end++
+	}
+	return end
+}
+
+// legacyContinuationRuns returns the [start, end) runs, from `from` on, that a
+// legacy field of order minOrder may continue onto: a first line with a key
+// written after it, and only field lines up to a blank line or the end.
+func legacyContinuationRuns(lines []string, from, minOrder int) [][2]int {
+	var runs [][2]int
+	for k := from; k < len(lines); k++ {
+		key, _, ok := attachmentFieldLine(lines[k])
+		if !ok || attachmentKeyOrder[key] <= minOrder {
+			continue
+		}
+		end := k
+		for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
+			if _, _, isField := attachmentFieldLine(lines[end]); !isField {
+				break
+			}
+			end++
+		}
+		if end < len(lines) && strings.TrimSpace(lines[end]) != "" {
+			continue // the run is not keys up to a blank line or the end
+		}
+		runs = append(runs, [2]int{k, end})
+		k = end
+	}
+	return runs
+}
+
+// hasLegacyContinuation reports whether a field value was written raw by older
+// gt and may continue on the next lines (see above).
 func hasLegacyContinuation(key, value string) bool {
 	switch key {
 	case "attached_args":
-		return true
+		_, isJSON := decodeAttachedArgs(value)
+		return !isJSON
 	case "formula_vars":
 		return !strings.HasPrefix(value, "[")
 	}
 	return false
-}
-
-// nextAttachmentFieldLine returns the index of the first line from `from` on
-// with a known attachment key, or -1.
-func nextAttachmentFieldLine(lines []string, from int) int {
-	for i := from; i < len(lines); i++ {
-		if _, _, ok := attachmentFieldLine(lines[i]); ok {
-			return i
-		}
-	}
-	return -1
 }
 
 // headerFieldLine parses a "key: value" field line. ok is false when the line
@@ -242,8 +357,8 @@ type ReviewOnlyStatus struct {
 	// true line is present). Value holds it as written (may be "").
 	NonCanonical bool
 	Value        string
-	// IgnoredLines counts review_only lines outside the header block (code
-	// blocks, quotes, list items, later paragraphs). They do not mark the bead.
+	// IgnoredLines counts review_only lines that do not count: in code
+	// blocks, quotes, list items or prose paragraphs. They do not mark the bead.
 	IgnoredLines int
 }
 
@@ -261,8 +376,8 @@ func ReviewOnlyStatusOf(issue *Issue) ReviewOnlyStatus {
 			status.Value = fields.ReviewOnlyRaw
 		}
 	}
-	pre, _, rest := splitAttachmentHeader(issue.Description)
-	for _, line := range append(append([]string(nil), pre...), rest...) {
+	pre, rest := scanDescription(issue.Description).outside()
+	for _, line := range append(pre, rest...) {
 		if key, _, ok := reviewOnlyLikeLine(line); ok && isReviewOnlyKey(key) {
 			status.IgnoredLines++
 		}

@@ -33,7 +33,8 @@ func TestAttachmentFieldsParsedOnlyInHeaderBlock(t *testing.T) {
 		{"number is continuation text", "dispatched_by: mayor/\n2026\nreview_only: true", true},
 		{"paragraph starting with an unknown key", "x1: y\nreview_only: true", false},
 		{"unknown-key paragraph then header paragraph", "workflow_target: rig\n\nreview_only: true\n\nBody.", true},
-		{"only the first header paragraph counts", "dispatched_by: mayor/\n\nreview_only: true", false},
+		{"review_only in a later field paragraph fails closed", "dispatched_by: mayor/\n\nreview_only: true", true},
+		{"other fields in a later field paragraph are not read", "dispatched_by: mayor/\n\nno_merge: true\nreview_only: false", false},
 		{"key is not an identifier", "@x: y\nreview_only: true", false},
 		{"key starts with a digit", "1x: y\nreview_only: true", false},
 	}
@@ -72,7 +73,7 @@ func TestSetAttachmentFieldsKeepsBodyVerbatim(t *testing.T) {
 func TestFormatAttachmentFieldsKeepsOneLinePerField(t *testing.T) {
 	fields := &AttachmentFields{AttachedArgs: "first line\nsecond line\r\nthird", DispatchedBy: "mayor/", ReviewOnly: true}
 	desc := SetAttachmentFields(&Issue{Description: "Body."}, fields)
-	if !strings.HasPrefix(desc, "attached_args: first line second line third\n") {
+	if !strings.HasPrefix(desc, `attached_args: "first line\nsecond line\r\nthird"`+"\n") {
 		t.Fatalf("multi-line value broke the header:\n%s", desc)
 	}
 	parsed := ParseAttachmentFields(&Issue{Description: desc})
@@ -217,7 +218,9 @@ func TestLegacyMultiLineValuesKeepLaterFields(t *testing.T) {
 			}
 		})
 	}
-	formulaVars := "formula_vars: a=1\n\nb=2\n- c=3\nreview_only: true\n\nBody."
+	// The old writer always put formula_vars last: its raw continuation never
+	// leads to a field.
+	formulaVars := "review_only: true\nformula_vars: a=1\nb=2\n\nBody."
 	if fields := ParseAttachmentFields(&Issue{Description: formulaVars}); fields == nil || !fields.ReviewOnly || fields.FormulaVars != "a=1" {
 		t.Fatalf("legacy formula_vars continuation: %+v", fields)
 	}

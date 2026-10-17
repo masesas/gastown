@@ -36,95 +36,140 @@ type AttachmentFields struct {
 }
 
 // ParseAttachmentFields extracts attachment fields from an issue's description.
-// Fields are "key: value" lines of the description's header block
-// (splitAttachmentHeader, gt-pd1c.75); lines in the free text, code blocks or
-// quotes are not fields. Returns nil if no attachment fields found.
+// Fields are "key: value" lines of the description's header block, plus
+// review_only lines that fail closed outside it (scanDescription, gt-pd1c.75);
+// lines in code blocks, quotes or prose are not fields. The first occurrence
+// of a key wins; review_only is OR-ed and formula_vars lines are joined.
+// Returns nil if no attachment fields found.
 func ParseAttachmentFields(issue *Issue) *AttachmentFields {
 	if issue == nil || issue.Description == "" {
 		return nil
 	}
-
-	fields := &AttachmentFields{}
-	hasFields := false
-	reviewOnlyCanonicalTrue := false
-	var formulaVars []string
-
-	_, header, _ := splitAttachmentHeader(issue.Description)
-	for _, line := range header {
-		key, value, ok := attachmentFieldLine(line)
-		if !ok || (value == "" && key != "review_only") {
-			continue
-		}
-
-		switch key {
-		case "attached_molecule":
-			fields.AttachedMolecule = value
-			hasFields = true
-		case "attached_formula":
-			fields.AttachedFormula = value
-			hasFields = true
-		case "attached_at":
-			fields.AttachedAt = value
-			hasFields = true
-		case "attached_args":
-			fields.AttachedArgs = value
-			hasFields = true
-		case "attached_vars":
-			fields.AttachedVars = parseAttachedVars(value)
-			hasFields = true
-		case "dispatched_by":
-			fields.DispatchedBy = value
-			hasFields = true
-		case "no_merge":
-			fields.NoMerge = strings.ToLower(value) == "true"
-			hasFields = true
-		case "review_only":
-			// OR across lines: once any line marks the bead, it stays marked.
-			// A non-canonical value marks it too (fail closed) and is kept
-			// verbatim unless a canonical true line is present as well.
-			marked, canonical := classifyReviewOnly(value)
-			fields.ReviewOnly = fields.ReviewOnly || marked
-			if canonical && marked {
-				reviewOnlyCanonicalTrue = true
-			} else if !canonical && !fields.ReviewOnlyNonCanonical {
-				fields.ReviewOnlyNonCanonical = true
-				fields.ReviewOnlyRaw = value
-			}
-			hasFields = true
-		case "mode":
-			fields.Mode = value
-			hasFields = true
-		case "convoy_id":
-			fields.ConvoyID = value
-			hasFields = true
-		case "merge_strategy":
-			fields.MergeStrategy = value
-			hasFields = true
-		case "convoy_owned":
-			fields.ConvoyOwned = strings.ToLower(value) == "true"
-			hasFields = true
-		case "formula_vars":
-			formulaVars = append(formulaVars, splitFormulaVars(parseFormulaVars(value))...)
-			hasFields = true
+	layout := scanDescription(issue.Description)
+	p := attachmentParse{seen: map[string]bool{}}
+	for _, line := range layout.header() {
+		if key, value, ok := attachmentFieldLine(line); ok {
+			p.field(key, value)
 		}
 	}
-	if len(formulaVars) > 0 {
-		fields.FormulaVars = strings.Join(formulaVars, "\n")
+	for k := range layout.extraReviewOnly {
+		_, value, _ := attachmentFieldLine(layout.lines[k])
+		p.field("review_only", value)
 	}
-	if reviewOnlyCanonicalTrue {
+	return p.result()
+}
+
+// attachmentParse accumulates header fields for ParseAttachmentFields.
+type attachmentParse struct {
+	fields                  AttachmentFields
+	has                     bool
+	seen                    map[string]bool
+	reviewOnlyCanonicalTrue bool
+	formulaVars             []string
+}
+
+func (p *attachmentParse) field(key, value string) {
+	switch key {
+	case "review_only":
+		p.reviewOnly(value)
+		return
+	case "formula_vars":
+		if value != "" {
+			p.formulaVars = append(p.formulaVars, splitFormulaVars(parseFormulaVars(value))...)
+			p.has = true
+		}
+		return
+	}
+	if value == "" || p.seen[key] {
+		return // first occurrence wins
+	}
+	p.seen[key] = true
+	p.has = true
+	f := &p.fields
+	switch key {
+	case "attached_molecule":
+		f.AttachedMolecule = value
+	case "attached_formula":
+		f.AttachedFormula = value
+	case "attached_at":
+		f.AttachedAt = value
+	case "attached_args":
+		f.AttachedArgs, _ = decodeAttachedArgs(value)
+	case "attached_vars":
+		f.AttachedVars = parseAttachedVars(value)
+	case "dispatched_by":
+		f.DispatchedBy = value
+	case "no_merge":
+		f.NoMerge = strings.ToLower(value) == "true"
+	case "mode":
+		f.Mode = value
+	case "convoy_id":
+		f.ConvoyID = value
+	case "merge_strategy":
+		f.MergeStrategy = value
+	case "convoy_owned":
+		f.ConvoyOwned = strings.ToLower(value) == "true"
+	}
+}
+
+// reviewOnly ORs a review_only value in: once any line marks the bead, it
+// stays marked. A non-canonical value (the empty value included) marks it too
+// (fail closed) and is kept verbatim unless a canonical true line is present.
+func (p *attachmentParse) reviewOnly(value string) {
+	p.has = true
+	marked, canonical := classifyReviewOnly(value)
+	p.fields.ReviewOnly = p.fields.ReviewOnly || marked
+	if canonical && marked {
+		p.reviewOnlyCanonicalTrue = true
+	} else if !canonical && !p.fields.ReviewOnlyNonCanonical {
+		p.fields.ReviewOnlyNonCanonical = true
+		p.fields.ReviewOnlyRaw = value
+	}
+}
+
+func (p *attachmentParse) result() *AttachmentFields {
+	if !p.has {
+		return nil
+	}
+	fields := p.fields
+	if len(p.formulaVars) > 0 {
+		fields.FormulaVars = strings.Join(p.formulaVars, "\n")
+	}
+	if p.reviewOnlyCanonicalTrue {
 		fields.ReviewOnlyNonCanonical = false
 		fields.ReviewOnlyRaw = ""
 	}
+	return &fields
+}
 
-	if !hasFields {
-		return nil
+// encodeAttachedArgs writes attached_args as a one-line JSON string (no HTML
+// escaping), so it never spans lines and never looks like legacy raw text.
+func encodeAttachedArgs(args string) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(args); err != nil {
+		return singleLine(args)
 	}
-	return fields
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// decodeAttachedArgs reads an attached_args value: a JSON string (current
+// writer) or raw legacy text, returned as is.
+func decodeAttachedArgs(value string) (string, bool) {
+	if strings.HasPrefix(value, `"`) {
+		var decoded string
+		if err := json.Unmarshal([]byte(value), &decoded); err == nil {
+			return decoded, true
+		}
+	}
+	return value, false
 }
 
 // FormatAttachmentFields formats AttachmentFields as a string suitable for an issue description.
-// Only non-empty fields are included, one line per field: line breaks in a
-// value are folded into spaces so the header block stays intact (gt-pd1c.75).
+// Only non-empty fields are included, one line per field (gt-pd1c.75):
+// attached_args is a JSON string, formula_vars and attached_vars JSON arrays,
+// and line breaks in other values are folded into spaces.
 func FormatAttachmentFields(fields *AttachmentFields) string {
 	if fields == nil {
 		return ""
@@ -142,7 +187,7 @@ func FormatAttachmentFields(fields *AttachmentFields) string {
 		lines = append(lines, "attached_at: "+singleLine(fields.AttachedAt))
 	}
 	if fields.AttachedArgs != "" {
-		lines = append(lines, "attached_args: "+singleLine(fields.AttachedArgs))
+		lines = append(lines, "attached_args: "+encodeAttachedArgs(fields.AttachedArgs))
 	}
 	if len(fields.AttachedVars) > 0 {
 		lines = append(lines, "attached_vars: "+formatAttachedVars(fields.AttachedVars))
@@ -242,14 +287,16 @@ func SetAttachmentFields(issue *Issue, fields *AttachmentFields) string {
 // with fields (nil clears them). It has no review_only stickiness: only
 // SetAttachmentFields, WithReviewOnlyMarker and WithoutReviewOnlyMarker call it.
 func writeAttachmentFields(issue *Issue, fields *AttachmentFields) string {
-	// Keep everything but the attachment field lines of the header block:
-	// free text above the header, other header lines (unknown keys,
-	// continuation text) and the text after the header, verbatim.
+	// Keep everything but the attachment field lines of the header block and
+	// the extra review_only lines (their value is in fields): free text above
+	// the header, other header lines (unknown keys, continuation text) and
+	// the text after the header, verbatim.
 	var otherLines []string
 	if issue != nil && issue.Description != "" {
-		pre, header, rest := splitAttachmentHeader(issue.Description)
+		layout := scanDescription(issue.Description)
+		pre, rest := layout.outside()
 		var headerOther []string
-		for _, line := range header {
+		for _, line := range layout.header() {
 			if _, _, ok := attachmentFieldLine(line); !ok {
 				headerOther = append(headerOther, line)
 			}
