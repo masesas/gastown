@@ -89,7 +89,7 @@ func TestDispatchSingleBeadRawReviewOnlyHookFailureClearsMetadata(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected scheduler dispatch hook failure")
 	}
-	assertNoRawReviewMetadata(t, readMutableBDDescription(t, descPath))
+	assertRollbackKeptOnlyReviewOnly(t, readMutableBDDescription(t, descPath))
 }
 
 func TestListBlockedWorkBeadIDStatesPartialFailureFailsClosedPerGroup(t *testing.T) {

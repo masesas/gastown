@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -81,7 +82,8 @@ func ParseAttachmentFields(issue *Issue) *AttachmentFields {
 			fields.NoMerge = strings.ToLower(value) == "true"
 			hasFields = true
 		case "review_only", "review-only", "reviewonly":
-			fields.ReviewOnly = strings.ToLower(value) == "true"
+			// OR across lines: once any line marks the bead, it stays marked.
+			fields.ReviewOnly = fields.ReviewOnly || parseReviewOnlyValue(value)
 			hasFields = true
 		case "mode":
 			fields.Mode = value
@@ -164,10 +166,57 @@ func FormatAttachmentFields(fields *AttachmentFields) string {
 	return strings.Join(lines, "\n")
 }
 
+// IsReviewOnly reports whether the issue carries the structured review_only
+// marker. It is the single source of truth for review-only mode: sling, the
+// scheduler dispatch, gt prime, gt done and gt mq submit all decide from the
+// bead through this function, never from a dispatch flag alone (gt-pd1c.69).
+func IsReviewOnly(issue *Issue) bool {
+	fields := ParseAttachmentFields(issue)
+	return fields != nil && fields.ReviewOnly
+}
+
+// parseReviewOnlyValue parses a review_only value fail-closed: only an
+// explicit false (strconv.ParseBool: "false", "0", "f", ...) disables the
+// mode; true values and anything unrecognised enable it (gt-pd1c.69).
+func parseReviewOnlyValue(value string) bool {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+	return err != nil || enabled
+}
+
+// WithReviewOnlyMarker returns description with the structured
+// "review_only: true" field prepended. The rest of the text is kept verbatim
+// (no attachment-key stripping), so it is safe for freshly authored bead
+// bodies. A description that is already review-only is returned unchanged.
+func WithReviewOnlyMarker(description string) string {
+	if IsReviewOnly(&Issue{Description: description}) {
+		return description
+	}
+	marker := FormatAttachmentFields(&AttachmentFields{ReviewOnly: true})
+	body := strings.Trim(description, "\n")
+	if body == "" {
+		return marker
+	}
+	return marker + "\n\n" + body
+}
+
 // SetAttachmentFields updates an issue's description with the given attachment fields.
 // Existing attachment field lines are replaced; other content is preserved.
 // Returns the new description string.
+//
+// review_only is sticky (gt-pd1c.69): when the issue is already review-only the
+// result stays review-only whatever fields says, including nil (detach).
+// Every attachment write (sling, attach, detach, burn, rollback) goes through
+// here, so no dispatch path can drop the marker. It is removed only by editing
+// the description directly.
 func SetAttachmentFields(issue *Issue, fields *AttachmentFields) string {
+	if IsReviewOnly(issue) && (fields == nil || !fields.ReviewOnly) {
+		sticky := AttachmentFields{}
+		if fields != nil {
+			sticky = *fields
+		}
+		sticky.ReviewOnly = true
+		fields = &sticky
+	}
 	// Known attachment field keys (lowercase)
 	attachmentKeys := map[string]bool{
 		"attached_molecule": true,

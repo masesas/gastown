@@ -148,6 +148,20 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 	sourceBD := sourceInfo.BD
 	sourceIssue := sourceInfo.Issue
 
+	// Review-only work never enters the merge queue (gt-pd1c.69): neither the
+	// submitted issue nor any bead hooked to the caller may be review-only.
+	// Checked before any MR bead exists; --resubmit and --skip-deps do not
+	// bypass it, and lookup failures refuse.
+	submitter, err := reviewOnlyCallerAgent()
+	if err != nil {
+		return fmt.Errorf("refusing merge-queue submit: %w", err)
+	}
+	if reviewBead, err := findReviewOnlyWork(cwd, submitter, reviewOnlyCandidate{ID: issueID, Issue: sourceIssue}); err != nil {
+		return fmt.Errorf("refusing merge-queue submit: %w", err)
+	} else if reviewBead != "" {
+		return reviewOnlySubmitRefusal(reviewBead)
+	}
+
 	// Determine target branch with the resolver gt done uses (gt-pd1c.37):
 	// explicit --epic > formula_vars base_branch > epic integration branch > rig default.
 	explicitTarget := ""

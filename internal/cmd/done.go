@@ -157,16 +157,9 @@ func resolveDonePolecatWorktreeAt(cwd string) (donePolecatWorktree, error) {
 		return donePolecatWorktree{}, err
 	}
 
-	actorRig, actorName, err := donePolecatActorIdentity(os.Getenv("BD_ACTOR"))
+	actorRig, actorName, err := polecatEnvIdentity()
 	if err != nil {
 		return donePolecatWorktree{}, err
-	}
-	roleRig, roleName, err := donePolecatEnvIdentity(os.Getenv("GT_ROLE"), os.Getenv("GT_RIG"), os.Getenv("GT_POLECAT"))
-	if err != nil {
-		return donePolecatWorktree{}, err
-	}
-	if actorRig != roleRig || actorName != roleName {
-		return donePolecatWorktree{}, fmt.Errorf("gt done identity mismatch: BD_ACTOR=%s/polecats/%s but GT_ROLE/GT_RIG/GT_POLECAT resolve to %s/polecats/%s", actorRig, actorName, roleRig, roleName)
 	}
 	if err := doneRejectGitEnvOverrides(); err != nil {
 		return donePolecatWorktree{}, err
@@ -199,6 +192,24 @@ func resolveDonePolecatWorktreeAt(cwd string) (donePolecatWorktree, error) {
 	}
 
 	return donePolecatWorktree{}, fmt.Errorf("gt done must be run from assigned polecat worktree %s; current git root is %s", strings.Join(candidates, " or "), gitRoot)
+}
+
+// polecatEnvIdentity resolves the calling polecat from BD_ACTOR and
+// GT_ROLE/GT_RIG/GT_POLECAT, which must agree. It is the one identity path
+// for gt done and gt mq submit (gt-pd1c.69).
+func polecatEnvIdentity() (rig, name string, err error) {
+	actorRig, actorName, err := donePolecatActorIdentity(os.Getenv("BD_ACTOR"))
+	if err != nil {
+		return "", "", err
+	}
+	roleRig, roleName, err := donePolecatEnvIdentity(os.Getenv("GT_ROLE"), os.Getenv("GT_RIG"), os.Getenv("GT_POLECAT"))
+	if err != nil {
+		return "", "", err
+	}
+	if actorRig != roleRig || actorName != roleName {
+		return "", "", fmt.Errorf("gt done identity mismatch: BD_ACTOR=%s/polecats/%s but GT_ROLE/GT_RIG/GT_POLECAT resolve to %s/polecats/%s", actorRig, actorName, roleRig, roleName)
+	}
+	return actorRig, actorName, nil
 }
 
 func donePolecatWorktreeCandidates(townRoot, rigName, polecatName string) ([]string, error) {
@@ -484,8 +495,7 @@ func doneReviewOnlyCloseSkipReason(bd *beads.Beads, issueID string, issue *beads
 	if skipReason != "" {
 		return skipReason, fatal
 	}
-	attachment := beads.ParseAttachmentFields(issue)
-	if attachment == nil || !attachment.ReviewOnly {
+	if !beads.IsReviewOnly(issue) {
 		return "", false
 	}
 	currentHead, err := currentReviewEvidenceHead()
@@ -500,10 +510,10 @@ func doneReviewOnlyCloseSkipReasonForHead(bd *beads.Beads, issueID string, issue
 	if skipReason != "" {
 		return skipReason, fatal
 	}
-	attachment := beads.ParseAttachmentFields(issue)
-	if attachment == nil || !attachment.ReviewOnly {
+	if !beads.IsReviewOnly(issue) {
 		return "", false
 	}
+	attachment := beads.ParseAttachmentFields(issue)
 	assignmentAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(attachment.AttachedAt))
 	if err != nil {
 		return fmt.Sprintf("review-only issue %s has no fresh assignment timestamp — re-sling it or add evidence after a fresh assignment", issueID), true
@@ -702,6 +712,23 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("getting current branch: %w", err)
 	}
 
+	// Review-only work (gt-pd1c.69): the target bead (--issue, else the branch)
+	// or any bead hooked to this polecat. Resolved before the auto-commit
+	// safety net so a confirmed review leg is never auto-committed. An
+	// unverifiable status keeps the safety net (ordinary work must not be lost
+	// to a bd outage); COMPLETED still refuses below, before any push.
+	reviewOnlyTarget := doneIssue
+	if reviewOnlyTarget == "" {
+		reviewOnlyTarget = parseBranchName(branch).Issue
+	}
+	// A branch-derived target may name a purged bead (stale branch reuse);
+	// the stale-branch guard below then switches to the hook (hq-l0fj).
+	reviewOnlyBead, reviewOnlyErr := findReviewOnlyWork(cwd, sender,
+		reviewOnlyCandidate{ID: reviewOnlyTarget, IgnoreMissing: doneIssue == ""})
+	if reviewOnlyErr != nil {
+		style.PrintWarning("%v", reviewOnlyErr)
+	}
+
 	// Auto-detect cleanup status if not explicitly provided
 	// This prevents premature polecat cleanup by ensuring witness knows git state
 	if doneCleanupStatus == "" {
@@ -786,7 +813,9 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	//
 	// Auto-commit ensures work is NEVER lost regardless of exit type or agent behavior.
 	// The commit message is clearly marked as an auto-save so reviewers know.
-	if doneCleanupStatus == "uncommitted" {
+	if doneCleanupStatus == "uncommitted" && reviewOnlyBead != "" {
+		fmt.Printf("\n%s Uncommitted changes left in the worktree are NOT auto-committed: review-only work produces no commits\n\n", style.Bold.Render("⚠"))
+	} else if doneCleanupStatus == "uncommitted" {
 		// Re-check to get file details (cleanup detection already confirmed uncommitted changes)
 		workStatus, err := g.CheckUncommittedWork()
 		if err == nil && workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
@@ -1005,7 +1034,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("checking git status: %w", err)
 		}
 		if workStatus.HasUncommittedChanges && !workStatus.CleanExcludingRuntime() {
-			return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+			if reviewOnlyBead == "" {
+				return fmt.Errorf("cannot complete: uncommitted changes would be lost\nCommit your changes first, or use --status DEFERRED to exit without completing\nUncommitted: %s", workStatus.String())
+			}
+			// A review leg that only reports may leave scratch files; they are
+			// never committed and stay in the worktree (gt-pd1c.69).
+			style.PrintWarning("review-only issue %s: leaving uncommitted changes uncommitted (%s)", reviewOnlyBead, workStatus.String())
 		}
 
 		// Check if branch has commits ahead of the clean target base. In fork-backed
@@ -1025,8 +1059,11 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// this is a non-code task (email, research, analysis, PRD review)
 		// where zero commits is expected.
 		// Must be checked before the zero-commit guard below (GH#2496, gt-kvf).
-		isNoMergeTask := false
-		reviewOnlySource := false
+		if reviewOnlyErr != nil {
+			return fmt.Errorf("%w\nNothing was pushed and no merge request was created; retry gt done when beads is reachable", reviewOnlyErr)
+		}
+		reviewOnlySource := reviewOnlyBead != ""
+		isNoMergeTask := reviewOnlySource
 		if issueID != "" {
 			sourceInfo, sourceErr := resolveSubmitSourceIssue(cwd, issueID)
 			if sourceErr != nil {
@@ -1034,12 +1071,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 			sourceIssueForNoMerge = sourceInfo.Issue
 			sourceBD = sourceInfo.BD
-			if af := beads.ParseAttachmentFields(sourceIssueForNoMerge); af != nil {
-				if af.NoMerge || af.ReviewOnly {
-					isNoMergeTask = true
-				}
-				reviewOnlySource = af.ReviewOnly
+			if reviewOnlyBead == "" && beads.IsReviewOnly(sourceIssueForNoMerge) {
+				reviewOnlyBead = issueID
 			}
+			reviewOnlySource = reviewOnlyBead != ""
+			af := beads.ParseAttachmentFields(sourceIssueForNoMerge)
+			isNoMergeTask = reviewOnlySource || (af != nil && af.NoMerge)
 		}
 
 		// If no commits ahead, work was likely already merged or is a legitimate
@@ -1148,7 +1185,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		}
 
 		if reviewOnlySource {
-			return fmt.Errorf("cannot complete review-only issue %s with commits ahead of %s; add a fresh review evidence comment and complete without code changes", issueID, baseRef)
+			return reviewOnlyCommitRefusal(reviewOnlyBead, baseRef)
 		}
 
 		// Branch contamination preflight: check if branch is significantly behind

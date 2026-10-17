@@ -583,6 +583,25 @@ gt sling <proto> --on gt-def <rig>       # With workflow template
 gt sling <bead> <rig>                    # Auto-convoy for dashboard visibility
 ```
 
+Review-only work (`--review-only`): the assignee evaluates and reports back, and
+must not commit, push or open a merge request. The mode is stored as the
+`review_only: true` field on the bead and is sticky: a later `gt sling` of the
+same bead without the flag (including `--force`, scheduler dispatch, convoy
+re-dispatch, or after the previous polecat was nuked) keeps it and refreshes the
+assignment timestamp; detach, burn and a failed sling's rollback keep it too.
+`gt prime` shows a REVIEW-ONLY directive. `gt done` and `gt mq submit` refuse
+commits and merge requests when the target bead (`--issue` or the branch) or
+the caller's active assignment is review-only. The active assignment is picked
+as `gt done` picks its hook: a `hooked` bead wins over `in_progress` ones (so a
+claimed review leg still counts, and a stale `in_progress` leg does not override
+the current hook); if the pick is ambiguous, every candidate counts. A lookup
+failure, or a polecat session whose identity cannot be resolved, refuses too.
+`gt done` never auto-commits leftover files of review-only work; complete with
+a `REPORT:`/`FINDINGS:` comment carrying `head_sha: <HEAD>` and no new commits.
+Parsing fails closed: any `review_only` line with a value other than an explicit
+false (`false`, `0`, ...) marks the bead. The field is removed only by editing
+the bead description.
+
 Agent overrides:
 
 - `gt start --agent <alias>` overrides the Mayor/Deacon runtime for this launch.
@@ -798,6 +817,9 @@ bd formula list          # Lists formulas by type
 - `gt sling` attempts to cook+pour the formula, which fails for convoy type
 - `gt formula run` handles convoy dispatch directly, spawning parallel polecats
 - Convoy formulas create multiple polecats (one per leg) + synthesis step
+- Legs of a convoy formula with `review_only = true` (formula-wide or per leg)
+  are created with the `review_only: true` field on the leg bead, so every later
+  re-dispatch of a leg stays review-only
 
 ## Common Issues
 

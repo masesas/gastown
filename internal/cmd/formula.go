@@ -569,6 +569,9 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 			}
 		}
 
+		// Review legs carry review_only on the bead itself (gt-pd1c.69).
+		legDesc = convoyLegBeadDescription(f, leg, legDesc)
+
 		legArgs := []string{
 			"create",
 			"--type=task",
@@ -671,7 +674,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 		// Agent precedence (GH#2118): per-leg > CLI --agent > formula-level
 		legAgent := resolveFormulaLegAgent(leg.Agent, formulaRunAgent, f.Agent)
 
-		slingArgs := buildConvoyLegSlingArgs(legBeadID, targetRig, leg.Description, leg.Title, legAgent, leg.ReviewOnly || f.ReviewOnly)
+		slingArgs := buildConvoyLegSlingArgs(legBeadID, targetRig, leg.Description, leg.Title, legAgent, convoyLegReviewOnly(f, leg))
 
 		slingCmd := exec.Command("gt", slingArgs...)
 		slingCmd.Stdout = os.Stdout
@@ -945,6 +948,25 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// convoyLegReviewOnly reports whether a convoy leg is analysis-only: the leg
+// itself or the whole formula declares review_only.
+func convoyLegReviewOnly(f *formula.Formula, leg formula.Leg) bool {
+	return leg.ReviewOnly || (f != nil && f.ReviewOnly)
+}
+
+// convoyLegBeadDescription returns the description a convoy leg bead is created
+// with. Review-only legs get the structured review_only field, so the mode is a
+// property of the bead from creation on: any later dispatch (plain re-sling,
+// --force, scheduler, relaunch) inherits it and gt done / gt mq submit refuse
+// commits and merge requests, even if a dispatcher forgets --review-only
+// (gt-pd1c.69).
+func convoyLegBeadDescription(f *formula.Formula, leg formula.Leg, description string) string {
+	if !convoyLegReviewOnly(f, leg) {
+		return description
+	}
+	return beads.WithReviewOnlyMarker(description)
 }
 
 // buildConvoyLegSlingArgs constructs the gt-sling argument list for a convoy leg.

@@ -54,7 +54,7 @@ Bead brief (`--type=decision --labels gt:brief,gt:keep --parent <epic>`) dibuat 
 
 ### 2.2 `mol-contract-brief-review` (convoy)
 
-- `review_only = true`. Input: `brief` (id bead), `round`.
+- `review_only = true`. Input: `brief` (id bead), `round`. `gt formula run` menulis field `review_only: true` ke setiap bead leg saat dibuat, sehingga sling ulang leg tetap review-only (gt-pd1c.69).
 - Legs: `be-consumer` dan `mobile-consumer` (area pilot). Leg tambahan ditambah di formula bila area bertambah.
 - Prompt dasar setiap leg berisi pertanyaan tetap spec § 2.2 dan memaksa output terstruktur `{bead, verdict: ok|gap|conflict, items[]}` (blok JSON di file leg).
 - Sintesis menggabungkan verdict per bead; tidak memutuskan.
