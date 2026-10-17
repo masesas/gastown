@@ -500,7 +500,7 @@ func runBdJSONWithOptions(dir string, allowStale, autoCommit bool, args ...strin
 func bdDepListRawIDs(dir, issueID, direction, depType string) ([]string, error) {
 	// Bead IDs are system-generated alphanumeric strings with hyphens, dots,
 	// and underscores — validate to prevent injection before interpolating below.
-	if !isValidBeadID(issueID) {
+	if !beads.IsSafeID(issueID) {
 		return nil, fmt.Errorf("invalid bead ID: %q", issueID)
 	}
 
@@ -510,7 +510,7 @@ func bdDepListRawIDs(dir, issueID, direction, depType string) ([]string, error) 
 	} else {
 		parseKey = "depends_on_id"
 	}
-	if depType != "" && !isValidBeadID(depType) {
+	if depType != "" && !beads.IsSafeID(depType) {
 		return nil, fmt.Errorf("invalid dep type: %q", depType)
 	}
 
@@ -647,20 +647,6 @@ func sqlExternalDepTargetClause(issueID string) string {
 	// Use an escape character that is not valid in bead IDs so underscores stay literal.
 	escapedID := strings.ReplaceAll(issueID, "_", "!_")
 	return fmt.Sprintf("depends_on_external LIKE '%%:%s' ESCAPE '!'", escapedID)
-}
-
-// isValidBeadID checks that a string is safe for SQL interpolation in dep queries.
-// Bead IDs contain only alphanumeric chars, hyphens, dots, and underscores.
-func isValidBeadID(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_') {
-			return false
-		}
-	}
-	return true
 }
 
 // collectEpicChildren does a BFS walk of an epic's parent-child hierarchy and

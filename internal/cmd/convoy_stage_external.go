@@ -5,46 +5,37 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/steveyegge/gastown/internal/beads"
 )
 
 // ExternalBlocker is an execution blocker of a staged slingable bead that is
 // not itself part of the staged set: a bead outside the epic tree or task
 // list, or a child that `bd list --parent` does not return (bd 1.3.0 hides
 // gate-type beads even with --all). It is never staged, tracked or dispatched
-// by the convoy. It only gates its consumers until it reaches a terminal
-// status (gt-pd1c.43).
+// by the convoy. It only gates its consumers until it is resolved
+// (beads.IsBlockerResolved; gt-pd1c.43).
 type ExternalBlocker struct {
-	ID     string
-	Title  string
-	Type   string // issue type reported by bd show; "" when unresolved
-	Status string // status reported by bd show; "" when unresolved
-	Err    error  // non-nil when the status could not be read (fail-closed: gates)
+	ID          string
+	Type        string // issue type reported by bd show; "" when unresolved
+	Status      string // status reported by bd show; "" when unresolved
+	CloseReason string // close reason reported by bd show (merge-blocks check)
+	Err         error  // non-nil when the status could not be read (fail-closed: gates)
 }
 
 // externalBlockerLookupFn resolves a blocker outside the staged set. It is the
-// prefix-routed `bd show --json` lookup used for every other staged bead;
-// tests override it.
+// prefix-routed `bd show --json -- <id>` lookup used for every other staged
+// bead; tests override it.
 var externalBlockerLookupFn = bdShow
 
-// isConvoyExecutionDep reports whether a dependency type orders execution in a
-// convoy. Matches the feeder's blockingDepTypes (internal/convoy).
-func isConvoyExecutionDep(depType string) bool {
-	switch depType {
-	case "blocks", "conditional-blocks", "waits-for", "merge-blocks":
-		return true
-	}
-	return false
-}
-
-// isTerminalBlockerStatus reports whether a blocker in this status no longer
-// blocks its dependents. Same rule as the feeder's isIssueBlocked.
-func isTerminalBlockerStatus(status string) bool {
-	return status == "closed" || status == "tombstone"
-}
-
-// lookupExternalBlocker resolves one blocker outside the staged set. A failed
-// or empty lookup yields an unresolved blocker, which gates (fail-closed).
+// lookupExternalBlocker resolves one blocker outside the staged set. An ID
+// that is not a valid raw bead ID is never passed to the lookup. A rejected,
+// failed or empty lookup yields an unresolved blocker, which gates
+// (fail-closed).
 func lookupExternalBlocker(id string) *ExternalBlocker {
+	if !beads.IsSafeID(id) {
+		return &ExternalBlocker{ID: id, Err: errInvalidBeadID(id)}
+	}
 	res, err := externalBlockerLookupFn(id)
 	if err == nil && res == nil {
 		err = errors.New("no result")
@@ -52,15 +43,30 @@ func lookupExternalBlocker(id string) *ExternalBlocker {
 	if err != nil {
 		return &ExternalBlocker{ID: id, Err: err}
 	}
-	return &ExternalBlocker{ID: id, Title: res.Title, Type: res.IssueType, Status: res.Status}
+	return &ExternalBlocker{ID: id, Type: res.IssueType, Status: res.Status, CloseReason: res.CloseReason}
+}
+
+// markMergeBlocks records that the edge blockerID -> to is a merge-blocks
+// edge. When several edges join the same pair, merge-blocks (the strictest)
+// wins.
+func markMergeBlocks(to *ConvoyDAGNode, blockerID, depType string) {
+	if !strings.EqualFold(strings.TrimSpace(depType), "merge-blocks") {
+		return
+	}
+	if to.MergeBlockedBy == nil {
+		to.MergeBlockedBy = make(map[string]bool)
+	}
+	to.MergeBlockedBy[blockerID] = true
 }
 
 // addExternalBlocker records an execution edge from a blocker outside the
-// staged set to an in-set dependent. Each blocker is looked up once per DAG.
-func (dag *ConvoyDAG) addExternalBlocker(to *ConvoyDAGNode, blockerID string) {
+// staged set to an in-set dependent. Each blocker is looked up once per DAG
+// and listed once per dependent.
+func (dag *ConvoyDAG) addExternalBlocker(to *ConvoyDAGNode, blockerID, depType string) {
 	if _, seen := dag.External[blockerID]; !seen {
 		dag.External[blockerID] = lookupExternalBlocker(blockerID)
 	}
+	markMergeBlocks(to, blockerID, depType)
 	for _, existing := range to.BlockedBy {
 		if existing == blockerID {
 			return
@@ -69,19 +75,37 @@ func (dag *ConvoyDAG) addExternalBlocker(to *ConvoyDAGNode, blockerID string) {
 	to.BlockedBy = append(to.BlockedBy, blockerID)
 }
 
-// isOpenBlocker reports whether blockerID still blocks its dependents, for a
-// staged node or a blocker outside the staged set alike. Unresolved external
-// blockers count as open. IDs the DAG knows nothing about are not blockers;
-// buildConvoyDAG records every execution edge of a slingable bead, so that
-// only happens for hand-built DAGs.
-func (dag *ConvoyDAG) isOpenBlocker(blockerID string) bool {
-	if node, ok := dag.Nodes[blockerID]; ok {
-		return !isTerminalBlockerStatus(node.Status)
+// isOpenBlocker reports whether blockerID still blocks node, for a staged
+// blocker or one outside the staged set alike. The rule is the feeder's
+// (beads.IsBlockerResolved): tombstone resolves, closed resolves except a
+// merge-blocks edge without a "Merged in ..." close reason. Unresolved
+// external blockers are open. IDs the DAG knows nothing about are not
+// blockers; buildConvoyDAG records every execution edge of a slingable bead,
+// so that only happens for hand-built DAGs.
+func (dag *ConvoyDAG) isOpenBlocker(node *ConvoyDAGNode, blockerID string) bool {
+	depType := "blocks"
+	if node != nil && node.MergeBlockedBy[blockerID] {
+		depType = "merge-blocks"
+	}
+	if b, ok := dag.Nodes[blockerID]; ok {
+		return !beads.IsBlockerResolved(depType, b.Status, b.CloseReason)
 	}
 	if ext, ok := dag.External[blockerID]; ok {
-		return ext.Err != nil || !isTerminalBlockerStatus(ext.Status)
+		return ext.Err != nil || !beads.IsBlockerResolved(depType, ext.Status, ext.CloseReason)
 	}
 	return false
+}
+
+// openBlockersOf returns node's blockers that are still open, in BlockedBy
+// order, described for output (gt mountain status). nil when none.
+func openBlockersOf(dag *ConvoyDAG, node *ConvoyDAGNode) []string {
+	var open []string
+	for _, id := range node.BlockedBy {
+		if dag.isOpenBlocker(node, id) {
+			open = append(open, dag.describeBlocker(id))
+		}
+	}
+	return open
 }
 
 // knowsBlocker reports whether blockerID is a staged node or a recorded

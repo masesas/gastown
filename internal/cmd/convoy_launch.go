@@ -216,7 +216,7 @@ func readyUndispatchedTasks(dag *ConvoyDAG, held mergeQueueHeld) []string {
 		}
 		blocked := false
 		for _, blockerID := range node.BlockedBy {
-			if dag.isOpenBlocker(blockerID) {
+			if dag.isOpenBlocker(node, blockerID) {
 				blocked = true
 				break
 			}

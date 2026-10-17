@@ -34,8 +34,8 @@ func TestTransitionConvoyToOpen_StagedReady(t *testing.T) {
 	logContent := string(logBytes)
 
 	// Should have called bd show to get status.
-	if !strings.Contains(logContent, "CMD:show hq-cv-test --json") {
-		t.Errorf("bd.log should contain 'CMD:show hq-cv-test --json', got:\n%s", logContent)
+	if !strings.Contains(logContent, "CMD:show --json -- hq-cv-test") {
+		t.Errorf("bd.log should contain 'CMD:show --json -- hq-cv-test', got:\n%s", logContent)
 	}
 
 	// Should have called bd update to transition to open.
@@ -267,13 +267,13 @@ func TestLaunchAsAlias_EpicInput(t *testing.T) {
 	logContent := string(logBytes)
 
 	// Should have called bd show for the epic (proving delegation to runConvoyStage).
-	if !strings.Contains(logContent, "CMD:show gt-epic-1 --json") {
-		t.Errorf("bd.log should contain 'CMD:show gt-epic-1 --json' (staging delegation), got:\n%s", logContent)
+	if !strings.Contains(logContent, "CMD:show --json -- gt-epic-1") {
+		t.Errorf("bd.log should contain 'CMD:show --json -- gt-epic-1' (staging delegation), got:\n%s", logContent)
 	}
 
 	// Should have called bd dep list for child tasks (proving staging pipeline ran).
-	if !strings.Contains(logContent, "CMD:dep list gt-task-1 --json") {
-		t.Errorf("bd.log should contain 'CMD:dep list gt-task-1 --json' (staging ran), got:\n%s", logContent)
+	if !strings.Contains(logContent, "CMD:dep list --json -- gt-task-1") {
+		t.Errorf("bd.log should contain 'CMD:dep list --json -- gt-task-1' (staging ran), got:\n%s", logContent)
 	}
 
 	// Verify convoyStageLaunch was reset by defer in runConvoyLaunch.
@@ -320,16 +320,16 @@ func TestLaunchAsAlias_TaskListInput(t *testing.T) {
 	logContent := string(logBytes)
 
 	// Should have called bd show for both tasks (proving delegation to runConvoyStage).
-	if !strings.Contains(logContent, "CMD:show gt-t1 --json") {
-		t.Errorf("bd.log should contain 'CMD:show gt-t1 --json', got:\n%s", logContent)
+	if !strings.Contains(logContent, "CMD:show --json -- gt-t1") {
+		t.Errorf("bd.log should contain 'CMD:show --json -- gt-t1', got:\n%s", logContent)
 	}
-	if !strings.Contains(logContent, "CMD:show gt-t2 --json") {
-		t.Errorf("bd.log should contain 'CMD:show gt-t2 --json', got:\n%s", logContent)
+	if !strings.Contains(logContent, "CMD:show --json -- gt-t2") {
+		t.Errorf("bd.log should contain 'CMD:show --json -- gt-t2', got:\n%s", logContent)
 	}
 
 	// Should have called bd dep list (proving staging pipeline ran).
-	if !strings.Contains(logContent, "CMD:dep list gt-t1 --json") {
-		t.Errorf("bd.log should contain 'CMD:dep list gt-t1 --json' (staging ran), got:\n%s", logContent)
+	if !strings.Contains(logContent, "CMD:dep list --json -- gt-t1") {
+		t.Errorf("bd.log should contain 'CMD:dep list --json -- gt-t1' (staging ran), got:\n%s", logContent)
 	}
 }
 
@@ -365,8 +365,8 @@ func TestTransitionConvoyToOpen_SkipsReanalysis(t *testing.T) {
 	}
 
 	// Verify it DID call show and update.
-	if !strings.Contains(logContent, "CMD:show hq-cv-noanal --json") {
-		t.Errorf("bd.log should contain 'CMD:show hq-cv-noanal --json', got:\n%s", logContent)
+	if !strings.Contains(logContent, "CMD:show --json -- hq-cv-noanal") {
+		t.Errorf("bd.log should contain 'CMD:show --json -- hq-cv-noanal', got:\n%s", logContent)
 	}
 	if !strings.Contains(logContent, "CMD:update hq-cv-noanal --status=open") {
 		t.Errorf("bd.log should contain 'CMD:update hq-cv-noanal --status=open', got:\n%s", logContent)
@@ -784,7 +784,7 @@ func TestCollectConvoyBeads_ExternalTrackedIDs(t *testing.T) {
 	bdPath := filepath.Join(binDir, "bd")
 	bdScript := `#!/bin/sh
 case "$*" in
-  "show hq-cv-ext --json")
+  "show hq-cv-ext --json"|"show --json -- hq-cv-ext")
     echo '[{"id":"hq-cv-ext","title":"Ext convoy","status":"staged_ready","issue_type":"convoy"}]'
     ;;
   sql\ *"issue_id = 'hq-cv-ext'"*)
@@ -794,20 +794,20 @@ case "$*" in
   "dep list hq-cv-ext --direction=down --type=tracks --json")
     echo '[{"id":"external:ghostty:ghostty-1i4.3"},{"id":"external:ghostty:ghostty-1i4.4"}]'
     ;;
-  "dep list hq-cv-ext --json")
+  "dep list hq-cv-ext --json"|"dep list --json -- hq-cv-ext")
     echo '[{"id":"external:ghostty:ghostty-1i4.3"},{"id":"external:ghostty:ghostty-1i4.4"}]'
     ;;
-  "show ghostty-1i4.3 --json")
+  "show ghostty-1i4.3 --json"|"show --json -- ghostty-1i4.3")
     echo '[{"id":"ghostty-1i4.3","title":"Task 1","status":"open","issue_type":"task"}]'
     ;;
-  "show ghostty-1i4.4 --json")
+  "show ghostty-1i4.4 --json"|"show --json -- ghostty-1i4.4")
     echo '[{"id":"ghostty-1i4.4","title":"Task 2","status":"open","issue_type":"task"}]'
     ;;
   show\ *--json)
     # Batch show fallback - return details for any known IDs
     echo '[{"id":"ghostty-1i4.3","title":"Task 1","status":"open","issue_type":"task"},{"id":"ghostty-1i4.4","title":"Task 2","status":"open","issue_type":"task"}]'
     ;;
-  "dep list ghostty-1i4.3 --json"|"dep list ghostty-1i4.4 --json")
+  "dep list ghostty-1i4.3 --json"|"dep list --json -- ghostty-1i4.3"|"dep list ghostty-1i4.4 --json"|"dep list --json -- ghostty-1i4.4"|"dep list --json -- ghostty-1i4.4")
     echo '[]'
     ;;
   *)

@@ -45,10 +45,10 @@ case "$*" in
     # bd sql --json returns rows as a JSON array of {col: val} maps
     echo '[{"depends_on_id":"ha-c1"},{"depends_on_id":"ha-c2"}]'
     ;;
-  "show ha-c1 --json")
+  "show --json -- ha-c1")
     echo '[{"id":"ha-c1","title":"Child one","status":"open","issue_type":"task"}]'
     ;;
-  "show ha-c2 --json")
+  "show --json -- ha-c2")
     echo '[{"id":"ha-c2","title":"Child two","status":"open","issue_type":"task"}]'
     ;;
   "--allow-stale version")

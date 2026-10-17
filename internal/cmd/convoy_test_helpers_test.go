@@ -245,8 +245,8 @@ func (d *testDAG) BdStubScript() string {
 	sb.WriteString(`case "$ALL_ARGS" in` + "\n")
 	for id, b := range d.beads {
 		beadJSON := d.beadJSON(b)
-		// Match both "show <id> --json" and "show --json <id>"
-		sb.WriteString(fmt.Sprintf("  show\\ %s\\ --json|show\\ --json\\ %s)\n", id, id))
+		// Match "show <id> --json", "show --json <id>" and "show --json -- <id>"
+		sb.WriteString(fmt.Sprintf("  show\\ %s\\ --json|show\\ --json\\ %s|show\\ --json\\ --\\ %s)\n", id, id, id))
 		sb.WriteString(fmt.Sprintf("    echo '%s'\n", beadJSON))
 		sb.WriteString("    exit 0\n")
 		sb.WriteString("    ;;\n")

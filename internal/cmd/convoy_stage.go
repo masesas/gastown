@@ -887,6 +887,11 @@ type ConvoyDAGNode struct {
 	Blocks    []string // IDs of beads this one blocks
 	Children  []string // parent-child children (hierarchy only, not execution)
 	Parent    string   // parent-child parent
+	// CloseReason decides whether this closed bead resolves a merge-blocks edge.
+	CloseReason string
+	// MergeBlockedBy marks BlockedBy entries reached by a merge-blocks edge:
+	// closed only resolves them with a "Merged in ..." close reason.
+	MergeBlockedBy map[string]bool
 }
 
 // detectCycles checks the DAG for cycles in execution edges (blocks/conditional-blocks/waits-for).
@@ -1027,7 +1032,7 @@ func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
 		for _, blocker := range node.BlockedBy {
 			if _, ok := slingable[blocker]; ok {
 				deg++ // slingable blocker — handled by Kahn's
-			} else if dag.isOpenBlocker(blocker) {
+			} else if dag.isOpenBlocker(node, blocker) {
 				deg++ // open non-slingable or external blocker — gate
 			}
 		}
@@ -1060,7 +1065,7 @@ func computeWaves(dag *ConvoyDAG) ([]Wave, []GatedTask, error) {
 					if _, ok := slingable[blocker]; ok {
 						continue
 					}
-					if dag.isOpenBlocker(blocker) {
+					if dag.isOpenBlocker(node, blocker) {
 						gatedBy = append(gatedBy, blocker)
 					}
 				}
@@ -1204,6 +1209,8 @@ type BeadInfo struct {
 	// Assignee is the bead's current assignee ("" when unassigned).
 	Assignee string
 	Rig      string // resolved rig name
+	// CloseReason decides whether a closed bead resolves a merge-blocks edge.
+	CloseReason string
 }
 
 // DepInfo represents a raw dependency from bd dep list output.
@@ -1233,12 +1240,13 @@ func buildConvoyDAG(beadList []BeadInfo, deps []DepInfo) *ConvoyDAG {
 	// Create nodes from beads.
 	for _, b := range beadList {
 		dag.Nodes[b.ID] = &ConvoyDAGNode{
-			ID:       b.ID,
-			Title:    b.Title,
-			Type:     b.Type,
-			Status:   b.Status,
-			Assignee: b.Assignee,
-			Rig:      b.Rig,
+			ID:          b.ID,
+			Title:       b.Title,
+			Type:        b.Type,
+			Status:      b.Status,
+			Assignee:    b.Assignee,
+			Rig:         b.Rig,
+			CloseReason: b.CloseReason,
 		}
 	}
 
@@ -1251,17 +1259,18 @@ func buildConvoyDAG(beadList []BeadInfo, deps []DepInfo) *ConvoyDAG {
 			continue // dependent not staged: nothing to order
 		}
 		if from == nil {
-			if blockerID != "" && isConvoyExecutionDep(d.Type) && isSlingableType(to.Type) {
-				dag.addExternalBlocker(to, blockerID)
+			if blockerID != "" && beads.IsBlockingDependencyType(d.Type) && isSlingableType(to.Type) {
+				dag.addExternalBlocker(to, blockerID, d.Type)
 			}
 			continue
 		}
 
 		switch {
-		case isConvoyExecutionDep(d.Type):
+		case beads.IsBlockingDependencyType(d.Type):
 			// Execution edges.
 			from.Blocks = append(from.Blocks, to.ID)
 			to.BlockedBy = append(to.BlockedBy, from.ID)
+			markMergeBlocks(to, from.ID, d.Type)
 		case d.Type == "parent-child":
 			// Hierarchy only.
 			from.Children = append(from.Children, to.ID)
@@ -1497,6 +1506,7 @@ type bdShowResult struct {
 	Description string   `json:"description"`
 	IssueType   string   `json:"issue_type"`
 	Labels      []string `json:"labels"`
+	CloseReason string   `json:"close_reason"`
 }
 
 // bdDepResult matches the JSON output of `bd dep list <id> --json`.
@@ -1516,10 +1526,21 @@ func runBdJSONForBead(beadID string, args ...string) ([]byte, error) {
 	return runBdJSON(resolveBeadDir(beadID), args...)
 }
 
-// bdShow runs `bd show <id> --json` and returns the parsed bead info.
-// Returns error if bd exits non-zero or returns no results.
+// errInvalidBeadID rejects an ID before it reaches bd. IDs come from bead
+// data written by agents; one shaped like a flag (--db=...) would otherwise be
+// parsed as a bd global option.
+func errInvalidBeadID(beadID string) error {
+	return fmt.Errorf("invalid bead ID %q", beadID)
+}
+
+// bdShow runs `bd show --json -- <id>` and returns the parsed bead info.
+// Returns error if the ID is not a valid raw bead ID (beads.IsSafeID), if bd
+// exits non-zero or returns no results.
 func bdShow(beadID string) (*bdShowResult, error) {
-	out, err := runBdJSONForBead(beadID, "show", beadID, "--json")
+	if !beads.IsSafeID(beadID) {
+		return nil, errInvalidBeadID(beadID)
+	}
+	out, err := runBdJSONForBead(beadID, "show", "--json", "--", beadID)
 	if err != nil {
 		return nil, fmt.Errorf("bd show %s: %w", beadID, err)
 	}
@@ -1535,11 +1556,14 @@ func bdShow(beadID string) (*bdShowResult, error) {
 	return &results[0], nil
 }
 
-// bdDepList runs `bd dep list <id> --json` and returns parsed deps.
+// bdDepList runs `bd dep list --json -- <id>` and returns parsed deps.
 // bd dep list returns the beads that <id> depends on. Each result's
 // DependsOnID is the dependency target; IssueID is set to <id> by this func.
 func bdDepList(beadID string) ([]bdDepResult, error) {
-	out, err := runBdJSONForBead(beadID, "dep", "list", beadID, "--json")
+	if !beads.IsSafeID(beadID) {
+		return nil, errInvalidBeadID(beadID)
+	}
+	out, err := runBdJSONForBead(beadID, "dep", "list", "--json", "--", beadID)
 	if err != nil {
 		return nil, fmt.Errorf("bd dep list %s: %w", beadID, err)
 	}
@@ -1568,6 +1592,9 @@ func bdDepList(beadID string) ([]bdDepResult, error) {
 // `bd list --parent` doesn't see children that were added via `bd dep add ...
 // --type=parent-child`. The deps table is authoritative.
 func bdListChildren(parentID string) ([]bdShowResult, error) {
+	if !beads.IsSafeID(parentID) {
+		return nil, errInvalidBeadID(parentID)
+	}
 	out, err := runBdJSONForBead(parentID, "list", "--parent="+parentID, "--json")
 	if err != nil {
 		return nil, fmt.Errorf("bd list --parent=%s: %w", parentID, err)
@@ -1705,11 +1732,12 @@ func collectEpicBeads(epicID string) ([]BeadInfo, []DepInfo, error) {
 
 		// Add bead info.
 		allBeads = append(allBeads, BeadInfo{
-			ID:     current.ID,
-			Title:  current.Title,
-			Type:   current.IssueType,
-			Status: current.Status,
-			Rig:    rigFromBeadID(current.ID),
+			ID:          current.ID,
+			Title:       current.Title,
+			Type:        current.IssueType,
+			Status:      current.Status,
+			Rig:         rigFromBeadID(current.ID),
+			CloseReason: current.CloseReason,
 		})
 
 		// Fetch deps for this bead.
@@ -1753,12 +1781,13 @@ func collectTaskListBeads(taskIDs []string) ([]BeadInfo, []DepInfo, error) {
 		}
 
 		allBeads = append(allBeads, BeadInfo{
-			ID:       result.ID,
-			Title:    result.Title,
-			Type:     result.IssueType,
-			Status:   result.Status,
-			Assignee: result.Assignee,
-			Rig:      rigFromBeadID(result.ID),
+			ID:          result.ID,
+			Title:       result.Title,
+			Type:        result.IssueType,
+			Status:      result.Status,
+			Assignee:    result.Assignee,
+			Rig:         rigFromBeadID(result.ID),
+			CloseReason: result.CloseReason,
 		})
 
 		// Fetch deps.

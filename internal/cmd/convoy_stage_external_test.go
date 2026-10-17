@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -337,5 +338,169 @@ func TestGatedOutput_NamesExternalBlockers(t *testing.T) {
 	}
 	if !strings.Contains(findings["c"], "transitively gated") {
 		t.Errorf("c finding = %q", findings["c"])
+	}
+}
+
+// Dependency targets are agent-written. An ID that bd would read as a flag
+// (e.g. --db=<path> pointing at a forged database) must never reach bd: it is
+// unresolved, so its consumer stays gated and staging warns (fail-closed).
+func TestStageExternalBlocker_FlagLikeIDNeverReachesBd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — shell stubs")
+	}
+	dag := newTestDAG(t).
+		Epic("gt-epic", "Epic").
+		Task("gt-cons", "Consumer", withRig("gastown")).ParentOf("gt-epic").
+		BlockedBy("--db=/tmp/forged").BlockedBy("external:gt:-x")
+	_, logPath := dag.Setup(t)
+
+	staged, waves, gated := stageEpicForTest(t, "gt-epic")
+
+	if _, ok := waveTaskSet(waves)["gt-cons"]; ok {
+		t.Fatalf("consumer of invalid blocker ID must not be in a wave, waves=%+v", waves)
+	}
+	by, _ := gatedBy(gated, "gt-cons")
+	if len(by) != 2 {
+		t.Fatalf("gt-cons should be gated by both invalid IDs, got %v", by)
+	}
+	for _, id := range []string{"--db=/tmp/forged", "-x"} {
+		if ext := staged.External[id]; ext == nil || ext.Err == nil {
+			t.Errorf("invalid ID %q must be unresolved, got %+v", id, ext)
+		}
+	}
+	warns := findingsOf(detectWarnings(staged, &StageInput{Kind: StageInputEpic, IDs: []string{"gt-epic"}}), "unresolved-blocker")
+	if len(warns) != 2 {
+		t.Errorf("expected 2 unresolved-blocker warnings, got %+v", warns)
+	}
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logBytes)
+	if strings.Contains(log, "forged") || strings.Contains(log, " -x") {
+		t.Errorf("invalid ID reached bd:\n%s", log)
+	}
+	if !strings.Contains(log, "CMD:show --json -- gt-epic") || !strings.Contains(log, "CMD:dep list --json -- gt-cons") {
+		t.Errorf("bd show/dep list must end options with -- before the ID:\n%s", log)
+	}
+}
+
+func TestBdShow_RejectsInvalidID(t *testing.T) {
+	for _, id := range []string{"", "-x", "--db=/tmp/x", "gt a", "external:r:gt-a"} {
+		if _, err := bdShow(id); err == nil || !strings.Contains(err.Error(), "invalid bead ID") {
+			t.Errorf("bdShow(%q) err = %v, want invalid bead ID", id, err)
+		}
+		if _, err := bdDepList(id); err == nil || !strings.Contains(err.Error(), "invalid bead ID") {
+			t.Errorf("bdDepList(%q) err = %v, want invalid bead ID", id, err)
+		}
+		if _, err := bdListChildren(id); err == nil || !strings.Contains(err.Error(), "invalid bead ID") {
+			t.Errorf("bdListChildren(%q) err = %v, want invalid bead ID", id, err)
+		}
+	}
+}
+
+// merge-blocks follows the feeder rule (beads.IsBlockerResolved): closed is
+// not enough, the close reason must confirm the merge. Staged and external
+// blockers alike.
+func TestMergeBlocks_ClosedWithoutMergeStillBlocks(t *testing.T) {
+	orig := externalBlockerLookupFn
+	t.Cleanup(func() { externalBlockerLookupFn = orig })
+	externalBlockerLookupFn = func(id string) (*bdShowResult, error) {
+		reason := "PR merged"
+		if id == "x-merged" {
+			reason = "Merged in abc123"
+		}
+		return &bdShowResult{ID: id, Status: "closed", IssueType: "task", CloseReason: reason}, nil
+	}
+	beadList := []BeadInfo{
+		{ID: "s-unmerged", Type: "task", Status: "closed", CloseReason: "done"},
+		{ID: "s-merged", Type: "task", Status: "closed", CloseReason: "Merged in def456"},
+		{ID: "a", Type: "task", Status: "open"},
+		{ID: "b", Type: "task", Status: "open"},
+		{ID: "c", Type: "task", Status: "open"},
+		{ID: "d", Type: "task", Status: "open"},
+		{ID: "e", Type: "task", Status: "open"},
+	}
+	deps := []DepInfo{
+		{IssueID: "a", DependsOnID: "s-unmerged", Type: "merge-blocks"},
+		{IssueID: "b", DependsOnID: "s-merged", Type: "merge-blocks"},
+		{IssueID: "c", DependsOnID: "x-unmerged", Type: "merge-blocks"},
+		{IssueID: "d", DependsOnID: "x-merged", Type: "merge-blocks"},
+		{IssueID: "e", DependsOnID: "s-unmerged", Type: "blocks"}, // plain blocks: closed resolves
+	}
+	dag := buildConvoyDAG(beadList, deps)
+
+	ready := readyUndispatchedTasks(dag, func(string) bool { return false })
+	if strings.Join(ready, ",") != "b,d,e" {
+		t.Errorf("ready = %v, want [b d e]", ready)
+	}
+	_, gated, err := computeWaves(dag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if by, ok := gatedBy(gated, "c"); !ok || len(by) != 1 || by[0] != "x-unmerged" {
+		t.Errorf("c should be gated by unmerged external blocker, gated=%+v", gated)
+	}
+	if _, ok := gatedBy(gated, "d"); ok {
+		t.Errorf("d's external blocker is merged, must not gate: %+v", gated)
+	}
+}
+
+// gt mountain status uses openBlockersOf: tombstone and closed blockers are
+// not open; a closed-but-unmerged merge-blocks blocker and an external open
+// blocker are, and are described.
+func TestOpenBlockersOf_MountainStatus(t *testing.T) {
+	dag := &ConvoyDAG{
+		Nodes: map[string]*ConvoyDAGNode{
+			"tomb": {ID: "tomb", Type: "task", Status: "tombstone"},
+			"done": {ID: "done", Type: "task", Status: "closed"},
+			"wip":  {ID: "wip", Type: "task", Status: "in_progress"},
+			"mb":   {ID: "mb", Type: "task", Status: "closed", CloseReason: "done"},
+			"t": {ID: "t", Type: "task", Status: "open",
+				BlockedBy:      []string{"tomb", "done", "wip", "mb", "x-open", "x-gone"},
+				MergeBlockedBy: map[string]bool{"mb": true}},
+		},
+		External: map[string]*ExternalBlocker{
+			"x-open": {ID: "x-open", Type: "gate", Status: "open"},
+			"x-gone": {ID: "x-gone", Type: "task", Status: "tombstone"},
+		},
+	}
+	got := openBlockersOf(dag, dag.Nodes["t"])
+	want := "wip, mb, x-open (outside staged set: gate, open)"
+	if strings.Join(got, ", ") != want {
+		t.Errorf("openBlockersOf = %q, want %q", strings.Join(got, ", "), want)
+	}
+	if openBlockersOf(dag, dag.Nodes["tomb"]) != nil {
+		t.Error("node without blockers must have no open blockers")
+	}
+}
+
+// A blocker reached through several edges (dup rows, wrapped and raw ID,
+// different execution types) is looked up once and listed once.
+func TestBuildConvoyDAG_ExternalEdgeDedup(t *testing.T) {
+	calls := 0
+	orig := externalBlockerLookupFn
+	t.Cleanup(func() { externalBlockerLookupFn = orig })
+	externalBlockerLookupFn = func(id string) (*bdShowResult, error) {
+		calls++
+		return &bdShowResult{ID: id, Status: "closed", IssueType: "task", CloseReason: "done"}, nil
+	}
+	dag := buildConvoyDAG(
+		[]BeadInfo{{ID: "a", Type: "task", Status: "open"}},
+		[]DepInfo{
+			{IssueID: "a", DependsOnID: "x-1", Type: "blocks"},
+			{IssueID: "a", DependsOnID: "x-1", Type: "blocks"},
+			{IssueID: "a", DependsOnID: "external:o:x-1", Type: "merge-blocks"},
+		},
+	)
+	if calls != 1 {
+		t.Errorf("lookups = %d, want 1", calls)
+	}
+	if got := dag.Nodes["a"].BlockedBy; len(got) != 1 || got[0] != "x-1" {
+		t.Errorf("BlockedBy = %v, want [x-1]", got)
+	}
+	// The strictest edge wins: merge-blocks without merge keeps blocking.
+	if !dag.isOpenBlocker(dag.Nodes["a"], "x-1") {
+		t.Error("merge-blocks edge must keep closed-unmerged blocker open")
 	}
 }

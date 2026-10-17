@@ -436,14 +436,7 @@ func showMountainDetail(townBeads, inputID string) error {
 			// Check if blocked by deps.
 			node := dag.Nodes[b.ID]
 			if node != nil && len(node.BlockedBy) > 0 {
-				hasOpenBlocker := false
-				for _, dep := range node.BlockedBy {
-					if dag.isOpenBlocker(dep) {
-						hasOpenBlocker = true
-						break
-					}
-				}
-				if hasOpenBlocker {
+				if len(openBlockersOf(dag, node)) > 0 {
 					blocked = append(blocked, b.ID)
 				} else {
 					ready = append(ready, b.ID)
@@ -541,13 +534,7 @@ func showMountainDetail(townBeads, inputID string) error {
 			blockers := ""
 			if node != nil {
 				title = node.Title
-				var openBlockers []string
-				for _, dep := range node.BlockedBy {
-					if dag.isOpenBlocker(dep) {
-						openBlockers = append(openBlockers, dag.describeBlocker(dep))
-					}
-				}
-				if len(openBlockers) > 0 {
+				if openBlockers := openBlockersOf(dag, node); len(openBlockers) > 0 {
 					blockers = " (needs: " + strings.Join(openBlockers, ", ") + ")"
 				}
 			}

@@ -174,17 +174,6 @@ func IsSlingableType(issueType string) bool {
 	return slingableTypes[issueType]
 }
 
-// blockingDepTypes are dependency types that prevent an issue from being
-// dispatched. parent-child is intentionally excluded — a child task is
-// dispatchable even if its parent epic is open (consistent with molecule
-// step behavior in internal/cmd/molecule_step.go).
-var blockingDepTypes = map[string]bool{
-	"blocks":             true,
-	"conditional-blocks": true,
-	"waits-for":          true,
-	"merge-blocks":       true,
-}
-
 // isIssueBlocked checks if an issue has unclosed blocking dependencies.
 // Returns true if any blocks, conditional-blocks, waits-for, or merge-blocks
 // dependency targets an issue that is not closed/tombstone.
@@ -224,20 +213,20 @@ func isIssueBlocked(ctx context.Context, store beadsdk.Storage, issueID string, 
 	var staleCandidateTypes []string
 
 	for _, d := range deps {
+		// Dependency types and the resolution rule come from one source
+		// (beads.IsBlockingDependencyType / beads.IsBlockerResolved), shared
+		// with convoy staging and launch. parent-child never blocks: a child
+		// task is dispatchable even if its parent epic is open.
 		depType := string(d.DependencyType)
-		if !blockingDepTypes[depType] {
+		if !beads.IsBlockingDependencyType(depType) {
 			continue
 		}
 		status := string(d.Status)
-		if status == "tombstone" {
-			continue // always unblocked
+		if beads.IsBlockerResolved(depType, status, d.CloseReason) {
+			continue
 		}
 		if status == "closed" {
-			// For merge-blocks: "closed" alone is not enough — need merge confirmation
-			if depType == "merge-blocks" && !strings.HasPrefix(d.CloseReason, "Merged in ") {
-				return true // closed but not merged = still blocked
-			}
-			continue // closed = unblocked for non-merge-blocks
+			return true // merge-blocks closed but not merged = still blocked (#1893)
 		}
 		// Status is not closed/tombstone. If we have a resolver, the dep might
 		// actually be closed in its home store but stale in the snapshot.
@@ -257,16 +246,8 @@ func isIssueBlocked(ctx context.Context, store beadsdk.Storage, issueID string, 
 			if !ok {
 				return true // can't resolve = assume blocked
 			}
-			freshStatus := string(fresh.Status)
-			if freshStatus == "tombstone" {
-				continue
-			}
-			if freshStatus != "closed" {
-				return true // confirmed not closed
-			}
-			// For merge-blocks: check close reason from fresh data
-			if staleCandidateTypes[i] == "merge-blocks" && !strings.HasPrefix(fresh.CloseReason, "Merged in ") {
-				return true
+			if !beads.IsBlockerResolved(staleCandidateTypes[i], string(fresh.Status), fresh.CloseReason) {
+				return true // not closed, or merge-blocks closed without merge
 			}
 		}
 	}
@@ -573,7 +554,7 @@ func FireCrossRigDepNotifications(ctx context.Context, closedIssueID, townRoot s
 				continue
 			}
 			depType := string(dep.DependencyType)
-			if !blockingDepTypes[depType] {
+			if !beads.IsBlockingDependencyType(depType) {
 				continue
 			}
 

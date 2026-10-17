@@ -231,16 +231,30 @@ the output, `gated` in `--json`). Two kinds of gate:
 - an open non-slingable staged node (decision, epic, ...);
 - a blocker **outside the staged set** (gt-pd1c.43): a bead outside the epic tree or task list, or a
   child that `bd list --parent` does not return (bd 1.3.0 hides `gate` beads even with `--all`).
-  `buildConvoyDAG` resolves each such blocker once through the same prefix-routed `bd show --json`
-  lookup used for staged beads and records it in `ConvoyDAG.External`. It is never tracked or
-  dispatched by the convoy. Closed/tombstone → ignored; open → gates; unreadable (lookup error) →
-  gates fail-closed plus an `unresolved-blocker` warning. Output marks it as
+  `buildConvoyDAG` resolves each such blocker once through the same prefix-routed
+  `bd show --json -- <id>` lookup used for staged beads and records it in `ConvoyDAG.External`. It
+  is never tracked or dispatched by the convoy. Resolved → ignored; open → gates; unreadable (lookup
+  error, or an ID that fails `beads.IsSafeID`, e.g. a flag-like `--db=...`) → gates fail-closed plus
+  an `unresolved-blocker` warning. Output marks it as
   `<id> (outside staged set: <type>, <status>)`; `--json` adds `external_blockers` to the gated
   entry.
 
 One predicate (`ConvoyDAG.isOpenBlocker`) decides "still blocking" for waves, launch relaunch
 (`readyUndispatchedTasks`), orphan detection and `gt mountain` status. A gated bead stays tracked;
 once its blocker closes, the daemon feeder dispatches it (`isIssueBlocked`).
+
+**Resolution rule (one source, shared with the feeder).** `beads.IsBlockingDependencyType` is the
+one set of blocking dependency types (`blocks`, `conditional-blocks`, `waits-for`, `merge-blocks`;
+`parent-child` never blocks). `beads.IsBlockerResolved(depType, status, closeReason)` decides when a
+blocker stops blocking: `tombstone` always; `closed` too, **except `merge-blocks`, which needs a close
+reason starting with `Merged in `** (the code landed; #1893). A closed-but-unmerged `merge-blocks`
+blocker keeps gating, in the feeder, in staging/launch and in `gt mountain`, for staged and
+outside blockers alike. bd readiness (`beads.HasUnresolvedBlockers`) uses the same rule and also
+treats a `pinned` target as resolved.
+
+**Bead IDs from bead data are untrusted.** Stage/launch helpers (`bdShow`, `bdDepList`,
+`bdListChildren`) reject IDs that fail `beads.IsSafeID` and pass the ID after `--`
+(`bd show --json -- <id>`), so an agent-written dependency target can never be parsed as a bd option.
 
 Output example:
 ```

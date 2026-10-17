@@ -84,6 +84,8 @@ func TestIsSafeID(t *testing.T) {
 	for s, want := range map[string]bool{
 		"gt-wisp-1": true, "gastown": true, "my_rig.2": true,
 		"": false, ".": false, "..": false, "../x": false, "a/b": false, "a b": false, "-x": false, "a;b": false, "a\nb": false,
+		// argv injection (gt-pd1c.43): flag-like and wrapped IDs are not safe.
+		"--db=/tmp/x": false, "external:r:gt-a": false, "gt-a'": false, "gt-pd1c.43": true,
 	} {
 		if got := IsSafeID(s); got != want {
 			t.Errorf("IsSafeID(%q) = %v, want %v", s, got, want)

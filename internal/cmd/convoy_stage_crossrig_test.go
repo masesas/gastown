@@ -52,22 +52,22 @@ func TestConvoyStage_CrossRigWaves(t *testing.T) {
 	// CLI now emits (placeholder Issue with id + dependency_type).
 	scriptBody := `
 case "$*" in
-  "show mo-bmx --json")
+  "show mo-bmx --json"|"show --json -- mo-bmx")
     echo '[{"id":"mo-bmx","title":"modules phase","status":"open","issue_type":"task"}]'
     ;;
-  "show fr-2p0 --json")
+  "show fr-2p0 --json"|"show --json -- fr-2p0")
     echo '[{"id":"fr-2p0","title":"frontend phase","status":"open","issue_type":"task"}]'
     ;;
-  "show svh-0m5 --json")
+  "show svh-0m5 --json"|"show --json -- svh-0m5")
     echo '[{"id":"svh-0m5","title":"services helm phase","status":"open","issue_type":"task"}]'
     ;;
-  "dep list mo-bmx --json")
+  "dep list mo-bmx --json"|"dep list --json -- mo-bmx")
     echo '[]'
     ;;
-  "dep list fr-2p0 --json")
+  "dep list fr-2p0 --json"|"dep list --json -- fr-2p0")
     echo '[{"id":"mo-bmx","dependency_type":"blocks"}]'
     ;;
-  "dep list svh-0m5 --json")
+  "dep list svh-0m5 --json"|"dep list --json -- svh-0m5")
     echo '[{"id":"fr-2p0","dependency_type":"blocks"}]'
     ;;
   *)
