@@ -110,7 +110,7 @@ func TestPrePushGuard(t *testing.T) {
 			update: prePushUpd("refs/heads/main", f.land, f.mainSHA), wantErr: "integration_branch_auto_land", forbidden: "GT_INTEGRATION_LAND"},
 		{name: "agent land with GT_INTEGRATION_LAND=1 still rejected", rig: plain, env: append([]string{"GT_INTEGRATION_LAND", "1"}, agent...),
 			update: prePushUpd("refs/heads/main", f.land, f.mainSHA), wantErr: "integration/epic-a", forbidden: "GT_INTEGRATION_LAND"},
-		{name: "agent identified via BD_ACTOR", rig: plain, env: []string{"BD_ACTOR", "myrig/polecats/nux"},
+		{name: "agent identified via BD_ACTOR", rig: plain, env: []string{"BD_ACTOR", "myrig/refinery"},
 			update: prePushUpd("refs/heads/main", f.land, f.mainSHA), wantErr: "BD_ACTOR"},
 		{name: "agent land auto_land=true via gt land allowed", rig: autoLandOn, env: append([]string{"GT_INTEGRATION_LAND", "1"}, agent...),
 			update: prePushUpd("refs/heads/main", f.land, f.mainSHA)},

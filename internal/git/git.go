@@ -3134,6 +3134,19 @@ func (g *Git) PushRemoteRefTargetStatus(remote string, ref RemoteRef, target str
 	return g.preservationOfRefAgainstRef("FETCH_HEAD", target)
 }
 
+// PreservedOn reports whether commit head is preserved on commit base with the
+// rule gt polecat prune uses (ancestor, merge-tree no-op, or every patch
+// already on base). Both must be object names present in this repository
+// (gt-pd1c.78: the pre-push guard compares a deleted polecat tip with the
+// remote targets' tips).
+func (g *Git) PreservedOn(head, base string) (BranchPreservationStatus, error) {
+	head, base = strings.TrimSpace(head), strings.TrimSpace(base)
+	if head == "" || base == "" || strings.HasPrefix(head, "-") || strings.HasPrefix(base, "-") {
+		return BranchPreservationStatus{}, fmt.Errorf("invalid commit for preservation check")
+	}
+	return g.preservationOfRefAgainstRef(head, base)
+}
+
 // CountCherryUnmergedCommits counts `git cherry` lines whose patches are not
 // present on the comparison base.
 func CountCherryUnmergedCommits(out string) int {

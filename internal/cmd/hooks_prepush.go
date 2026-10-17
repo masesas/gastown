@@ -12,7 +12,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/pushguard"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -24,8 +26,21 @@ import (
 // pre-push input into `gt hooks pre-push <remote> <url>`. All rules live here:
 //
 //   - Targets: the rig default branch and integration/* (the merge-request
-//     targets). polecat/* and every other branch and tags pass without any
-//     I/O beyond reading stdin, so normal polecat work is not slowed down.
+//     targets). Pushes to polecat/* and every other branch and tags pass
+//     without any I/O beyond reading stdin, so normal polecat work is not
+//     slowed down.
+//   - Polecat branch deletion (gt-pd1c.78, agents other than crew): allowed
+//     only when it loses no work (polecatBranchDeletion): the tip is preserved
+//     on the remote default branch or a remote integration/* branch, or the
+//     merge queue (beads.MergeQueue.BranchHold) says no MR is open and none
+//     landed, or the deciding landed MR's commit is the tip. An unreadable
+//     merge queue refuses. Humans and crew are not checked.
+//   - Target roles (gt-pd1c.78): an update of a target by an agent other than
+//     the refinery or crew (witness, mayor, deacon, dog, boot, polecat, an
+//     unknown role) is refused. Exceptions already in Gas Town: a polecat on a
+//     rig whose merge queue is disabled (gt done's direct strategy,
+//     rigMergeQueueActive) and creating an integration/* branch whose tip is
+//     already on a remote target (gt mq integration create).
 //   - Rig detection: from the real (symlink-resolved) git common dir, then the
 //     real working directory. An agent push to a target from a repository
 //     that runs the managed hook but whose rig cannot be detected is refused
@@ -71,7 +86,15 @@ pre-push hook runs this with git's arguments and pipes git's pre-push input
 ("<local_ref> <local_sha> <remote_ref> <remote_sha>" per line) to stdin.
 
 Rules (agent = GT_ROLE, BD_ACTOR, GT_POLECAT or GT_CREW is set):
-  - polecat/*, other branches, tags: allowed, not checked.
+  - Pushes to polecat/*, other branches, tags: allowed, not checked.
+  - Agent (not crew) deletion of polecat/*: allowed only when the tip is
+    preserved on the remote default branch or integration/*, or the merge
+    queue shows no open MR and no landed work from the branch (or the landed
+    MR's commit is the tip). Unreadable beads: refused.
+  - Update of the default branch or integration/* by an agent other than the
+    refinery or crew: refused (a polecat may push there only when the rig's
+    merge queue is disabled; a new integration/* branch with no new commits
+    may be created by any agent).
   - Agent push to the default branch or integration/* from a repository that
     runs the managed hook but whose rig cannot be detected: refused.
   - Agent update of the default branch or integration/* that is not a
@@ -128,7 +151,23 @@ func runHooksPrePush(cmd *cobra.Command, args []string) error {
 			return st.State == pushguard.StateInstalled || st.State == pushguard.StateOutdated
 		},
 	}
+	g.loadQueue = func() *beads.MergeQueue { return prePushMergeQueue(cwd) }
 	return g.check(updates)
+}
+
+// prePushMergeQueue reads the town's merge queue for the repository at cwd.
+// Git's repository-local variables (GIT_DIR in a worktree hook) are cleared
+// first so bd and the git provers of the rig repositories are not pointed at
+// the pushing repository.
+func prePushMergeQueue(cwd string) *beads.MergeQueue {
+	locs := prePushLocations(cwd)
+	clearGitLocalEnv()
+	for _, loc := range locs {
+		if town, err := workspace.Find(loc); err == nil && town != "" {
+			return mergeproof.TownMergeQueue(town)
+		}
+	}
+	return beads.NewMergeQueue(nil, errNoTown, nil)
 }
 
 // realPath resolves symlinks so a cwd reached through a symlink still maps
@@ -207,6 +246,10 @@ type prePushRig struct {
 	autoLand      autoLandSetting
 	allowed       []string
 	allowedErr    error // scope unknown: agent pushes to targets fail closed
+	// mergeQueueOff: merge_queue.enabled=false (rigMergeQueueActive), the
+	// only case in which a polecat lands its own work (gt done, direct
+	// strategy). Zero value = active queue (fail closed).
+	mergeQueueOff bool
 }
 
 // resolvePrePushRig maps path to its rig (<townRoot>/<rig>/..., where the rig
@@ -234,6 +277,7 @@ func resolvePrePushRig(townRoot, path string) (*prePushRig, error) {
 		r.defaultBranch = strings.TrimSpace(cfg.DefaultBranch)
 	}
 	r.allowed, r.allowedErr = loadMergeScope(rigPath)
+	r.mergeQueueOff = !rigMergeQueueActive(townRoot, name)
 	return r, nil
 }
 
@@ -245,6 +289,7 @@ type prePushGit interface {
 	Rev(ref string) (string, error)
 	MergeBase(a, b string) (string, error)
 	DiffNameOnlyRange(from, to string) ([]string, error)
+	PreservedOn(head, base string) (git.BranchPreservationStatus, error)
 	RemoteDefaultBranch() string
 }
 
@@ -260,6 +305,9 @@ type prePushGuard struct {
 	// cannot be detected are refused; other repos (e.g. the Gas Town source
 	// repo delegating from .githooks) run the rules without rig settings.
 	isManaged func() bool
+	// loadQueue reads the town's merge queue, only for an agent deleting a
+	// polecat branch whose tip is not on a target (nil = unreadable).
+	loadQueue func() *beads.MergeQueue
 
 	rigLoaded  bool
 	rig        *prePushRig
@@ -284,8 +332,14 @@ func (g *prePushGuard) check(updates []prePushUpdate) error {
 
 func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 	branch, ok := strings.CutPrefix(u.RemoteRef, "refs/heads/")
-	if !ok || strings.HasPrefix(branch, "polecat/") {
-		return nil // tag/other ref or polecat work
+	if !ok {
+		return nil // tag or other ref
+	}
+	if strings.HasPrefix(branch, "polecat/") {
+		if u.LocalSHA != prePushZeroSHA {
+			return nil // polecat work
+		}
+		return g.checkPolecatDelete(u, branch)
 	}
 	agentVar := agentSessionEnvVar(g.getenv)
 	deletion := u.LocalSHA == prePushZeroSHA
@@ -309,6 +363,9 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 	}
 	if deletion {
 		return g.checkAgentDelete(u, branch, defaults)
+	}
+	if err := g.checkTargetRole(u, branch, r, defaults); err != nil {
+		return err
 	}
 	if agentVar != "" {
 		if err := g.checkFastForward(u, branch); err != nil {

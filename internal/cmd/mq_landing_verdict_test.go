@@ -20,10 +20,13 @@ func TestLandingVerdictActor(t *testing.T) {
 		{"gastown/witness", "", false},
 		{"deacon", "", false},
 		{"mayor", "", false},
+		{"", "mayor", false}, // gt-pd1c.78: an agent BD_ACTOR without GT_ROLE is still an agent
 	}
 	for _, c := range cases {
 		t.Setenv(EnvGTRole, c.role)
 		t.Setenv("BD_ACTOR", c.actor)
+		t.Setenv("GT_POLECAT", "")
+		t.Setenv("GT_CREW", "")
 		actor, err := landingVerdictActor()
 		if (err == nil) != c.ok {
 			t.Errorf("role=%q actor=%q: err=%v, want ok=%v", c.role, c.actor, err, c.ok)
@@ -39,6 +42,7 @@ func TestLandingVerdictActor(t *testing.T) {
 
 // A polecat cannot take the exit through either command.
 func TestMQConfirmLanding_RefusesPolecat(t *testing.T) {
+	setCaller(t)
 	t.Setenv(EnvGTRole, "gastown/polecats/nux")
 	t.Setenv("BD_ACTOR", "gastown/polecats/nux")
 	for _, landed := range []bool{true, false} {
@@ -50,12 +54,12 @@ func TestMQConfirmLanding_RefusesPolecat(t *testing.T) {
 
 func stubLandingTTY(t *testing.T, tty bool, input string) *strings.Builder {
 	t.Helper()
-	oldTTY, oldIn, oldOut := landingVerdictTTY, landingVerdictInput, landingVerdictOutput
+	oldTTY, oldIn, oldOut := humanConfirmTTY, humanConfirmInput, humanConfirmOutput
 	out := &strings.Builder{}
-	landingVerdictTTY = func() bool { return tty }
-	landingVerdictInput = strings.NewReader(input)
-	landingVerdictOutput = out
-	t.Cleanup(func() { landingVerdictTTY, landingVerdictInput, landingVerdictOutput = oldTTY, oldIn, oldOut })
+	humanConfirmTTY = func() bool { return tty }
+	humanConfirmInput = strings.NewReader(input)
+	humanConfirmOutput = out
+	t.Cleanup(func() { humanConfirmTTY, humanConfirmInput, humanConfirmOutput = oldTTY, oldIn, oldOut })
 	return out
 }
 
@@ -86,6 +90,7 @@ func TestConfirmLandingInteractively(t *testing.T) {
 // The env guard stays the first layer: an agent is refused before any prompt.
 func TestRunMQConfirmLanding_EnvGuardBeforePrompt(t *testing.T) {
 	out := stubLandingTTY(t, true, "gt-wisp-mr1\n")
+	setCaller(t) // other tests in the package leave identity variables set
 	t.Setenv(EnvGTRole, "gastown/refinery")
 	t.Setenv("BD_ACTOR", "")
 	if err := runMQConfirmLanding("gastown", "gt-wisp-mr1", true); err == nil || !strings.Contains(err.Error(), "refusing landing verdict") {

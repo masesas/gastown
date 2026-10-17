@@ -185,7 +185,11 @@ SAFETY CHECKS: The command refuses to nuke a polecat if:
   - Polecat has an open merge request (MR bead or active_mr)
   - Polecat has work on its hook
 
-Use --force to bypass safety checks (LOSES WORK).
+Use --force to bypass safety checks (LOSES WORK). An agent (anything but a
+human or crew) may use --force only when every polecat's branch is provably
+safe to delete: its tip is on the default branch or an integration branch,
+or no MR from it is open and none landed (gt-pd1c.78). Otherwise --force
+needs a human or crew at a terminal, who types the polecat addresses again.
 Use --dry-run to see what would happen and safety check status.
 
 Examples:
@@ -345,7 +349,7 @@ func init() {
 	// Nuke flags
 	polecatNukeCmd.Flags().BoolVar(&polecatNukeAll, "all", false, "Nuke all polecats in the rig")
 	polecatNukeCmd.Flags().BoolVar(&polecatNukeDryRun, "dry-run", false, "Show what would be nuked without doing it")
-	polecatNukeCmd.Flags().BoolVarP(&polecatNukeForce, "force", "f", false, "Force nuke, bypassing all safety checks (LOSES WORK)")
+	polecatNukeCmd.Flags().BoolVarP(&polecatNukeForce, "force", "f", false, "Force nuke, bypassing all safety checks (LOSES WORK). Agents: only when the polecat branch is provably safe to delete; otherwise a human or crew confirms at a terminal")
 
 	// Check-recovery flags
 	polecatCheckRecoveryCmd.Flags().BoolVar(&polecatCheckRecoveryJSON, "json", false, "Output as JSON")
@@ -1739,6 +1743,12 @@ func runPolecatNuke(cmd *cobra.Command, args []string) error {
 	if len(targets) == 0 {
 		fmt.Println("No polecats to nuke.")
 		return nil
+	}
+
+	// --force gate (gt-pd1c.78): agents may force-nuke only polecats whose
+	// branch is provably safe to discard; otherwise a human/crew at a TTY.
+	if err := gateNukeForceFor(targets, polecatNukeForce, polecatNukeDryRun); err != nil {
+		return err
 	}
 
 	// Safety checks: refuse to nuke polecats with active work unless --force is set

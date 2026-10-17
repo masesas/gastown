@@ -265,6 +265,7 @@ func displaySafetyCheckBlockedTo(w io.Writer, blocked []*SafetyCheckResult) {
 	fmt.Fprintln(w, "  2. Push changes: git push (from polecat worktree)")
 	fmt.Fprintln(w, "  3. Escalate: gt mail send mayor/ -s \"RECOVERY_NEEDED\" -m \"...\"")
 	fmt.Fprintf(w, "  4. Force nuke (LOSES WORK): gt polecat nuke --force %s\n", strings.Join(polecatList, " "))
+	fmt.Fprintln(w, "     (agents only when the branch is provably safe to delete; otherwise a human or crew at a terminal)")
 	fmt.Fprintln(w)
 }
 

@@ -10,7 +10,9 @@
 #    rig repos (gt-pd1c.72). Agents (GT_ROLE/BD_ACTOR/GT_POLECAT/GT_CREW) may
 #    not land while merge_queue.integration_branch_auto_land is off, whatever
 #    GT_INTEGRATION_LAND says. The bash fallback below only runs when no gt
-#    with `hooks pre-push` is on PATH; it is stricter for agents (no land).
+#    with `hooks pre-push` is on PATH; it is stricter for agents (no land, and
+#    without the merge queue no agent other than crew may delete polecat/*;
+#    gt-pd1c.78).
 #
 # Local hooks can be skipped by the pusher; protect the real remote with
 # branch protection (docs/HOOKS.md, "Rig pre-push guard").
@@ -37,6 +39,36 @@ for v in GT_ROLE BD_ACTOR GT_POLECAT GT_CREW; do
     is_agent=1
   fi
 done
+
+# Caller role, as the Go guard classifies it (gtCallerFrom, gt-pd1c.78): a
+# polecat identity anywhere (GT_POLECAT, BD_ACTOR <rig>/polecats/<name>) wins;
+# otherwise GT_ROLE, then BD_ACTOR, then GT_CREW alone means crew. Exempt from
+# the coordinator rules: humans, crew and the overseer identity.
+caller_role=""
+if [[ "$is_agent" == "1" ]]; then
+  actor="${BD_ACTOR//[[:space:]]/}"
+  role_src="${GT_ROLE//[[:space:]]/}"
+  [[ -z "$role_src" ]] && role_src="$actor"
+  role_src="${role_src%/}"
+  if [[ -n "${GT_POLECAT//[[:space:]]/}" || "$actor" =~ ^[^/]+/polecats/[^/]+$ ]]; then
+    caller_role=polecat
+  elif [[ -z "$role_src" ]]; then
+    caller_role=crew
+  else
+    case "$role_src" in
+      crew|*/crew|*/crew/*) caller_role=crew ;;
+      refinery|*/refinery) caller_role=refinery ;;
+      overseer) caller_role=overseer ;;
+      *) caller_role=other ;;
+    esac
+  fi
+fi
+caller_label="$caller_role"
+[[ "$caller_role" == "other" ]] && caller_label="$role_src"
+is_exempt=0
+if [[ "$is_agent" == "0" || "$caller_role" == "crew" || "$caller_role" == "overseer" ]]; then
+  is_exempt=1
+fi
 
 zero=0000000000000000000000000000000000000000
 input=$(cat)
@@ -125,6 +157,25 @@ fi
 while read local_ref local_sha remote_ref remote_sha; do
   [[ -z "$remote_ref" ]] && continue
   branch="${remote_ref#refs/heads/}"
+  # Without gt the merge queue cannot be read, so the polecat branch deletion
+  # rule cannot be proven: agents other than crew may not delete polecat/*.
+  if [[ "$is_exempt" == "0" && "$local_sha" == "$zero" && "$branch" == polecat/* ]]; then
+    echo "BLOCKED: agents may not delete $branch without gt (no gt with 'hooks pre-push' on PATH):"
+    echo "the merge queue cannot be read to prove its work is safe to discard."
+    echo "Landed polecat branches are deleted by the refinery or 'gt mq post-merge', preserved ones by"
+    echo "'gt polecat prune --remote'; anything else needs a human or crew."
+    exit 1
+  fi
+  # Only the refinery, crew and humans update merge targets. Without gt the
+  # rig's merge-queue setting cannot be read, so a polecat's direct landing is
+  # refused too.
+  if [[ "$is_exempt" == "0" && "$caller_role" != "refinery" && "$local_sha" != "$zero" && \
+        ( "$branch" == "$default_branch" || "$branch" == integration/* ) ]]; then
+    echo "BLOCKED: push to $branch refused: agent role '${caller_label}' may not update the default branch"
+    echo "or integration/* (no gt with 'hooks pre-push' on PATH). Only the refinery lands work there;"
+    echo "crew and humans push directly."
+    exit 1
+  fi
   # Agents may not delete merge targets here: deleting integration/x first
   # would hide a later land from the check below.
   if [[ "$is_agent" == "1" && "$local_sha" == "$zero" && \

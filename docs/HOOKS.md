@@ -247,11 +247,18 @@ warnings, never fatal.
 ### Rules (`gt hooks pre-push`)
 
 A caller is an **agent** when `GT_ROLE`, `BD_ACTOR`, `GT_POLECAT` or `GT_CREW`
-is set (the same helper as the `gt mq integration land` gate).
+is set (the same helper as the `gt mq integration land` gate). Its **role**
+comes from `GT_ROLE`, else `BD_ACTOR`, else `GT_CREW` alone (crew); a polecat
+identity anywhere (`GT_POLECAT`, a `<rig>/polecats/<name>` `BD_ACTOR`) wins over
+a crew `GT_ROLE`. Crew and the `overseer` identity keep the human column of
+the two coordinator rules below (gt-pd1c.78); all other rows treat crew as an
+agent, as before.
 
 | Push | Agent | Human |
 |---|---|---|
-| `polecat/*`, other branches, tags | allowed, nothing checked | allowed |
+| Push to `polecat/*`, other branches, tags | allowed, nothing checked | allowed |
+| Delete `polecat/*` (agents other than crew) | allowed only when it loses no work: the tip is preserved (ancestor, merge-tree no-op or every patch present, the `gt polecat prune` rule) on the remote default branch or a remote `integration/*` branch; or the merge queue (`MergeQueue.BranchHold`, the one predicate) shows no open MR from the branch and every MR from it definitely not landed (or none); or the deciding landed MR's `commit_sha` is the tip. An open MR, a landing git cannot decide, landed work with later commits or an unreadable merge queue refuse. The git proof runs first, so the refinery and `gt mq post-merge` / `gt polecat prune --remote` (which delete only landed tips) never read beads | allowed |
+| Update the default branch or `integration/*` by an agent other than the refinery or crew (witness, mayor, deacon, dog, boot, polecat, unknown role) | refused. A polecat may push there only when the rig's `merge_queue.enabled` is `false` (`gt done`, direct convoy strategy); any agent may create an `integration/*` branch whose tip is already on a remote target (`gt mq integration create`). The refinery and crew are unchanged | allowed |
 | Default branch or `integration/*` from a repository that runs the managed hook but whose rig cannot be detected | refused (fail closed) | checked as below, without rig settings |
 | Default branch or `integration/*` from a repository without the managed hook and outside any rig (e.g. the Gas Town source repo, whose `.githooks/pre-push` delegates) | checked as below without rig settings: auto-land off, no scope | same |
 | Update of the default branch or `integration/*` that is not a fast-forward (`remote_sha` not an ancestor of `local_sha`, or unknown locally) | refused: rewinding `integration/x` onto the default branch would hide its old tip from the land check. No gt flow force-pushes these branches | not checked (git itself needs `-f`) |
@@ -266,8 +273,8 @@ directory has `config.json`); its settings are read straight from
 `<rig>/settings/config.json`. The default branch is the rig's `default_branch`
 (`<rig>/config.json`). When it is unknown, humans fall back to `origin/HEAD`
 and agents treat `origin/HEAD`, `main` and `master` all as default branches.
-Fail closed: an unreadable settings file means auto-land off and an unknown
-scope (agent pushes to targets refused); a remote that cannot be listed, a
+Fail closed: an unreadable settings file means auto-land off, an unknown
+scope (agent pushes to targets refused) and an active merge queue; a remote that cannot be listed, a
 remote tip missing locally, an option-looking remote/URL, or a malformed input
 line refuses the push. Refusals never print the push URL, and messages to
 agents never suggest `GT_INTEGRATION_LAND`.
@@ -292,10 +299,22 @@ sha all zeros) is never a land; it is still scope-checked.
 - `GT_INTEGRATION_LAND=1` is a policy marker, not proof that the push comes
   from `gt mq integration land`: with auto-land on, any agent that sets it can
   land through a raw push.
-- With `allowed_paths` unset, any agent (refinery, crew or polecat) can push a
-  non-land change straight to the default branch or `integration/*`. Polecats
-  are not refused outright because the direct convoy merge strategy has
-  `gt done` push polecat work straight to the target branch.
+- With `allowed_paths` unset, the refinery and crew (and a polecat on a rig
+  whose merge queue is disabled, for the direct convoy merge strategy) can push
+  a non-land change straight to the default branch or `integration/*`. That the
+  refinery pushes only merged MRs is not checked yet (gt-pd1c.78, stage 3).
+- The polecat deletion rule sees only MRs with a `source_issue` (the merge
+  queue index groups by source). The `close_reason`/`merge_commit` fields that
+  make an MR landed can be edited with `bd update` (cross-check in stage 2).
+- `gt polecat nuke --force` uses the same deletion rule for the polecat's
+  remote and local tip; when it does not hold, an agent is refused and a human
+  or crew must type the polecat addresses at a terminal. `gt polecat remove
+  --force` is not gated.
+- The Gas Town repo's own `.githooks/pre-push` fallback (no `gt` with
+  `hooks pre-push` on `PATH`) cannot read the merge queue or rig settings, so
+  it is stricter: agents other than crew may not delete `polecat/*`, and only
+  the refinery, crew and humans may update the default branch or
+  `integration/*`.
 - Agents can no longer delete an unlanded `integration/*` branch (e.g. to
   abandon an epic); a human does that.
 
