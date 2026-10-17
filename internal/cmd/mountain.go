@@ -146,15 +146,7 @@ func runMountain(cmd *cobra.Command, args []string) error {
 	}
 
 	// Add gated task warnings.
-	for _, g := range gated {
-		warns = append(warns, StagingFinding{
-			Severity:     "warning",
-			Category:     "gated",
-			BeadIDs:      []string{g.TaskID},
-			Message:      fmt.Sprintf("task %s is gated by non-slingable blocker(s): %s", g.TaskID, strings.Join(g.GatedBy, ", ")),
-			SuggestedFix: fmt.Sprintf("close or tombstone %s to include %s in waves", strings.Join(g.GatedBy, ", "), g.TaskID),
-		})
-	}
+	warns = append(warns, gatedFindings(gated, dag)...)
 
 	status := chooseStatus(errs, warns)
 
@@ -446,8 +438,7 @@ func showMountainDetail(townBeads, inputID string) error {
 			if node != nil && len(node.BlockedBy) > 0 {
 				hasOpenBlocker := false
 				for _, dep := range node.BlockedBy {
-					depNode := dag.Nodes[dep]
-					if depNode != nil && depNode.Status != "closed" {
+					if dag.isOpenBlocker(dep) {
 						hasOpenBlocker = true
 						break
 					}
@@ -552,9 +543,8 @@ func showMountainDetail(townBeads, inputID string) error {
 				title = node.Title
 				var openBlockers []string
 				for _, dep := range node.BlockedBy {
-					depNode := dag.Nodes[dep]
-					if depNode != nil && depNode.Status != "closed" {
-						openBlockers = append(openBlockers, dep)
+					if dag.isOpenBlocker(dep) {
+						openBlockers = append(openBlockers, dag.describeBlocker(dep))
 					}
 				}
 				if len(openBlockers) > 0 {

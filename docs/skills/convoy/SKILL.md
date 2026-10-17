@@ -212,6 +212,7 @@ Execution edges (create wave ordering):
 - `blocks`
 - `conditional-blocks`
 - `waits-for`
+- `merge-blocks`
 
 Non-execution edges (ignored for wave ordering):
 - `parent-child` — hierarchy only
@@ -222,6 +223,24 @@ Non-execution edges (ignored for wave ordering):
 2. Calculate in-degree for each node (count BlockedBy edges to other slingable nodes)
 3. Peel loop: collect all nodes with in-degree 0 → Wave N; remove them; decrement neighbors; repeat
 4. Sort within each wave alphabetically for determinism
+
+**Gates.** A blocker that is not a slingable node never enters a wave, and while it is open its
+dependents are left out of every wave and reported as *gated* (warning `gated`, section "Gated" in
+the output, `gated` in `--json`). Two kinds of gate:
+
+- an open non-slingable staged node (decision, epic, ...);
+- a blocker **outside the staged set** (gt-pd1c.43): a bead outside the epic tree or task list, or a
+  child that `bd list --parent` does not return (bd 1.3.0 hides `gate` beads even with `--all`).
+  `buildConvoyDAG` resolves each such blocker once through the same prefix-routed `bd show --json`
+  lookup used for staged beads and records it in `ConvoyDAG.External`. It is never tracked or
+  dispatched by the convoy. Closed/tombstone → ignored; open → gates; unreadable (lookup error) →
+  gates fail-closed plus an `unresolved-blocker` warning. Output marks it as
+  `<id> (outside staged set: <type>, <status>)`; `--json` adds `external_blockers` to the gated
+  entry.
+
+One predicate (`ConvoyDAG.isOpenBlocker`) decides "still blocking" for waves, launch relaunch
+(`readyUndispatchedTasks`), orphan detection and `gt mountain` status. A gated bead stays tracked;
+once its blocker closes, the daemon feeder dispatches it (`isIssueBlocked`).
 
 Output example:
 ```
@@ -275,6 +294,8 @@ Valid transitions:
 | `blocked-rig` | Bead targets a parked or docked rig |
 | `cross-rig` | Bead on a different rig than the majority |
 | `capacity` | A wave has more than 5 tasks |
+| `gated` | Slingable task held out of every wave by an open non-slingable node or an open blocker outside the staged set |
+| `unresolved-blocker` | Status of a blocker outside the staged set could not be read; its consumers are gated (fail-closed) |
 | `missing-branch` | Sub-epic with children but no integration branch |
 
 ### Launch behavior
@@ -347,7 +368,8 @@ go test ./internal/cmd/... -v -count=1 -run TestBuildConvoyDAG  # DAG constructi
 - Batch sling creates exactly 1 convoy for N beads (not N convoys)
 - `resolveRigFromBeadIDs` errors on mixed prefixes, unmapped prefixes, town-level prefixes
 - Cycles in blocking deps prevent staged convoy creation (exit non-zero, no side effects)
-- Wave 1 contains ONLY tasks with zero unsatisfied blocking deps among slingable nodes
+- Wave 1 contains ONLY tasks with zero unsatisfied blocking deps, including blockers outside the staged set
+- An open or unreadable blocker outside the staged set gates its dependents; a closed one does not (gt-pd1c.43)
 - Epics and non-slingable types are NEVER placed in waves
 - Daemon does NOT feed issues from `staged:*` convoys (both feed paths skip)
 - `staged:warnings` convoys can still be launched (warnings are informational)

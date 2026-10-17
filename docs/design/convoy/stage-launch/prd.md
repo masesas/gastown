@@ -79,7 +79,8 @@ go vet ./... && go build ./... && go test ./internal/cmd/... ./internal/convoy/.
 **Description:** As a user, I want to see which tasks can run in parallel (waves) based on their dependency ordering, so that I understand the execution plan before launching.
 
 **Acceptance Criteria:**
-- [ ] Wave 1 = all tasks with no unsatisfied `blocks`/`conditional-blocks`/`waits-for` deps within the staged set
+- [ ] Wave 1 = all tasks with no unsatisfied `blocks`/`conditional-blocks`/`waits-for`/`merge-blocks` deps
+- [ ] A blocker outside the staged set (outside the epic tree or task list, or hidden from `bd list --parent` like `gate` beads) is resolved via `bd show`: open → its dependents are gated (never in a wave), closed/tombstone → ignored, unreadable → gated fail-closed with an `unresolved-blocker` warning. Output names which outside blocker holds which task (gt-pd1c.43)
 - [ ] Wave N+1 = tasks whose blockers are all in Wave N or earlier
 - [ ] Tasks not reachable by any blocking dep chain are placed in Wave 1 (maximum parallelism)
 - [ ] Epics and non-slingable types are excluded from waves (they're containers, not dispatchable work)
