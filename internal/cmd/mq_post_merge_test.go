@@ -80,7 +80,7 @@ func (g *fakeMQPostMergeGit) DeleteBranch(branch string, _ bool) error {
 func testMQPostMergeMR() *refinery.MergeRequest {
 	return &refinery.MergeRequest{
 		ID:           "gt-mr-proof",
-		Branch:       "polecat/test/gt-proof",
+		Branch:       "polecat/test/gt-proof+mvcf8o91", // real generated shape
 		Worker:       "polecats/test",
 		IssueID:      "gt-proof",
 		TargetBranch: "main",

@@ -3,8 +3,13 @@ package polecat
 import (
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 )
 
 func TestFormatGeneratedBranchName_ActionCompatible(t *testing.T) {
@@ -133,4 +138,48 @@ func TestBranchOwners(t *testing.T) {
 			t.Errorf("BranchOwners(%q) = %v, want %v", branch, got, want)
 		}
 	}
+}
+
+// Every branch the generator emits (with and without an issue, with real
+// base36 millisecond suffixes) is a branch name the coordinator accepts: the
+// one ref-name rule (beads.IsSafeRefName), the abandon archive ref
+// (mergeproof.ArchiveRef round trip) and BranchOwners. The legacy '@' form is
+// still accepted for in-flight branches.
+func TestGeneratedBranchNamesPassTheRefNameRule(t *testing.T) {
+	tip := strings.Repeat("ab", 20)
+	at := time.UnixMilli(1760000000123)
+	suffix := strconv.FormatInt(at.UnixMilli(), 36)
+	branches := []string{
+		FormatGeneratedBranchName("mirelurk", "kp-znd", suffix),
+		FormatGeneratedBranchName("s2test", "kp-s2b", "t1"),
+		FormatGeneratedBranchName("Nux", "gt-abc.12", suffix),
+		FormatGeneratedBranchName("nux", "", suffix),
+		"polecat/nux/gt-1@" + suffix,
+	}
+	for _, b := range branches {
+		if !beads.IsSafeRefName(b) {
+			t.Errorf("IsSafeRefName(%q) = false", b)
+		}
+		ref, err := mergeproof.ArchiveRef(b, at, tip)
+		if err != nil {
+			t.Errorf("ArchiveRef(%q): %v", b, err)
+			continue
+		}
+		if got, _, ok := mergeproof.ParseArchiveRef(ref); !ok || got != b {
+			t.Errorf("ParseArchiveRef(%q) = %q, %v; want %q", ref, got, ok, b)
+		}
+		meta, ok := ParseBranchName(b)
+		if !ok || !containsOwner(BranchOwners(b), meta.Polecat) {
+			t.Errorf("BranchOwners(%q) = %v, ParseBranchName = %+v %v", b, BranchOwners(b), meta, ok)
+		}
+	}
+}
+
+func containsOwner(owners []string, name string) bool {
+	for _, o := range owners {
+		if o == name {
+			return true
+		}
+	}
+	return false
 }

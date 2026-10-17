@@ -146,6 +146,11 @@ func TestAbandonCommand(t *testing.T) {
 	if got := AbandonCommand("gastown", "refs/heads/polecat/nux/gt-1"); got != `gt polecat abandon gastown/polecat/nux/gt-1 --reason "<why>"` {
 		t.Fatalf("AbandonCommand = %q", got)
 	}
+	// A real generated polecat branch (polecat/<name>/<issue>+<suffix>) is
+	// offered as is, never as the <polecat-branch> placeholder.
+	if got := AbandonCommand("posin", "polecat/s2test/kp-s2b+t1"); got != `gt polecat abandon posin/polecat/s2test/kp-s2b+t1 --reason "<why>"` {
+		t.Fatalf("AbandonCommand(real branch) = %q", got)
+	}
 	for _, tc := range []struct{ rig, branch string }{
 		{"gastown; rm -rf ~", "polecat/nux"},
 		{"gastown", "polecat/nux; curl evil"},
@@ -155,6 +160,22 @@ func TestAbandonCommand(t *testing.T) {
 		got := AbandonCommand(tc.rig, tc.branch)
 		if strings.ContainsAny(got, ";$()") || strings.Contains(got, "curl") || strings.Contains(got, " main") {
 			t.Errorf("(%q, %q): raw value leaked into %q", tc.rig, tc.branch, got)
+		}
+	}
+}
+
+// The pilot shape: an open MR recorded the exact tip of a real generated
+// branch (with '+'); the queue says open, never "no MR recorded", however
+// the branch is spelled (refs/heads/ prefix, surrounding space).
+func TestTipDispositionRealBranchName(t *testing.T) {
+	tip := "c" + strings.Repeat("d", 39)
+	branch := "polecat/s2test/kp-s2b+t1"
+	open := &Issue{ID: "kp-wisp-mr1", Status: "open", Description: "branch: " + branch + "\ntarget: main\nsource_issue: kp-wak\ncommit_sha: " + tip + "\n"}
+	q := NewMergeQueue(MergeQueueIndex{"kp-wak": {open}}, nil, nil)
+	for _, spelled := range []string{branch, "refs/heads/" + branch, " " + branch + " "} {
+		d, err := q.TipDisposition(spelled, tip)
+		if err != nil || d.Class != TipOpen || d.MRID != "kp-wisp-mr1" || !d.BranchOpen() {
+			t.Fatalf("TipDisposition(%q) = %+v %v, want open (MR kp-wisp-mr1)", spelled, d, err)
 		}
 	}
 }

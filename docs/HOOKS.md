@@ -320,8 +320,21 @@ sha all zeros) is never a land; it is still scope-checked.
   plus the remote's HEAD branch (the Go guard looks it up, bounded by the
   proof limits, only for an agent's push to a branch that may be it; a
   human's feature-branch push never reads it). A
-  configured `default_branch` with characters outside letters, digits, `.`,
-  `_`, `-` and `/` (e.g. `+`, `@`) is ignored with a warning.
+  configured `default_branch` that is not a valid gt branch name (the one
+  ref-name rule below) is ignored with a warning.
+- One ref-name rule (`internal/refname`, `beads.IsSafeRefName`) decides which
+  branch names gt hands to git: the configured `default_branch`, MR branches
+  in `gt mq post-merge`, `gt polecat abandon` and its archive refs, and the
+  copy-paste commands in refusals and witness reports. Names are
+  `/`-separated segments that start with a letter or digit and contain only
+  letters, digits, `.`, `_`, `+`, `@` and `-`; no `..`, `@{`, segment ending in
+  `.lock`, trailing `.` or `HEAD` (a strict subset of
+  `git check-ref-format --branch`; git is not called). Generated polecat
+  branches pass: `polecat/<name>/<issue>+<suffix>` (e.g.
+  `polecat/mirelurk/kp-znd+mvcf8o91`, archived as
+  `refs/gt/archive/polecat/mirelurk/kp-znd+mvcf8o91/<unix>-<12-hex>`), the
+  legacy `polecat/<name>/<issue>@<suffix>` and `polecat/<name>-<suffix>`.
+  Bead and rig IDs keep the stricter ID rule (no `+`, `@` or `/`).
 - Owner rewrites read the merge queue: when beads (bd) cannot be read, a
   polecat's rebase of its own branch is refused until it can (fail closed);
   the bash fallback refuses it always.

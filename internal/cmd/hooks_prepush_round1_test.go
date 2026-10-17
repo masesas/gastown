@@ -19,7 +19,7 @@ import (
 func TestPrePushGuardPolecatRewrite(t *testing.T) {
 	f := newPrePushFixture(t)
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
-	const branch = "polecat/nux/gt-1"
+	const branch = "polecat/nux/gt-1+mvcf8o91"
 	openMR := mqWith(mrIssue("mr1", "open", branch, f.good, ""))
 	rewrite := prePushUpd("refs/heads/"+branch, f.mainSHA, f.good) // f.good is not an ancestor of main
 	tests := []struct {
@@ -75,7 +75,7 @@ func TestPrePushGuardOwnerRewriteFailsClosed(t *testing.T) {
 			return nil, errors.New("rig unreadable")
 		},
 	}
-	u := prePushUpd("refs/heads/polecat/nux/gt-1", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	u := prePushUpd("refs/heads/polecat/nux/gt-1+mvcf8o91", strings.Repeat("a", 40), strings.Repeat("b", 40))
 	if err := g.check([]prePushUpdate{u}); err == nil {
 		t.Fatal("owner rewrite with an unreadable rig must refuse")
 	}
@@ -87,7 +87,7 @@ func TestPrePushGuardOwnerRewriteFailsClosed(t *testing.T) {
 func TestPrePushGuardOwnerRewrite(t *testing.T) {
 	f := newPrePushFixture(t)
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
-	const branch = "polecat/nux/gt-1"
+	const branch = "polecat/nux/gt-1+mvcf8o91"
 	rewrite := []prePushUpdate{prePushUpd("refs/heads/"+branch, f.mainSHA, f.good)}
 	owner := []string{"GT_ROLE", "myrig/polecats/nux", "GT_POLECAT", "nux"}
 	verdict := func(extra string) func() *beads.MergeQueue {
@@ -143,7 +143,7 @@ func TestPrePushGuardOwnerRewrite(t *testing.T) {
 		t.Fatalf("witness delete while MR2 is open: %v", err)
 	}
 	// An archived decided tip may be rewritten (nothing is lost).
-	archiveTip(t, f, "polecat/nux/gt-1", f.good)
+	archiveTip(t, f, "polecat/nux/gt-1+mvcf8o91", f.good)
 	if err := coordinatorGuard(f, plain, verdict("close_reason: rejected\n"), owner...).check(rewrite); err != nil {
 		t.Fatalf("archived tip: %v", err)
 	}

@@ -23,10 +23,10 @@ func TestArchiveRulesBashParity(t *testing.T) {
 	}
 	f := newPrePushFixture(t)
 	runGitForMQSubmitTest(t, f.repo, "remote", "set-head", "origin", "main")
-	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":refs/heads/polecat/nux")
-	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.bad+":refs/heads/polecat/max")
-	archiveTip(t, f, "polecat/nux", f.good)
-	archive := "refs/gt/archive/polecat/nux/1760000000-" + f.good[:12]
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.good+":refs/heads/polecat/nux/gt-1+mvcf8o91")
+	runGitForMQSubmitTest(t, f.repo, "push", "-q", "origin", f.bad+":refs/heads/polecat/max/gt-2+mvcf8o91")
+	archiveTip(t, f, "polecat/nux/gt-1+mvcf8o91", f.good)
+	archive := "refs/gt/archive/polecat/nux/gt-1+mvcf8o91/1760000000-" + f.good[:12]
 	nogt := t.TempDir()
 	for _, tool := range []string{"git", "sed", "awk", "cat"} {
 		p, err := exec.LookPath(tool)
@@ -64,16 +64,16 @@ func TestArchiveRulesBashParity(t *testing.T) {
 		line  string
 		allow bool
 	}{
-		{"witness deletes an archived tip", witness, "(delete) " + testZeroSHA + " refs/heads/polecat/nux " + f.good, true},
-		{"witness deletes an unarchived tip", witness, "(delete) " + testZeroSHA + " refs/heads/polecat/max " + f.bad, false},
-		{"witness rewrites an archived tip", witness, "HEAD " + f.mainSHA + " refs/heads/polecat/nux " + f.good, true},
-		{"witness rewrites an unarchived tip", witness, "HEAD " + f.mainSHA + " refs/heads/polecat/max " + f.bad, false},
+		{"witness deletes an archived tip", witness, "(delete) " + testZeroSHA + " refs/heads/polecat/nux/gt-1+mvcf8o91 " + f.good, true},
+		{"witness deletes an unarchived tip", witness, "(delete) " + testZeroSHA + " refs/heads/polecat/max/gt-2+mvcf8o91 " + f.bad, false},
+		{"witness rewrites an archived tip", witness, "HEAD " + f.mainSHA + " refs/heads/polecat/nux/gt-1+mvcf8o91 " + f.good, true},
+		{"witness rewrites an unarchived tip", witness, "HEAD " + f.mainSHA + " refs/heads/polecat/max/gt-2+mvcf8o91 " + f.bad, false},
 		{"mayor deletes an archive", mayor, "(delete) " + testZeroSHA + " " + archive + " " + f.good, false},
 		{"witness rewrites an archive", witness, "HEAD " + f.bad + " " + archive + " " + f.good, false},
-		{"mayor archives work without an MR", mayor, "HEAD " + f.bad + " refs/gt/archive/polecat/max/1760000000-" + f.bad[:12] + " " + testZeroSHA, false},
+		{"mayor archives work without an MR", mayor, "HEAD " + f.bad + " refs/gt/archive/polecat/max/gt-2+mvcf8o91/1760000000-" + f.bad[:12] + " " + testZeroSHA, false},
 		{"crew prunes an archive", crew, "(delete) " + testZeroSHA + " " + archive + " " + f.good, true},
 		{"human prunes an archive", nil, "(delete) " + testZeroSHA + " " + archive + " " + f.good, true},
-		{"human archives anything", nil, "HEAD " + f.bad + " refs/gt/archive/polecat/max/1760000000-" + f.bad[:12] + " " + testZeroSHA, true},
+		{"human archives anything", nil, "HEAD " + f.bad + " refs/gt/archive/polecat/max/gt-2+mvcf8o91/1760000000-" + f.bad[:12] + " " + testZeroSHA, true},
 	}
 	for _, r := range rows {
 		if got := runBash(r.env, r.line); got != r.allow {

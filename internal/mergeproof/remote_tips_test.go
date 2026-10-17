@@ -122,8 +122,21 @@ func TestArchiveRef(t *testing.T) {
 	if b, short, ok := ParseArchiveRef(ref); !ok || b != "polecat/nux/gt-1" || short != "abcdef012345" {
 		t.Fatalf("ParseArchiveRef(%q) = %q, %q, %v", ref, b, short, ok)
 	}
+	// Real generated polecat branches (polecat/<name>/<issue>+<suffix>, the
+	// legacy '@' form, polecat/<name>-<suffix>) round-trip.
+	for _, real := range []string{"polecat/mirelurk/kp-znd+mvcf8o91", "polecat/s2test/kp-s2b+t1", "polecat/nux/gt-1@mvcf8o91", "polecat/nux-mvcf8o91"} {
+		ref, err := ArchiveRef(real, at, tip)
+		if err != nil || ref != "refs/gt/archive/"+real+"/1760000000-abcdef012345" {
+			t.Fatalf("ArchiveRef(%q) = %q, %v", real, ref, err)
+		}
+		if b, short, ok := ParseArchiveRef(ref); !ok || b != real || short != "abcdef012345" {
+			t.Fatalf("ParseArchiveRef(%q) = %q, %q, %v", ref, b, short, ok)
+		}
+	}
 	for _, bad := range []struct{ branch, tip string }{
 		{"main", tip},
+		{"polecat/nux/+x", tip},
+		{"polecat/nux/x.lock", tip},
 		{"polecat/../x", tip},
 		{"polecat/a b", tip},
 		{"polecat/-x", tip},
@@ -142,6 +155,7 @@ func TestArchiveRef(t *testing.T) {
 		"refs/gt/archive/polecat/nux/latest",       // not a stamp
 		"refs/heads/polecat/nux/1760000000-abcdef0",
 		"refs/gt/archive/polecat/../1760000000-abcdef0",
+		"refs/gt/archive/polecat/nux/+x/1760000000-abcdef0",
 	} {
 		if b, _, ok := ParseArchiveRef(bad); ok {
 			t.Errorf("ParseArchiveRef(%q) = %q, want not an archive ref", bad, b)

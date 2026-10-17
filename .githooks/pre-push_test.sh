@@ -421,6 +421,39 @@ for target in main master trunk; do
 done
 cleanup
 
+# Test 18: real generated polecat branch names (polecat/<name>/<issue>+<suffix>,
+# internal/polecat/branch_name.go) go through the fallback's deletion, rewrite
+# and archive rules like any polecat/* branch; the '+' never changes a verdict.
+echo "Test 18: Fallback handles real polecat branch names with '+'"
+setup_repos
+cd "$TMPDIR/local"
+nogt="$TMPDIR/nogt-bin"
+mkdir -p "$nogt"
+for tool in git sed awk cat; do
+  ln -s "$(command -v "$tool")" "$nogt/$tool"
+done
+plus_branch="polecat/s2test/kp-s2b+t1"
+base_sha=$(get_sha HEAD)
+git checkout -b "$plus_branch" >/dev/null 2>&1
+echo "plus" >> file.txt
+git add file.txt && git commit -m "plus" >/dev/null 2>&1
+plus_sha=$(get_sha HEAD)
+git push origin "$plus_branch" >/dev/null 2>&1
+git checkout "$DEFAULT_BRANCH" >/dev/null 2>&1
+zero17=0000000000000000000000000000000000000000
+plus_archive="refs/gt/archive/$plus_branch/1760000000-${plus_sha:0:12}"
+GT_ROLE=gastown/polecats/s2test assert_pass "Polecat push of a '+' branch allowed" run_hook_nogt "HEAD" "$plus_sha" "refs/heads/$plus_branch" "$zero17"
+GT_ROLE=gastown/witness assert_block "Witness delete of an unarchived '+' branch blocked" run_hook_nogt "(delete)" "$zero17" "refs/heads/$plus_branch" "$plus_sha"
+GT_ROLE=gastown/witness assert_block "Witness rewrite of an unarchived '+' branch blocked" run_hook_nogt "HEAD" "$base_sha" "refs/heads/$plus_branch" "$plus_sha"
+GT_ROLE=mayor assert_block "Agent archive creation for a '+' branch blocked without gt" run_hook_nogt "HEAD" "$plus_sha" "$plus_archive" "$zero17"
+assert_pass "Human archive creation for a '+' branch allowed" run_hook_nogt "HEAD" "$plus_sha" "$plus_archive" "$zero17"
+git push origin "$plus_sha:$plus_archive" >/dev/null 2>&1
+GT_ROLE=gastown/witness assert_pass "Witness delete of an archived '+' branch allowed" run_hook_nogt "(delete)" "$zero17" "refs/heads/$plus_branch" "$plus_sha"
+GT_ROLE=gastown/witness assert_pass "Witness rewrite of an archived '+' branch allowed" run_hook_nogt "HEAD" "$base_sha" "refs/heads/$plus_branch" "$plus_sha"
+GT_ROLE=mayor assert_block "Agent delete of a '+' archive ref blocked" run_hook_nogt "(delete)" "$zero17" "$plus_archive" "$plus_sha"
+GT_ROLE=gastown/crew/max assert_pass "Crew prune of a '+' archive ref allowed" run_hook_nogt "(delete)" "$zero17" "$plus_archive" "$plus_sha"
+cleanup
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [[ $FAIL -gt 0 ]]; then

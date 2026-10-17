@@ -2,7 +2,8 @@ package beads
 
 import (
 	"regexp"
-	"strings"
+
+	"github.com/steveyegge/gastown/internal/refname"
 )
 
 // safeIDPattern is the shape of an identifier (bead ID, MR ID, rig name) that
@@ -25,17 +26,12 @@ var objectNamePattern = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})
 // IsGitObjectName reports whether s matches objectNamePattern.
 func IsGitObjectName(s string) bool { return objectNamePattern.MatchString(s) }
 
-// IsSafeRefName reports whether s is a branch name the landing proof hands to
-// git: '/'-separated segments that are each IsSafeID (so never an option,
-// "..", whitespace or an empty segment).
-func IsSafeRefName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, seg := range strings.Split(s, "/") {
-		if !IsSafeID(seg) {
-			return false
-		}
-	}
-	return true
-}
+// IsSafeRefName reports whether s is a branch name gt hands to git (the
+// landing proof, post-merge cleanup, abandon, archive refs, copy-paste
+// commands). It is refname.Valid, the one ref-name rule: '/'-separated
+// segments that start with a letter or digit (never an option or a forcing
+// "+" refspec) and contain only letters, digits, '.', '_', '+', '@', '-',
+// with no "..", "@{", ".lock" segment, trailing '.' or "HEAD" (a strict
+// subset of git check-ref-format --branch). Real generated polecat branches
+// (polecat/<name>/<issue>+<suffix>) pass.
+func IsSafeRefName(s string) bool { return refname.Valid(s) }
