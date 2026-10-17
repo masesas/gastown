@@ -141,3 +141,32 @@ func TestDetectOrphanedBeads_SettlesParkedBeadWhoseMRLanded(t *testing.T) {
 		}
 	}
 }
+
+// round 3 #3: outside a town the witness gets no partial merge queue.
+func TestWitnessMergeQueue_FailsClosedOutsideTown(t *testing.T) {
+	if err := witnessMergeQueue(t.TempDir()).Err(); err == nil {
+		t.Fatal("a work dir outside any town must not yield a (partial) merge queue")
+	}
+}
+
+// round 3 #1: an unverifiable landing parks the bead instead of resetting it.
+func TestResetAbandonedBead_ParksWhenLandingUnverified(t *testing.T) {
+	oldVerify := verifyCommitOnMain
+	verifyCommitOnMain = func(workDir, rigName, polecatName string) (bool, error) { return false, nil }
+	t.Cleanup(func() { verifyCommitOnMain = oldVerify })
+	old := witnessMergeQueue
+	witnessMergeQueue = func(string) *beads.MergeQueue {
+		return beads.NewMergeQueue(beads.MergeQueueIndex{"gt-work123": {{ID: "gt-wisp-mr4", Status: "closed", Description: "source_issue: gt-work123\n"}}}, nil, nil)
+	}
+	t.Cleanup(func() { witnessMergeQueue = old })
+
+	bd, mock := hookedBeadMock()
+	if resetAbandonedBead(bd, t.TempDir(), "testrig", "gt-work123", "alpha", nil) {
+		t.Fatal("unverifiable landing must not be recovered for re-dispatch")
+	}
+	for _, call := range mock.calls {
+		if strings.Contains(call, "--status=open") {
+			t.Fatalf("bead reopened: %s", call)
+		}
+	}
+}

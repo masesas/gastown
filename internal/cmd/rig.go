@@ -1562,11 +1562,13 @@ func runResetStale(bd *beads.Beads, townRoot string, dryRun bool) error {
 // resetStaleOutcome renders one ReleaseWorkBead result of gt rig reset --stale.
 // ok is false when the issue was not released at all. A parked issue whose
 // merge queue could not be read was released from its worker (fail closed),
-// so it is reported as parked with the error, not as a failed reset.
+// (or whose MR landing git could not decide) was released from its worker
+// (fail closed), so it is reported as parked with the reason, not as a failed
+// reset.
 func resetStaleOutcome(issueID, assignee string, outcome beads.ReleaseOutcome, err error) (string, bool) {
 	switch {
 	case outcome == beads.ReleaseParked && err != nil:
-		return fmt.Sprintf("  %s: %s (parked: merge queue unreadable: %v)\n", issueID, assignee, err), true
+		return fmt.Sprintf("  %s: %s (parked, not reopened: %v)\n", issueID, assignee, err), true
 	case err != nil:
 		return fmt.Sprintf("  %s Failed to reset %s: %v\n", style.Warning.Render("⚠"), issueID, err), false
 	case outcome == beads.ReleaseReopened:

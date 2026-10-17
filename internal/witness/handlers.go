@@ -2747,7 +2747,11 @@ func getBeadStatus(bd *BdCli, workDir, beadID string) (string, bool) {
 var witnessMergeQueue = func(workDir string) *beads.MergeQueue {
 	townRoot, err := workspace.Find(workDir)
 	if err != nil || townRoot == "" {
-		townRoot = workDir
+		// Fail closed: a partial index (workDir alone) could miss the MR.
+		if err == nil {
+			err = fmt.Errorf("no Gas Town workspace above %s", workDir)
+		}
+		return beads.NewMergeQueue(nil, fmt.Errorf("locating town for the merge queue: %w", err), nil)
 	}
 	return mergeproof.TownMergeQueue(townRoot)
 }
@@ -2816,9 +2820,11 @@ func resetAbandonedBead(bd *BdCli, workDir, rigName, hookBead, polecatName strin
 			fmt.Fprintf(os.Stderr, "witness: failed to close bead %s (MR %s merged): %v\n", hookBead, mrID, err)
 		}
 		return false
-	case beads.HoldPending:
+	case beads.HoldPending, beads.HoldUnverified:
+		// Unverified: the MR is closed but git cannot prove its work did not
+		// land, so the bead is not reset either (fail closed).
 		if err := bd.Run(workDir, "update", hookBead, "--status="+string(beads.StatusInProgress), "--assignee="); err != nil {
-			fmt.Fprintf(os.Stderr, "witness: failed to park bead %s (MR %s pending): %v\n", hookBead, mrID, err)
+			fmt.Fprintf(os.Stderr, "witness: failed to park bead %s (MR %s %s): %v\n", hookBead, mrID, hold, err)
 		}
 		return false
 	}

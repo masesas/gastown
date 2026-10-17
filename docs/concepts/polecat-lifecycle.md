@@ -255,7 +255,8 @@ reset, reopen or re-dispatch held work:
 |------------------|---------------------|
 | MR pending | held: parked, left for the Refinery |
 | MR landed (merged, or its commit is on the target) | closed |
-| Only MRs closed without landing (rejected, superseded) | free: reopened for rework |
+| Only MRs closed without landing, proven by git (commit not on the target) | free: reopened for rework |
+| MRs closed, landing not decidable (no prover, no recorded commit, git error) | held (unverified): parked, never reopened |
 | Merge queue unreadable | fail closed: nothing is reset or dispatched |
 
 The merge queue is always read town-wide (every beads DB): an MR lives in the

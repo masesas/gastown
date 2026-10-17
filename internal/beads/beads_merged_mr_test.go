@@ -27,7 +27,20 @@ func (f fakeProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, co
 	if f[commit] {
 		return nil
 	}
-	return os.ErrNotExist
+	return notOnTarget{}
+}
+
+// notOnTarget is a definite "commit not reachable" (like git.CommitNotOnBranchError).
+type notOnTarget struct{}
+
+func (notOnTarget) Error() string           { return "commit not on target" }
+func (notOnTarget) CommitNotOnTarget() bool { return true }
+
+// failingProver cannot find out (network, fetch, missing repo).
+type failingProver struct{}
+
+func (failingProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	return os.ErrDeadlineExceeded
 }
 
 func resolverFor(landed ...string) ProverResolver {

@@ -4,6 +4,7 @@ package beads
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -179,29 +180,67 @@ func MRWorkLanded(mr *Issue, prover MergeProver) bool {
 
 // MRFieldsLanded is MRWorkLanded for already-parsed fields and a known status.
 func MRFieldsLanded(status IssueStatus, fields *MRFields, prover MergeProver) bool {
+	return mrLandingVerdict(status, fields, prover) == verdictLanded
+}
+
+// landingVerdict is the three-valued answer to "did this MR's work land?".
+// Only a definite verdictNotLanded lets released work be dispatched again.
+type landingVerdict int
+
+const (
+	verdictUnknown landingVerdict = iota
+	verdictLanded
+	verdictNotLanded
+)
+
+// notOnTargetError is implemented by prover errors that are a definite "the
+// commit is not reachable from the target" (git.CommitNotOnBranchError), as
+// opposed to a failure to find out.
+type notOnTargetError interface{ CommitNotOnTarget() bool }
+
+// IsCommitNotOnTarget reports whether a MergeProver error is a definite "not
+// reachable" answer.
+func IsCommitNotOnTarget(err error) bool {
+	var n notOnTargetError
+	return errors.As(err, &n) && n.CommitNotOnTarget()
+}
+
+func mrLandingVerdict(status IssueStatus, fields *MRFields, prover MergeProver) landingVerdict {
 	if fields == nil {
-		return false
+		return verdictUnknown
 	}
 	// Structured signal, written only by the merged close in closeTerminalMR.
 	if status.IsTerminal() && (strings.EqualFold(strings.TrimSpace(fields.CloseReason), "merged") ||
 		strings.TrimSpace(fields.MergeCommit) != "") {
-		return true
+		return verdictLanded
 	}
 	target := strings.TrimSpace(fields.Target)
 	commit := strings.TrimSpace(fields.CommitSHA)
 	if prover == nil || target == "" || commit == "" {
-		return false
+		return verdictUnknown
 	}
 	// A commit already in the target when the MR was submitted carried no new
 	// work; reachability would then be a false positive.
 	if base := strings.TrimSpace(fields.BaseSHA); base != "" {
 		if a, ok := prover.(ancestorChecker); ok {
-			if isAnc, err := a.IsAncestor(commit, base); err != nil || isAnc {
-				return false
+			isAnc, err := a.IsAncestor(commit, base)
+			if err != nil {
+				return verdictUnknown
+			}
+			if isAnc {
+				return verdictNotLanded
 			}
 		}
 	}
-	return prover.VerifyPushedCommitReachableFromPushTarget("origin", target, commit) == nil
+	err := prover.VerifyPushedCommitReachableFromPushTarget("origin", target, commit)
+	switch {
+	case err == nil:
+		return verdictLanded
+	case IsCommitNotOnTarget(err):
+		return verdictNotLanded
+	default:
+		return verdictUnknown
+	}
 }
 
 // ancestorChecker is optionally implemented by a MergeProver (*git.Git does).

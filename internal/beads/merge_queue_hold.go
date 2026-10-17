@@ -28,6 +28,11 @@ const (
 	// HoldLanded: an MR's work is on its target branch (MRWorkLanded). The
 	// bead is finished work; it is closed, never reopened.
 	HoldLanded
+	// HoldUnverified: every MR is terminal, none provably landed, but at least
+	// one could not be proven NOT landed either (no prover, no recorded
+	// commit/target, git error). The bead is held (fail closed): parked,
+	// neither closed nor reopened, until git can decide.
+	HoldUnverified
 )
 
 // Held reports whether the bead must not be reset, reopened or dispatched.
@@ -39,6 +44,8 @@ func (h MergeQueueHold) String() string {
 		return "pending"
 	case HoldLanded:
 		return "landed"
+	case HoldUnverified:
+		return "unverified"
 	default:
 		return "none"
 	}
@@ -47,17 +54,38 @@ func (h MergeQueueHold) String() string {
 // MergeQueueHoldOf classifies a bead from its merge requests (any status) and
 // returns the deciding MR. Pending wins over landed: while an MR is open the
 // refinery owns the bead (it closes it on merge, including the already-merged
-// recheck), and the classification needs no git call. Landing is proven only
-// for beads whose MRs are all terminal (MRWorkLanded: close_reason/merge_commit
-// or git reachability, for MRs closed by hand).
+// recheck), and the classification needs no git call. For terminal MRs: one
+// that landed (close_reason/merge_commit, or git reachability for MRs closed
+// by hand) makes it HoldLanded; otherwise any MR whose landing git could not
+// decide makes it HoldUnverified. HoldNone needs every MR definitely not
+// landed: only then may the bead be dispatched again.
 func MergeQueueHoldOf(mrs []*Issue, resolve ProverResolver) (MergeQueueHold, string) {
 	for _, mr := range mrs {
 		if mr != nil && !IssueStatus(strings.TrimSpace(mr.Status)).IsTerminal() {
 			return HoldPending, mr.ID
 		}
 	}
-	if mrID := LandedMergeRequest(mrs, resolve); mrID != "" {
-		return HoldLanded, mrID
+	unverified := ""
+	for _, mr := range mrs {
+		if mr == nil {
+			continue
+		}
+		fields := ParseMRFields(mr)
+		var prover MergeProver
+		if fields != nil && resolve != nil {
+			prover = resolve(strings.TrimSpace(fields.Rig))
+		}
+		switch mrLandingVerdict(IssueStatus(strings.TrimSpace(mr.Status)), fields, prover) {
+		case verdictLanded:
+			return HoldLanded, mr.ID
+		case verdictUnknown:
+			if unverified == "" {
+				unverified = mr.ID
+			}
+		}
+	}
+	if unverified != "" {
+		return HoldUnverified, unverified
 	}
 	return HoldNone, ""
 }
@@ -70,12 +98,6 @@ type MergeQueueIndex map[string][]*Issue
 // Hold classifies issueID (see MergeQueueHoldOf).
 func (idx MergeQueueIndex) Hold(issueID string, resolve ProverResolver) (MergeQueueHold, string) {
 	return MergeQueueHoldOf(idx[strings.TrimSpace(issueID)], resolve)
-}
-
-// Held reports whether issueID is held.
-func (idx MergeQueueIndex) Held(issueID string, resolve ProverResolver) bool {
-	hold, _ := idx.Hold(issueID, resolve)
-	return hold.Held()
 }
 
 // TownMergeQueueIndex reads the merge requests of every beads DB in the town
@@ -172,7 +194,7 @@ func (q *MergeQueue) CheckSubmission(issueID, branch string) error {
 	branch = strings.TrimSpace(branch)
 	for _, mr := range q.MergeRequests(issueID) {
 		pending := !IssueStatus(strings.TrimSpace(mr.Status)).IsTerminal()
-		if !pending && !(hold == HoldLanded && mr.ID == mrID) {
+		if !pending && mr.ID != mrID {
 			continue
 		}
 		mrBranch := ""
@@ -256,22 +278,33 @@ const (
 	ReleaseUnchanged ReleaseOutcome = "unchanged"
 )
 
+// ErrLandingUnverified is returned (as a warning, with ReleaseParked) when no
+// MR of a released bead is pending or landed but git could not prove that its
+// work did not land: the bead is parked instead of reopened.
+var ErrLandingUnverified = errors.New("cannot verify that the MR's work did not land")
+
 // errNotHeld is returned by SettleHeldWorkBead for HoldNone.
 var errNotHeld = errors.New("work bead is not held by the merge queue")
 
 // SettleHeldWorkBead applies the merge queue's verdict to a held bead whose
 // worker is gone: HoldLanded closes it ("Merged in <mr>", --force because an
-// attached molecule's open steps would block a plain close), HoldPending parks
-// it. HoldNone is an error and touches nothing: the caller decides how to
+// attached molecule's open steps would block a plain close) unless it is
+// already terminal, HoldPending and HoldUnverified park it. HoldNone is an error and touches nothing: the caller decides how to
 // release work that is not held.
 func (b *Beads) SettleHeldWorkBead(issueID string, hold MergeQueueHold, mrID string) (ReleaseOutcome, error) {
 	switch hold {
 	case HoldLanded:
+		if terminal, err := b.workBeadTerminal(issueID); err != nil || terminal {
+			if err != nil {
+				return "", err
+			}
+			return ReleaseUnchanged, nil
+		}
 		if err := b.ForceCloseWithReason("Merged in "+mrID, issueID); err != nil {
 			return "", fmt.Errorf("closing merged work bead %s: %w", issueID, err)
 		}
 		return ReleaseClosed, nil
-	case HoldPending:
+	case HoldPending, HoldUnverified:
 		parked, err := b.ParkWorkBead(issueID)
 		if err != nil {
 			return "", err
@@ -291,7 +324,8 @@ func (b *Beads) SettleHeldWorkBead(issueID string, hold MergeQueueHold, mrID str
 // pending MR is parked, anything else returns to open with no assignee. If the
 // queue could not be read the bead is parked (fail closed: the worker is
 // released but the bead is not made dispatchable) and the read error is
-// returned alongside. A bead that is already terminal is left alone.
+// returned alongside. HoldUnverified also parks, with ErrLandingUnverified as
+// a warning. A bead that is already terminal is left alone.
 func (b *Beads) ReleaseWorkBead(issueID string, q *MergeQueue) (ReleaseOutcome, error) {
 	hold, mrID, lookupErr := q.Hold(issueID)
 	if lookupErr != nil {
@@ -305,7 +339,11 @@ func (b *Beads) ReleaseWorkBead(issueID string, q *MergeQueue) (ReleaseOutcome, 
 		return ReleaseParked, lookupErr
 	}
 	if hold.Held() {
-		return b.SettleHeldWorkBead(issueID, hold, mrID)
+		outcome, err := b.SettleHeldWorkBead(issueID, hold, mrID)
+		if err == nil && hold == HoldUnverified {
+			err = fmt.Errorf("%s: %w (MR %s): parked, not reopened", issueID, ErrLandingUnverified, mrID)
+		}
+		return outcome, err
 	}
 	if terminal, err := b.workBeadTerminal(issueID); err != nil || terminal {
 		if err != nil {

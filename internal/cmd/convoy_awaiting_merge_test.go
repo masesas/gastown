@@ -110,7 +110,8 @@ func TestFindStrandedConvoys_HoldsHookedIssueOfExitedPolecatWithPendingMR(t *tes
 
 // Once the MR is merged or rejected (closed), the issue is feedable again.
 func TestFindStrandedConvoys_FeedsIssueAfterMRClosed(t *testing.T) {
-	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr1","title":"Merge: gt-work1","status":"closed","description":"branch: polecat/rust/gt-work1\nsource_issue: gt-work1\n","labels":["gt:merge-request"]}]'`)
+	proveNotLanded(t)
+	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr1","title":"Merge: gt-work1","status":"closed","description":"branch: polecat/rust/gt-work1\ntarget: main\nsource_issue: gt-work1\nrig: gastown\ncommit_sha: c1\n","labels":["gt:merge-request"]}]'`)
 	if s.ReadyCount != 1 {
 		t.Fatalf("ReadyCount = %d, want 1 after MR closed", s.ReadyCount)
 	}
@@ -161,12 +162,31 @@ func (p stubProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, co
 	if p.landed {
 		return nil
 	}
-	return fmt.Errorf("commit %s not on %s/%s", commit, remote, branch)
+	return stubNotOnTarget{fmt.Sprintf("commit %s not on %s/%s", commit, remote, branch)}
+}
+
+// stubNotOnTarget is a definite "not reachable" (like git.CommitNotOnBranchError).
+type stubNotOnTarget struct{ msg string }
+
+func (e stubNotOnTarget) Error() string         { return e.msg }
+func (stubNotOnTarget) CommitNotOnTarget() bool { return true }
+
+// proveNotLanded makes the feeder's git prover answer "not on the target" for
+// every commit: a closed MR then definitely did not land (gt-pd1c.59: without
+// that proof the issue stays held).
+func proveNotLanded(t *testing.T) {
+	t.Helper()
+	orig := mergeProverResolver
+	t.Cleanup(func() { mergeProverResolver = orig })
+	mergeProverResolver = func(string) beads.ProverResolver {
+		return func(string) beads.MergeProver { return stubProver{landed: false} }
+	}
 }
 
 // A rejected MR needs rework, so its issue stays feedable.
 func TestFindStrandedConvoys_FeedsIssueAfterMRRejected(t *testing.T) {
-	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"closed","description":"source_issue: gt-work1\nclose_reason: rejected\n","labels":["gt:merge-request"]}]'`)
+	proveNotLanded(t)
+	s := strandedWithMRQuery(t, `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"closed","description":"source_issue: gt-work1\ntarget: main\nrig: gastown\ncommit_sha: c1\nclose_reason: rejected\n","labels":["gt:merge-request"]}]'`)
 	if s.ReadyCount != 1 {
 		t.Fatalf("ReadyCount = %d, want 1 after MR rejected", s.ReadyCount)
 	}
@@ -198,11 +218,24 @@ func TestFindStrandedConvoys_ParkedSourceFollowsTheMergeQueue(t *testing.T) {
 	if s := strandedWithIssueAndMRQuery(t, "in_progress", "", pending); s.ReadyCount != 0 {
 		t.Fatalf("ReadyCount = %d (%v), want 0: parked source with a pending MR", s.ReadyCount, s.ReadyIssues)
 	}
-	rejected := `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"closed","description":"source_issue: gt-work1\nclose_reason: rejected\n"}]'`
+	proveNotLanded(t)
+	rejected := `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"closed","description":"source_issue: gt-work1\ntarget: main\nrig: gastown\ncommit_sha: c1\nclose_reason: rejected\n"}]'`
 	if s := strandedWithIssueAndMRQuery(t, "in_progress", "", rejected); s.ReadyCount != 1 {
 		t.Fatalf("ReadyCount = %d, want 1: rejected MR, parked source needs rework", s.ReadyCount)
 	}
 	if s := strandedWithIssueAndMRQuery(t, "open", "", rejected); s.ReadyCount != 1 {
 		t.Fatalf("ReadyCount = %d, want 1: rejected MR, released source", s.ReadyCount)
+	}
+}
+
+// gt-pd1c.59 round 3: a closed MR whose landing git cannot decide (no prover
+// for its rig) keeps its issue held; the feeder does not re-dispatch it.
+func TestFindStrandedConvoys_HoldsIssueWhoseLandingIsUnverifiable(t *testing.T) {
+	orig := mergeProverResolver
+	t.Cleanup(func() { mergeProverResolver = orig })
+	mergeProverResolver = func(string) beads.ProverResolver { return func(string) beads.MergeProver { return nil } }
+	bare := `    printf '%s\n' '[{"id":"gt-wisp-mr1","status":"closed","description":"source_issue: gt-work1\ntarget: main\nrig: gastown\ncommit_sha: c1\n"}]'`
+	if s := strandedWithMRQuery(t, bare); s.ReadyCount != 0 {
+		t.Fatalf("ReadyCount = %d, want 0: landing unverifiable, fail closed", s.ReadyCount)
 	}
 }

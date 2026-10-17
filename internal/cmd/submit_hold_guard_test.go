@@ -34,6 +34,17 @@ func TestRefuseHeldSubmission(t *testing.T) {
 	}
 }
 
+// round 3 #2: still fail closed town-wide, but the refusal says the work is safe.
+func TestRefuseHeldSubmission_UnreadableQueueSaysWorkIsSafe(t *testing.T) {
+	old := submitMergeQueue
+	submitMergeQueue = func(string) *beads.MergeQueue { return beads.NewMergeQueue(nil, os.ErrPermission, nil) }
+	t.Cleanup(func() { submitMergeQueue = old })
+	err := refuseHeldSubmission("/town", "gt-work1", "polecat/alpha/gt-work1")
+	if err == nil || !strings.Contains(err.Error(), "safe on the local branch polecat/alpha/gt-work1") || !strings.Contains(err.Error(), "rerun") {
+		t.Fatalf("refusal = %v, want fail-closed with a safe-to-retry note", err)
+	}
+}
+
 // gt-pd1c.59 review #7: a bead parked because the queue was unreadable was
 // released from its worker; it is not reported as a failed reset.
 func TestResetStaleOutcome(t *testing.T) {
@@ -43,7 +54,7 @@ func TestResetStaleOutcome(t *testing.T) {
 		wantOK  bool
 		want    string
 	}{
-		{beads.ReleaseParked, os.ErrPermission, true, "parked: merge queue unreadable"},
+		{beads.ReleaseParked, os.ErrPermission, true, "parked, not reopened"},
 		{"", os.ErrPermission, false, "Failed to reset"},
 		{beads.ReleaseReopened, nil, true, ""},
 		{beads.ReleaseParked, nil, true, "held by merge queue: parked"},

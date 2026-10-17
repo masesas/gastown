@@ -59,7 +59,7 @@ const nullAssigneeSelectQuery = `SELECT id, title, updated_at FROM issues WHERE 
 var nullAssigneeMergeQueueFn = mergeproof.TownMergeQueue
 
 // validBeadID is the shape of a bead ID the fix may put into SQL.
-var validBeadID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var validBeadID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Run queries each rig database for in_progress beads with NULL/empty assignee.
 func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
@@ -163,7 +163,8 @@ func splitMergeQueueHeld(rows []nullAssigneeRow, queue *beads.MergeQueue) (reope
 		case beads.HoldLanded:
 			row.MRID = mrID
 			landed = append(landed, row)
-		case beads.HoldPending:
+		case beads.HoldPending, beads.HoldUnverified:
+			// Waiting for its merge, or landing not decidable: never reopen.
 			pending = append(pending, row)
 		default:
 			reopen = append(reopen, row)
@@ -196,6 +197,10 @@ func (c *NullAssigneeCheck) Fix(ctx *CheckContext) error {
 	var errs []string
 	// Landed work: close through the shared settle (gt-pd1c.59).
 	for _, row := range c.landed {
+		if !validBeadID.MatchString(row.ID) {
+			errs = append(errs, fmt.Sprintf("%s: refusing bead ID %q: not a valid bead ID", row.RigDB, row.ID))
+			continue
+		}
 		rigDir := filepath.Join(ctx.TownRoot, row.RigDB)
 		if _, err := beads.New(rigDir).SettleHeldWorkBead(row.ID, beads.HoldLanded, row.MRID); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", row.RigDB, err))

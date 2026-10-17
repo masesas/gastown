@@ -9,13 +9,27 @@ import (
 )
 
 func testQueue(idx beads.MergeQueueIndex, err error) func(string) *beads.MergeQueue {
-	return func(string) *beads.MergeQueue { return beads.NewMergeQueue(idx, err, nil) }
+	return func(string) *beads.MergeQueue { return beads.NewMergeQueue(idx, err, notLandedResolver) }
 }
+
+// notLandedProver answers every commit with a definite "not on the target".
+type notLandedProver struct{}
+
+func (notLandedProver) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error {
+	return notOnTarget{}
+}
+
+type notOnTarget struct{}
+
+func (notOnTarget) Error() string           { return "commit not on target" }
+func (notOnTarget) CommitNotOnTarget() bool { return true }
+
+var notLandedResolver beads.ProverResolver = func(string) beads.MergeProver { return notLandedProver{} }
 
 var doctorTestIndex = beads.MergeQueueIndex{
 	"gt-parked": {{ID: "gt-wisp-mr1", Status: "open", Description: "source_issue: gt-parked\n"}},
 	"gt-landed": {{ID: "gt-wisp-mr2", Status: "closed", Description: "source_issue: gt-landed\nclose_reason: merged\n"}},
-	"gt-broken": {{ID: "gt-wisp-mr3", Status: "closed", Description: "source_issue: gt-broken\nclose_reason: rejected\n"}},
+	"gt-broken": {{ID: "gt-wisp-mr3", Status: "closed", Description: "source_issue: gt-broken\ntarget: main\ncommit_sha: c3\nclose_reason: rejected\n"}},
 }
 
 // gt-pd1c.59: gt done parks the source of a submitted MR as in_progress with
@@ -23,7 +37,7 @@ var doctorTestIndex = beads.MergeQueueIndex{
 // landed one (MR closed by hand) is closed by the fix; the rest is reopened.
 func TestSplitMergeQueueHeld(t *testing.T) {
 	rows := []nullAssigneeRow{{ID: "gt-parked", RigDB: "gastown"}, {ID: "gt-broken", RigDB: "gastown"}, {ID: "gt-landed", RigDB: "gastown"}}
-	reopen, landed, pending := splitMergeQueueHeld(rows, beads.NewMergeQueue(doctorTestIndex, nil, nil))
+	reopen, landed, pending := splitMergeQueueHeld(rows, beads.NewMergeQueue(doctorTestIndex, nil, notLandedResolver))
 	if len(reopen) != 1 || reopen[0].ID != "gt-broken" {
 		t.Fatalf("reopen = %+v, want only gt-broken (rejected MR, needs re-dispatch)", reopen)
 	}
@@ -78,9 +92,28 @@ func TestNullAssigneeFixQueryFor(t *testing.T) {
 			t.Fatalf("query %q lacks %q", q, want)
 		}
 	}
-	for _, bad := range []string{"gt-b'c", "gt a", "", "gt;drop"} {
+	for _, bad := range []string{"gt-b'c", "gt a", "", "gt;drop", "-gt-a", ".gt"} {
 		if _, err := nullAssigneeFixQueryFor([]string{"gt-a", bad}); err == nil {
 			t.Fatalf("invalid ID %q accepted", bad)
 		}
+	}
+}
+
+// round 3 #6: the landed close path validates IDs too, before any bd call.
+func TestNullAssigneeCheck_FixRefusesInvalidLandedID(t *testing.T) {
+	c := NewNullAssigneeCheck()
+	c.landed = []nullAssigneeRow{{ID: "--force", RigDB: "gastown", MRID: "gt-wisp-mr2"}}
+	err := c.Fix(&CheckContext{TownRoot: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "refusing bead ID") {
+		t.Fatalf("Fix = %v, want the invalid ID refused", err)
+	}
+}
+
+// round 3 #1: a bead whose MR landing cannot be decided is never reopened.
+func TestSplitMergeQueueHeld_UnverifiedIsNotReopened(t *testing.T) {
+	idx := beads.MergeQueueIndex{"gt-bare": {{ID: "gt-wisp-mr4", Status: "closed", Description: "source_issue: gt-bare\ntarget: main\ncommit_sha: c4\n"}}}
+	reopen, landed, pending := splitMergeQueueHeld([]nullAssigneeRow{{ID: "gt-bare"}}, beads.NewMergeQueue(idx, nil, nil))
+	if len(reopen) != 0 || len(landed) != 0 || len(pending) != 1 {
+		t.Fatalf("reopen=%v landed=%v pending=%v, want it left alone", reopen, landed, pending)
 	}
 }

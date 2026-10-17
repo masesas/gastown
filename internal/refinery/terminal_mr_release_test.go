@@ -198,3 +198,23 @@ func useIsolatedMergeQueue(t *testing.T, b *beads.Beads) {
 	}
 	t.Cleanup(func() { readTownMergeQueue = old })
 }
+
+// round 3 #1: the rejected MR was closed by hand earlier and git cannot decide
+// whether its commit landed (no prover): the parked source is not reopened and
+// the release says why.
+func TestCloseTerminalMR_UnverifiableLandingKeepsSourceParked(t *testing.T) {
+	logPath := installTerminalMRBDStub(t, parkedSourceIssues("closed", "", ""))
+	stubTownMergeQueue(t, beads.MergeQueueIndex{"gt-work1": {{ID: "gt-wisp-mr1", Status: "closed", Description: "source_issue: gt-work1\ntarget: main\ncommit_sha: c1\n"}}}, nil)
+	res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: again", TownRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("closeTerminalMR: %v", err)
+	}
+	if res.SourceRelease == beads.ReleaseReopened || !errors.Is(res.SourceReleaseErr, beads.ErrLandingUnverified) {
+		t.Fatalf("result = %+v, want parked with ErrLandingUnverified", res)
+	}
+	for _, u := range sourceUpdates(t, logPath) {
+		if strings.Contains(u, "--status=open") {
+			t.Fatalf("unverifiable source reopened: %s", u)
+		}
+	}
+}

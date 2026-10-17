@@ -2187,10 +2187,21 @@ func (g *Git) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit s
 		return fmt.Errorf("verified_push_failed: unable to verify commit %s on %s/%s: %w", shortSHA(commit), remote, branch, err)
 	}
 	if !reachable {
-		return fmt.Errorf("verified_push_failed: commit %s not on %s/%s (remote tip %s)", shortSHA(commit), remote, branch, shortSHA(tip))
+		return &CommitNotOnBranchError{msg: fmt.Sprintf("verified_push_failed: commit %s not on %s/%s (remote tip %s)", shortSHA(commit), remote, branch, shortSHA(tip))}
 	}
 	return nil
 }
+
+// CommitNotOnBranchError is the definite answer "the commit is not reachable
+// from the branch" (the branch was read and fetched), as opposed to a failure
+// to find out. Merge-queue classification relies on the difference
+// (beads.MergeQueueHold, gt-pd1c.59).
+type CommitNotOnBranchError struct{ msg string }
+
+func (e *CommitNotOnBranchError) Error() string { return e.msg }
+
+// CommitNotOnTarget marks the error as a definite "not landed".
+func (e *CommitNotOnBranchError) CommitNotOnTarget() bool { return true }
 
 func parseLSRemoteTip(out, branch string) string {
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {

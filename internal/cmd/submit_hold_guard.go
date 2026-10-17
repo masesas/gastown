@@ -14,7 +14,11 @@ var submitMergeQueue = mergeproof.TownMergeQueue
 // branch belongs to the refinery, so no second MR (or no-MR close) is made for
 // it. The owner's own branch may resubmit. An unreadable queue refuses.
 func refuseHeldSubmission(townRoot, issueID, branch string) error {
-	if err := submitMergeQueue(townRoot).CheckSubmission(issueID, branch); err != nil {
+	queue := submitMergeQueue(townRoot)
+	if err := queue.CheckSubmission(issueID, branch); err != nil {
+		if queue.Err() != nil {
+			return fmt.Errorf("%w\nNothing was pushed and no merge request was created. Your commits are safe on the local branch %s; rerun the command once beads is reachable again", err, branch)
+		}
 		return fmt.Errorf("%w\nNothing was pushed and no merge request was created", err)
 	}
 	return nil

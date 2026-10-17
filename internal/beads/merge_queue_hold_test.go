@@ -1,6 +1,7 @@
 package beads
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,8 +38,8 @@ func TestMergeQueueHoldFor_ClassifiesEveryMRShape(t *testing.T) {
 func TestMergeQueueHoldFor_BareClosedMRNeedsAProver(t *testing.T) {
 	installMergedMRBDStub(t, pendingMRRows, closedMRRows)
 	idx, _ := New(t.TempDir()).MergeRequestsBySource()
-	if hold, _, err := NewMergeQueue(idx, nil, nil).Hold("gt-work4"); err != nil || hold != HoldNone {
-		t.Fatalf("without a prover a bare-closed MR must not count as landed, got (%v, %v)", hold, err)
+	if hold, _, err := NewMergeQueue(idx, nil, nil).Hold("gt-work4"); err != nil || hold != HoldUnverified {
+		t.Fatalf("without a prover a bare-closed MR is neither landed nor free, got (%v, %v)", hold, err)
 	}
 }
 
@@ -53,7 +54,10 @@ func TestMergeQueueHold_HeldAndString(t *testing.T) {
 	if HoldNone.Held() || !HoldPending.Held() || !HoldLanded.Held() {
 		t.Fatal("only HoldNone may be dispatched again")
 	}
-	for hold, want := range map[MergeQueueHold]string{HoldNone: "none", HoldPending: "pending", HoldLanded: "landed"} {
+	if !HoldUnverified.Held() {
+		t.Fatal("unverified landing must hold (fail closed)")
+	}
+	for hold, want := range map[MergeQueueHold]string{HoldNone: "none", HoldPending: "pending", HoldLanded: "landed", HoldUnverified: "unverified"} {
 		if hold.String() != want {
 			t.Errorf("%d.String() = %q, want %q", hold, hold.String(), want)
 		}
@@ -114,8 +118,11 @@ func TestTownMergeQueueIndex_ReadsEveryBeadsDBOnce(t *testing.T) {
 	if hold, mrID := idx.Hold("gt-work3", resolverFor()); hold != HoldPending || mrID != "gt-wisp-open" {
 		t.Fatalf("Hold(gt-work3) = (%v, %q), want pending gt-wisp-open", hold, mrID)
 	}
-	if !idx.Held("gt-work1", resolverFor()) || idx.Held("gt-work2", resolverFor()) {
-		t.Fatal("index must hold merged work and release rejected work")
+	if h, _ := idx.Hold("gt-work1", resolverFor()); !h.Held() {
+		t.Fatal("index must hold merged work")
+	}
+	if h, _ := idx.Hold("gt-work2", resolverFor()); h.Held() {
+		t.Fatal("index must release rejected work whose commit is provably not on the target")
 	}
 	// Three distinct beads DBs, two queries (pending + closed) each.
 	if n := strings.Count(readCalls(t, log), "sql"); n != 6 {
@@ -250,5 +257,50 @@ func TestCheckSubmission(t *testing.T) {
 	}
 	if err := NewMergeQueue(nil, os.ErrPermission, nil).CheckSubmission("gt-new", "b"); err == nil {
 		t.Fatal("an unreadable queue must refuse (fail closed)")
+	}
+}
+
+// gt-pd1c.59 round 3 #1: an MR closed by hand (no close_reason) whose landing
+// git cannot decide (no prover, or the prover fails) leaves its bead parked,
+// never reopened; the release says why.
+func TestReleaseWorkBead_ParksWhenLandingCannotBeDisproved(t *testing.T) {
+	for name, resolve := range map[string]ProverResolver{
+		"no prover":     nil,
+		"prover errors": func(string) MergeProver { return failingProver{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
+			idx, _ := New(t.TempDir()).MergeRequestsBySource()
+			q := NewMergeQueue(idx, nil, resolve)
+			if hold, mrID, err := q.Hold("gt-work4"); err != nil || hold != HoldUnverified || mrID != "gt-wisp-bare" {
+				t.Fatalf("Hold = (%v, %q, %v), want unverified gt-wisp-bare", hold, mrID, err)
+			}
+			outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work4", q)
+			if outcome != ReleaseParked || !errors.Is(err, ErrLandingUnverified) {
+				t.Fatalf("ReleaseWorkBead = (%v, %v), want parked with ErrLandingUnverified", outcome, err)
+			}
+			calls := readCalls(t, log)
+			if strings.Contains(calls, "--status=open") || strings.Contains(calls, "\nclose ") {
+				t.Fatalf("unverifiable work must be neither reopened nor closed:\n%s", calls)
+			}
+		})
+	}
+}
+
+// round 3 #4: a landed bead that is already closed is not force-closed again.
+func TestSettleHeldWorkBead_LandedLeavesClosedBeadAlone(t *testing.T) {
+	log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
+	writeShow(t, "gt-work1", "closed")
+	if outcome, err := New(t.TempDir()).SettleHeldWorkBead("gt-work1", HoldLanded, "gt-wisp-merged"); err != nil || outcome != ReleaseUnchanged {
+		t.Fatalf("Settle(closed) = (%v, %v), want unchanged", outcome, err)
+	}
+	if calls := readCalls(t, log); strings.Contains(calls, "Merged in") {
+		t.Fatalf("closed bead must not be closed again:\n%s", calls)
+	}
+}
+
+func TestIsCommitNotOnTarget(t *testing.T) {
+	if !IsCommitNotOnTarget(notOnTarget{}) || IsCommitNotOnTarget(os.ErrDeadlineExceeded) || IsCommitNotOnTarget(nil) {
+		t.Fatal("only a definite not-on-target answer counts")
 	}
 }
