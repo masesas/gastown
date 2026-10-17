@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
@@ -27,7 +28,8 @@ import (
 // is fixed.
 type NullAssigneeCheck struct {
 	FixableCheck
-	affected []nullAssigneeRow
+	affected []nullAssigneeRow // reopened by Fix
+	landed   []nullAssigneeRow // closed by Fix: parked beads whose MR landed
 }
 
 type nullAssigneeRow struct {
@@ -35,6 +37,7 @@ type nullAssigneeRow struct {
 	Title     string
 	UpdatedAt string
 	RigDB     string // Dolt database name (= rig name)
+	MRID      string // landed MR, for beads closed by Fix
 }
 
 // NewNullAssigneeCheck creates a new null-assignee steps check.
@@ -52,8 +55,11 @@ func NewNullAssigneeCheck() *NullAssigneeCheck {
 
 const nullAssigneeSelectQuery = `SELECT id, title, updated_at FROM issues WHERE status = 'in_progress' AND (assignee IS NULL OR assignee = '') ORDER BY updated_at ASC`
 
-// nullAssigneeMergeQueueFn reads the town's merge queue; tests override it.
-var nullAssigneeMergeQueueFn = beads.TownMergeQueueIndex
+// nullAssigneeMergeQueueFn reads the town-wide merge queue; tests override it.
+var nullAssigneeMergeQueueFn = mergeproof.TownMergeQueue
+
+// validBeadID is the shape of a bead ID the fix may put into SQL.
+var validBeadID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Run queries each rig database for in_progress beads with NULL/empty assignee.
 func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
@@ -85,18 +91,19 @@ func (c *NullAssigneeCheck) Run(ctx *CheckContext) *CheckResult {
 	return c.classify(ctx, rows, nullAssigneeMergeQueueFn)
 }
 
-// classify drops beads held by the merge queue (gt-pd1c.59: gt done parks the
+// classify sorts the rows with the merge queue (gt-pd1c.59: gt done parks the
 // source of a submitted MR as in_progress with no assignee until the refinery
-// closes or releases it) and reports the rest as fixable. An unreadable merge
-// queue makes nothing fixable (fail closed: resetting a parked bead to open
-// would dispatch work that is waiting for its merge).
-func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, readQueue func(string) (beads.MergeQueueIndex, error)) *CheckResult {
-	c.affected = nil
+// closes or releases it): a pending one is waiting for its merge and is left
+// alone, a landed one (MR closed by hand, so nothing closed its source) is
+// closed by Fix, the rest is reopened by Fix. An unreadable merge queue makes
+// nothing fixable (fail closed).
+func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, readQueue func(string) *beads.MergeQueue) *CheckResult {
+	c.affected, c.landed = nil, nil
 	if len(rows) == 0 {
 		return c.okResult()
 	}
-	idx, err := readQueue(ctx.TownRoot)
-	if err != nil {
+	queue := readQueue(ctx.TownRoot)
+	if err := queue.Err(); err != nil {
 		return &CheckResult{
 			Name:     c.Name(),
 			Status:   StatusWarning,
@@ -106,30 +113,34 @@ func (c *NullAssigneeCheck) classify(ctx *CheckContext, rows []nullAssigneeRow, 
 			Category: c.Category(),
 		}
 	}
-	kept, held := splitMergeQueueHeld(rows, idx, mergeproof.Resolver(ctx.TownRoot))
-	c.affected = kept
-	if len(kept) == 0 {
+	reopen, landed, pending := splitMergeQueueHeld(rows, queue)
+	c.affected, c.landed = reopen, landed
+	if len(reopen) == 0 && len(landed) == 0 {
 		return c.okResult()
 	}
 
-	details := make([]string, 0, len(kept)+1)
-	for _, row := range kept {
+	details := make([]string, 0, len(reopen)+len(landed)+1)
+	for _, row := range reopen {
 		details = append(details, fmt.Sprintf("[%s] %s — %s (updated: %s)",
 			row.RigDB, row.ID, shortenTitle(row.Title, 60), row.UpdatedAt))
 	}
-	if len(held) > 0 {
-		details = append(details, fmt.Sprintf("%d more held by the merge queue (awaiting merge) — not touched", len(held)))
+	for _, row := range landed {
+		details = append(details, fmt.Sprintf("[%s] %s — MR %s landed, bead still open: will be closed",
+			row.RigDB, row.ID, row.MRID))
+	}
+	if len(pending) > 0 {
+		details = append(details, fmt.Sprintf("%d more held by the merge queue (awaiting merge) — not touched", len(pending)))
 	}
 
 	return &CheckResult{
 		Name:   c.Name(),
 		Status: StatusWarning,
 		Message: fmt.Sprintf(
-			"%d in_progress bead(s) with NULL assignee — invisible to bd, blocking molecule progress",
-			len(kept),
+			"%d in_progress bead(s) with NULL assignee to reopen, %d whose MR landed to close",
+			len(reopen), len(landed),
 		),
 		Details:  details,
-		FixHint:  "Run 'gt doctor --fix' to reset to open for re-dispatch",
+		FixHint:  "Run 'gt doctor --fix' to reopen them for re-dispatch and close landed work",
 		Category: c.Category(),
 	}
 }
@@ -143,35 +154,52 @@ func (c *NullAssigneeCheck) okResult() *CheckResult {
 	}
 }
 
-// splitMergeQueueHeld separates rows the merge queue holds (beads.MergeQueueHold)
-// from the rest.
-func splitMergeQueueHeld(rows []nullAssigneeRow, idx beads.MergeQueueIndex, resolve beads.ProverResolver) (kept, held []nullAssigneeRow) {
+// splitMergeQueueHeld sorts rows by their merge-queue hold
+// (beads.MergeQueueHold): none (reopen), landed (close), pending (leave).
+func splitMergeQueueHeld(rows []nullAssigneeRow, queue *beads.MergeQueue) (reopen, landed, pending []nullAssigneeRow) {
 	for _, row := range rows {
-		if idx.Held(row.ID, resolve) {
-			held = append(held, row)
-			continue
+		hold, mrID, _ := queue.Hold(row.ID)
+		switch hold {
+		case beads.HoldLanded:
+			row.MRID = mrID
+			landed = append(landed, row)
+		case beads.HoldPending:
+			pending = append(pending, row)
+		default:
+			reopen = append(reopen, row)
 		}
-		kept = append(kept, row)
 	}
-	return kept, held
+	return reopen, landed, pending
 }
 
 // nullAssigneeFixQueryFor resets exactly the given beads (still in_progress
-// with no assignee) to open.
-func nullAssigneeFixQueryFor(ids []string) string {
+// with no assignee) to open. Every ID must match validBeadID.
+func nullAssigneeFixQueryFor(ids []string) (string, error) {
 	quoted := make([]string, 0, len(ids))
 	for _, id := range ids {
-		quoted = append(quoted, "'"+strings.ReplaceAll(id, "'", "''")+"'")
+		if !validBeadID.MatchString(id) {
+			return "", fmt.Errorf("refusing bead ID %q: not a valid bead ID", id)
+		}
+		quoted = append(quoted, "'"+id+"'")
 	}
 	return "UPDATE issues SET status = 'open', assignee = '' WHERE id IN (" + strings.Join(quoted, ", ") +
-		") AND status = 'in_progress' AND (assignee IS NULL OR assignee = '')"
+		") AND status = 'in_progress' AND (assignee IS NULL OR assignee = '')", nil
 }
 
 // Fix resets the affected beads (not held by the merge queue) to open (clears
 // assignee) via direct SQL, then commits the repair to Dolt history.
 func (c *NullAssigneeCheck) Fix(ctx *CheckContext) error {
-	if len(c.affected) == 0 {
+	if len(c.affected) == 0 && len(c.landed) == 0 {
 		return nil
+	}
+
+	var errs []string
+	// Landed work: close through the shared settle (gt-pd1c.59).
+	for _, row := range c.landed {
+		rigDir := filepath.Join(ctx.TownRoot, row.RigDB)
+		if _, err := beads.New(rigDir).SettleHeldWorkBead(row.ID, beads.HoldLanded, row.MRID); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", row.RigDB, err))
+		}
 	}
 
 	// Group affected bead IDs by database.
@@ -180,12 +208,16 @@ func (c *NullAssigneeCheck) Fix(ctx *CheckContext) error {
 		affected[row.RigDB] = append(affected[row.RigDB], row.ID)
 	}
 
-	var errs []string
 	for db, ids := range affected {
 		rigDir := filepath.Join(ctx.TownRoot, db)
 
 		// Reset beads via direct SQL (bypasses bd ORM which fails on NULL assignee).
-		if err := execBdSQLWrite(rigDir, nullAssigneeFixQueryFor(ids)); err != nil {
+		query, err := nullAssigneeFixQueryFor(ids)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", db, err))
+			continue
+		}
+		if err := execBdSQLWrite(rigDir, query); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: update failed: %v", db, err))
 			continue
 		}

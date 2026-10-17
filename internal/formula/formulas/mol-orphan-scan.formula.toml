@@ -101,14 +101,12 @@ gt session status <rig>/<role> --json | jq -r '.running' | grep -q true && echo 
 
 **4. Identify orphans:**
 - Issue in_progress + assignee session dead = orphan
-- Issue in_progress + no assignee = orphan, UNLESS the merge queue holds it
-- NOT an orphan: an issue whose MR is still in the merge queue. `gt done`
-  parks a submitted issue as in_progress with no assignee; the refinery closes
-  it on merge or reopens it on rejection. Check before classifying:
-  ```bash
-  gt mq list <rig>    # an open MR whose branch names <issue> = held, skip it
-  ```
-  Never reset, reassign or close a held issue.
+- Issue in_progress + NO assignee: do not classify it yourself. `gt done`
+  parks submitted work exactly like that until the refinery merges it, and
+  only the merge queue can tell parked work from a broken bead. Run
+  `gt doctor` and treat as orphans only the beads it lists under
+  `null-assignee-steps` (it already excludes work held by the merge queue);
+  repair them with `gt doctor --fix`, never with `bd update`.
 
 Record each orphan with:
 - Issue ID

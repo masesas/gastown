@@ -2741,15 +2741,15 @@ func getBeadStatus(bd *BdCli, workDir, beadID string) (string, bool) {
 	return issues[0].Status, true
 }
 
-// mergeQueueHoldForBead classifies beadID with the shared merge-queue
-// predicate (beads.MergeQueueHold) over this rig's merge requests (polecats of
-// this rig submit their MRs here). Tests override it.
-var mergeQueueHoldForBead = func(workDir, beadID string) (beads.MergeQueueHold, string, error) {
+// witnessMergeQueue reads the town-wide merge queue (the shared
+// beads.MergeQueueHold scope: an MR may live in another DB than its source).
+// Tests override it.
+var witnessMergeQueue = func(workDir string) *beads.MergeQueue {
 	townRoot, err := workspace.Find(workDir)
 	if err != nil || townRoot == "" {
 		townRoot = workDir
 	}
-	return beads.New(workDir).MergeQueueHoldFor(beadID, mergeproof.Resolver(townRoot))
+	return mergeproof.TownMergeQueue(townRoot)
 }
 
 // resetAbandonedBead resets a dead polecat's hooked bead so it can be re-dispatched.
@@ -2801,7 +2801,7 @@ func resetAbandonedBead(bd *BdCli, workDir, rigName, hookBead, polecatName strin
 	// close it on merge or release it on rejection: park it (clear the dead
 	// polecat's assignee, keep it out of bd ready). Reopening either would make
 	// the convoy feeder or the deacon dispatch the work a second time.
-	hold, mrID, holdErr := mergeQueueHoldForBead(workDir, hookBead)
+	hold, mrID, holdErr := witnessMergeQueue(workDir).Hold(hookBead)
 	if holdErr != nil {
 		// Fail closed: without the merge queue we cannot tell abandoned work
 		// from work waiting for its merge. The next patrol retries.
@@ -2912,6 +2912,24 @@ Please re-dispatch to an available polecat.`,
 	return true
 }
 
+// settleLandedParkedBead closes a parked bead (in_progress, no assignee)
+// whose MR landed (beads.HoldLanded). Pending or free beads are left alone;
+// an unreadable merge queue is reported, never acted on.
+func settleLandedParkedBead(bd *BdCli, workDir, beadID string, queue *beads.MergeQueue) error {
+	hold, mrID, err := queue.Hold(beadID)
+	if err != nil {
+		return fmt.Errorf("merge queue unreadable, not settling %s: %w", beadID, err)
+	}
+	if hold != beads.HoldLanded {
+		return nil
+	}
+	reason := fmt.Sprintf("Merged in %s (settled by witness)", mrID)
+	if err := bd.Run(workDir, "close", beadID, "--force", "-r", reason); err != nil {
+		return fmt.Errorf("closing parked bead %s (MR %s landed): %w", beadID, mrID, err)
+	}
+	return nil
+}
+
 // OrphanedBeadResult contains a single detected orphaned bead.
 type OrphanedBeadResult struct {
 	BeadID        string
@@ -2944,10 +2962,12 @@ func DetectOrphanedBeads(bd *BdCli, workDir, rigName string, router *mail.Router
 
 	// Scan both in_progress and hooked beads — resetAbandonedBead handles both
 	// states, and orphaned beads can be stuck in either.
-	var beadList []struct {
+	type listedBead struct {
 		ID       string `json:"id"`
 		Assignee string `json:"assignee"`
+		status   string
 	}
+	var beadList []listedBead
 	for _, status := range []string{"in_progress", "hooked"} {
 		output, err := bd.Exec(workDir, "list", "--status="+status, "--json", "--limit=0")
 		if err != nil {
@@ -2957,22 +2977,35 @@ func DetectOrphanedBeads(bd *BdCli, workDir, rigName string, router *mail.Router
 		if output == "" {
 			continue
 		}
-		var batch []struct {
-			ID       string `json:"id"`
-			Assignee string `json:"assignee"`
-		}
+		var batch []listedBead
 		if err := json.Unmarshal([]byte(output), &batch); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("parsing %s beads: %w", status, err))
 			continue
+		}
+		for i := range batch {
+			batch[i].status = status
 		}
 		beadList = append(beadList, batch...)
 	}
 
 	t := tmux.NewTmux()
+	var queue *beads.MergeQueue // read once, for the first parked bead
 
 	for _, bead := range beadList {
 		if bead.Assignee == "" {
-			continue // No assignee — not a dead-polecat orphan
+			// No assignee — not a dead-polecat orphan. An in_progress bead
+			// without assignee is parked for the merge queue (gt done,
+			// gt-pd1c.59): if its MR landed but was closed by hand, nothing
+			// else closes it, so settle it here.
+			if bead.status == "in_progress" {
+				if queue == nil {
+					queue = witnessMergeQueue(workDir)
+				}
+				if err := settleLandedParkedBead(bd, workDir, bead.ID, queue); err != nil {
+					result.Errors = append(result.Errors, err)
+				}
+			}
+			continue
 		}
 
 		// Parse assignee: "rigname/polecats/polecatname"

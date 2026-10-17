@@ -21,6 +21,7 @@ import (
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/hooks"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
@@ -1445,7 +1446,7 @@ func runRigReset(cmd *cobra.Command, args []string) error {
 
 	// Reset stale in_progress issues
 	if resetAll || rigResetStale {
-		if err := runResetStale(rigBd, rigResetDryRun); err != nil {
+		if err := runResetStale(rigBd, townRoot, rigResetDryRun); err != nil {
 			return fmt.Errorf("resetting stale issues: %w", err)
 		}
 	}
@@ -1454,8 +1455,9 @@ func runRigReset(cmd *cobra.Command, args []string) error {
 }
 
 // runResetStale resets in_progress issues whose assigned agent no longer has a session.
-func runResetStale(bd *beads.Beads, dryRun bool) error {
+func runResetStale(bd *beads.Beads, townRoot string, dryRun bool) error {
 	t := tmux.NewTmux()
+	var queue *beads.MergeQueue // read once, for the first stale issue
 
 	// Get all in_progress issues
 	issues, err := bd.List(beads.ListOptions{
@@ -1516,18 +1518,17 @@ func runResetStale(bd *beads.Beads, dryRun bool) error {
 		} else {
 			// Release through the shared merge-queue rule (gt-pd1c.59): open with
 			// no assignee, unless an MR holds the bead (pending: parked for the
-			// refinery; merged: closed). Landing is read from the MR record only
-			// (no git prover here).
-			outcome, err := bd.ReleaseWorkBead(issue.ID, nil)
-			if err != nil {
-				fmt.Printf("  %s Failed to reset %s: %v\n",
-					style.Warning.Render("⚠"),
-					issue.ID, err)
-				continue
+			// refinery; landed: closed). Same town-wide queue and git provers
+			// as every other release path.
+			if queue == nil {
+				queue = mergeproof.TownMergeQueue(townRoot)
 			}
-			if outcome != beads.ReleaseReopened {
-				fmt.Printf("  %s: %s (held by merge queue: %s)\n",
-					style.Dim.Render(issue.ID), issue.Assignee, outcome)
+			outcome, err := bd.ReleaseWorkBead(issue.ID, queue)
+			if msg, ok := resetStaleOutcome(issue.ID, issue.Assignee, outcome, err); !ok {
+				fmt.Print(msg)
+				continue
+			} else if msg != "" {
+				fmt.Print(msg)
 			}
 		}
 		resetCount++
@@ -1556,6 +1557,23 @@ func runResetStale(bd *beads.Beads, dryRun bool) error {
 	}
 
 	return nil
+}
+
+// resetStaleOutcome renders one ReleaseWorkBead result of gt rig reset --stale.
+// ok is false when the issue was not released at all. A parked issue whose
+// merge queue could not be read was released from its worker (fail closed),
+// so it is reported as parked with the error, not as a failed reset.
+func resetStaleOutcome(issueID, assignee string, outcome beads.ReleaseOutcome, err error) (string, bool) {
+	switch {
+	case outcome == beads.ReleaseParked && err != nil:
+		return fmt.Sprintf("  %s: %s (parked: merge queue unreadable: %v)\n", issueID, assignee, err), true
+	case err != nil:
+		return fmt.Sprintf("  %s Failed to reset %s: %v\n", style.Warning.Render("⚠"), issueID, err), false
+	case outcome == beads.ReleaseReopened:
+		return "", true
+	default:
+		return fmt.Sprintf("  %s: %s (held by merge queue: %s)\n", issueID, assignee, outcome), true
+	}
 }
 
 // assigneeToSessionName converts an assignee (rig/name, rig/crew/name, or rig/polecats/name)

@@ -1,6 +1,7 @@
 package refinery
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -14,6 +15,14 @@ func parkedSourceIssues(mrStatus, mrFields, assignee string) map[string]string {
 	issues := terminalMRIssues(mrStatus, mrFields)
 	issues["gt-work1"] = `[{"id":"gt-work1","title":"Work","status":"in_progress","assignee":"` + assignee + `","issue_type":"task","description":""}]`
 	return issues
+}
+
+// stubTownMergeQueue makes the release see the given town merge queue.
+func stubTownMergeQueue(t *testing.T, idx beads.MergeQueueIndex, err error) {
+	t.Helper()
+	old := readTownMergeQueue
+	readTownMergeQueue = func(string) *beads.MergeQueue { return beads.NewMergeQueue(idx, err, nil) }
+	t.Cleanup(func() { readTownMergeQueue = old })
 }
 
 func sourceUpdates(t *testing.T, logPath string) []string {
@@ -50,8 +59,9 @@ func TestCloseTerminalMR_MergedClosesParkedSource(t *testing.T) {
 // open, no assignee, so the convoy feeder or a dispatcher can pick it up.
 func TestCloseTerminalMR_RejectedReleasesParkedSource(t *testing.T) {
 	logPath := installTerminalMRBDStub(t, parkedSourceIssues("open", "", ""))
+	stubTownMergeQueue(t, beads.MergeQueueIndex{}, nil)
 	res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{
-		Reason: "rejected: gate failed",
+		Reason: "rejected: gate failed", TownRoot: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("closeTerminalMR: %v", err)
@@ -82,7 +92,8 @@ func TestCloseTerminalMR_RejectedLeavesOwnedOrClosedSourceAlone(t *testing.T) {
 	for name, issues := range cases {
 		t.Run(name, func(t *testing.T) {
 			logPath := installTerminalMRBDStub(t, issues)
-			res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: policy"})
+			stubTownMergeQueue(t, beads.MergeQueueIndex{}, nil)
+			res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: policy", TownRoot: t.TempDir()})
 			if err != nil {
 				t.Fatalf("closeTerminalMR: %v", err)
 			}
@@ -93,16 +104,68 @@ func TestCloseTerminalMR_RejectedLeavesOwnedOrClosedSourceAlone(t *testing.T) {
 	}
 }
 
-// A retry on an MR that is already terminal (not closed by this call) does not
-// release again: only the close that ends the MR hands the bead back.
-func TestCloseTerminalMR_AlreadyRejectedDoesNotReleaseAgain(t *testing.T) {
-	logPath := installTerminalMRBDStub(t, parkedSourceIssues("closed", "close_reason: rejected\\n", ""))
-	res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: again"})
-	if err != nil {
-		t.Fatalf("closeTerminalMR: %v", err)
+// gt-pd1c.59 review #4: a repeated `gt mq reject`, or an MR that was closed
+// by hand without landing, still hands a parked source back.
+func TestCloseTerminalMR_AlreadyRejectedStillReleasesParkedSource(t *testing.T) {
+	for name, fields := range map[string]string{
+		"rejected again":       "close_reason: rejected\\n",
+		"bare close, unlanded": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			logPath := installTerminalMRBDStub(t, parkedSourceIssues("closed", fields, ""))
+			stubTownMergeQueue(t, beads.MergeQueueIndex{}, nil)
+			res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: again", TownRoot: t.TempDir()})
+			if err != nil {
+				t.Fatalf("closeTerminalMR: %v", err)
+			}
+			if !res.AlreadyTerminal || res.SourceRelease != beads.ReleaseReopened {
+				t.Fatalf("result = %+v, want already-terminal MR with the source reopened", res)
+			}
+			if updates := sourceUpdates(t, logPath); len(updates) != 1 || !strings.Contains(updates[0], "--status=open") {
+				t.Fatalf("expected one reopen, got %v", updates)
+			}
+		})
 	}
-	if res.SourceRelease != "" || len(sourceUpdates(t, logPath)) != 0 {
-		t.Fatalf("already-terminal MR must not release (release %q, updates %v)", res.SourceRelease, sourceUpdates(t, logPath))
+}
+
+// A pending MR of the same source in another DB keeps it parked; an unreadable
+// town queue parks it and reports the error (fail closed).
+func TestCloseTerminalMR_RejectedReleaseUsesTownQueue(t *testing.T) {
+	logPath := installTerminalMRBDStub(t, parkedSourceIssues("open", "", ""))
+	stubTownMergeQueue(t, beads.MergeQueueIndex{"gt-work1": {{ID: "gt-wisp-mr2", Status: "open", Description: "source_issue: gt-work1\n"}}}, nil)
+	res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: superseded", TownRoot: t.TempDir()})
+	if err != nil || res.SourceRelease != beads.ReleaseParked {
+		t.Fatalf("result = (%+v, %v), want parked: another MR is pending", res, err)
+	}
+	for _, u := range sourceUpdates(t, logPath) {
+		if strings.Contains(u, "--status=open") {
+			t.Fatalf("source with a pending MR reopened: %s", u)
+		}
+	}
+
+	installTerminalMRBDStub(t, parkedSourceIssues("open", "", ""))
+	stubTownMergeQueue(t, nil, errors.New("dolt: connection refused"))
+	res, _ = closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: x", TownRoot: t.TempDir()})
+	if res.SourceReleaseErr == nil || res.SourceRelease == beads.ReleaseReopened {
+		t.Fatalf("unreadable queue: result = %+v, want an error and no reopen", res)
+	}
+}
+
+// gt-pd1c.59 review #5: a missing source or an unknown town is reported.
+func TestCloseTerminalMR_ReleaseReportsMissingSourceAndTown(t *testing.T) {
+	issues := terminalMRIssues("open", "")
+	delete(issues, "gt-work1")
+	installTerminalMRBDStub(t, issues)
+	stubTownMergeQueue(t, beads.MergeQueueIndex{}, nil)
+	res, err := closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: x", TownRoot: t.TempDir()})
+	if err != nil || res.SourceReleaseErr == nil || !strings.Contains(res.SourceReleaseErr.Error(), "gt-work1") || res.SourceRelease != "" {
+		t.Fatalf("missing source: (%+v, %v), want a not-found release error", res, err)
+	}
+
+	logPath := installTerminalMRBDStub(t, parkedSourceIssues("open", "", ""))
+	res, _ = closeTerminalMR(beads.New(t.TempDir()), "gt-wisp-mr1", terminalMRCloseOptions{Reason: "rejected: x"})
+	if res.SourceReleaseErr == nil || len(sourceUpdates(t, logPath)) != 0 {
+		t.Fatalf("no town root: result = %+v, want an error and no write", res)
 	}
 }
 
@@ -121,4 +184,17 @@ func TestReportSourceRelease(t *testing.T) {
 	if strings.Contains(got, "gt-wisp-mr3") {
 		t.Fatalf("nothing to report for an MR without release, got %q", got)
 	}
+}
+
+// useIsolatedMergeQueue makes the release read the merge queue of the
+// isolated test DB b (a container-backed Dolt the town reader cannot reach):
+// in a real town that DB is one of the town's beads DBs.
+func useIsolatedMergeQueue(t *testing.T, b *beads.Beads) {
+	t.Helper()
+	old := readTownMergeQueue
+	readTownMergeQueue = func(string) *beads.MergeQueue {
+		idx, err := b.MergeRequestsBySource()
+		return beads.NewMergeQueue(idx, err, nil)
+	}
+	t.Cleanup(func() { readTownMergeQueue = old })
 }

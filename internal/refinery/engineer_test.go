@@ -295,6 +295,7 @@ func setupEngineerTerminalCloseTest(t *testing.T, activeMR string) (*Engineer, *
 	rigPath := t.TempDir()
 	testutil.ResetDoltDatabases(t, "gt")
 	b := beads.NewIsolatedWithPort(rigPath, port)
+	useIsolatedMergeQueue(t, b)
 	if err := b.Init("gt"); err != nil {
 		t.Skipf("bd init unavailable: %v", err)
 	}

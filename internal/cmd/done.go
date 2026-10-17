@@ -994,6 +994,10 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		if err := verifyDoneOwnership(cwd, issueID, sender); err != nil {
 			return err
 		}
+		// A parked issue has no assignee; the merge queue is its owner.
+		if err := refuseHeldSubmission(townRoot, issueID, branch); err != nil {
+			return err
+		}
 	}
 
 	// Write done-intent label EARLY, before push/MR operations.
@@ -2432,8 +2436,13 @@ func handOffSourceToMergeQueue(bd *beads.Beads, issueID string, issue *beads.Iss
 	if err := closeDoneMolecule(bd, issue); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 	}
-	if err := bd.ParkWorkBead(issueID); err != nil {
+	parked, err := bd.ParkWorkBead(issueID)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		return
+	}
+	if !parked {
+		fmt.Printf("%s Issue %s is already closed (MR %s)\n", style.Dim.Render("○"), issueID, mrID)
 		return
 	}
 	fmt.Printf("%s Issue %s handed to the merge queue (%s); the refinery closes it on merge\n", style.Bold.Render("✓"), issueID, mrID)

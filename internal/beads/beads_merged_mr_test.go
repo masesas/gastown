@@ -69,6 +69,11 @@ if [ "${1:-}" = "--allow-stale" ]; then
 fi
 echo "$*" >> "` + logPath + `"
 case "${1:-}" in
+  show)
+    if [ -f "` + dir + `/show-${2}.json" ]; then cat "` + dir + `/show-${2}.json"; exit 0; fi
+    printf '[{"id":"%s","status":"in_progress"}]\n' "${2}"
+    exit 0
+    ;;
   sql)
     case "$*" in
       *"w.status IN ('closed'"*) f="` + dir + `/closed.json" ;;
@@ -91,6 +96,14 @@ esac
 	return logPath
 }
 
+// queueFor reads the stub's merge queue into a MergeQueue with the given
+// commits proven landed.
+func queueFor(t *testing.T, landed ...string) *MergeQueue {
+	t.Helper()
+	idx, err := New(t.TempDir()).MergeRequestsBySource()
+	return NewMergeQueue(idx, err, resolverFor(landed...))
+}
+
 func readCalls(t *testing.T, logPath string) string {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
@@ -103,7 +116,7 @@ func readCalls(t *testing.T, logPath string) string {
 func TestReleaseWorkBead_ClosesWorkWhoseMRMerged(t *testing.T) {
 	log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
 	// Pilot shape: MR closed via bare bd close, commit already on the target.
-	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work4", resolverFor("c4"))
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work4", queueFor(t, "c4"))
 	if err != nil || outcome != ReleaseClosed {
 		t.Fatalf("ReleaseWorkBead = (%v, %v), want closed", outcome, err)
 	}
@@ -118,7 +131,7 @@ func TestReleaseWorkBead_ClosesWorkWhoseMRMerged(t *testing.T) {
 
 func TestReleaseWorkBead_ReopensWorkWithoutLandedMR(t *testing.T) {
 	log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
-	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work2", resolverFor()) // rejected
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work2", queueFor(t)) // rejected
 	if err != nil || outcome != ReleaseReopened {
 		t.Fatalf("ReleaseWorkBead = (%v, %v), want reopened", outcome, err)
 	}
@@ -133,7 +146,7 @@ func TestReleaseWorkBead_ReopensWorkWithoutLandedMR(t *testing.T) {
 // it dispatchable again.
 func TestReleaseWorkBead_ParksWorkWithPendingMR(t *testing.T) {
 	log := installMergedMRBDStub(t, pendingMRRows, closedMRRows)
-	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work3", resolverFor())
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work3", queueFor(t))
 	if err != nil || outcome != ReleaseParked {
 		t.Fatalf("ReleaseWorkBead = (%v, %v), want parked", outcome, err)
 	}
@@ -150,7 +163,7 @@ func TestReleaseWorkBead_ParksWorkWithPendingMR(t *testing.T) {
 // but the bead is parked, not reopened for dispatch.
 func TestReleaseWorkBead_ParksWhenQueueUnreadable(t *testing.T) {
 	log := installMergedMRBDStub(t, "", "")
-	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work1", resolverFor())
+	outcome, err := New(t.TempDir()).ReleaseWorkBead("gt-work1", queueFor(t))
 	if err == nil {
 		t.Fatal("expected the merge-queue lookup error to be reported")
 	}

@@ -173,8 +173,12 @@ func assertNoMergeRequestCreated(t *testing.T, logPath string) {
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read bd log: %v", err)
 	}
-	if strings.Contains(string(data), "gt:merge-request") {
-		t.Fatalf("review-only work created a merge request bead:\n%s", data)
+	// Reading the merge queue (sql over gt:merge-request wisps, gt-pd1c.59)
+	// is not creating one.
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "gt:merge-request") && !strings.Contains(line, "sql") {
+			t.Fatalf("review-only work created a merge request bead:\n%s", data)
+		}
 	}
 }
 

@@ -53,9 +53,9 @@ exit 0
 
 func stubDeaconMergeQueue(t *testing.T, idx beads.MergeQueueIndex, err error) {
 	t.Helper()
-	old := mergeQueueIndexFn
-	mergeQueueIndexFn = func(string) (beads.MergeQueueIndex, error) { return idx, err }
-	t.Cleanup(func() { mergeQueueIndexFn = old })
+	old := mergeQueueFn
+	mergeQueueFn = func(string) *beads.MergeQueue { return beads.NewMergeQueue(idx, err, nil) }
+	t.Cleanup(func() { mergeQueueFn = old })
 }
 
 func deaconCalls(t *testing.T, logPath string) string {
@@ -73,7 +73,7 @@ func pendingIndex(source string) beads.MergeQueueIndex {
 const staleHookedJSON = `[{"id":"gt-work1","title":"Work","status":"hooked","assignee":"","updated_at":"2020-01-01T00:00:00Z"}]`
 
 func TestScanStaleHooks_ParksBeadHeldByPendingMR(t *testing.T) {
-	townRoot, logPath := installDeaconBDStub(t, staleHookedJSON, `[]`)
+	townRoot, logPath := installDeaconBDStub(t, staleHookedJSON, `[{"id":"gt-work1","status":"hooked"}]`)
 	stubDeaconMergeQueue(t, pendingIndex("gt-work1"), nil)
 
 	res, err := ScanStaleHooks(townRoot, DefaultStaleHookConfig())
@@ -97,7 +97,7 @@ func TestScanStaleHooks_ParksBeadHeldByPendingMR(t *testing.T) {
 }
 
 func TestScanStaleHooks_UnhooksBeadNotHeld(t *testing.T) {
-	townRoot, logPath := installDeaconBDStub(t, staleHookedJSON, `[]`)
+	townRoot, logPath := installDeaconBDStub(t, staleHookedJSON, `[{"id":"gt-work1","status":"hooked"}]`)
 	stubDeaconMergeQueue(t, beads.MergeQueueIndex{}, nil)
 
 	res, err := ScanStaleHooks(townRoot, DefaultStaleHookConfig())
@@ -113,7 +113,7 @@ func TestScanStaleHooks_UnhooksBeadNotHeld(t *testing.T) {
 }
 
 func TestScanStaleHooks_FailsClosedWhenMergeQueueUnreadable(t *testing.T) {
-	townRoot, logPath := installDeaconBDStub(t, staleHookedJSON, `[]`)
+	townRoot, logPath := installDeaconBDStub(t, staleHookedJSON, `[{"id":"gt-work1","status":"hooked"}]`)
 	stubDeaconMergeQueue(t, nil, errors.New("dolt: connection refused"))
 
 	res, err := ScanStaleHooks(townRoot, DefaultStaleHookConfig())

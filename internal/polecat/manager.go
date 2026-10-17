@@ -2777,9 +2777,16 @@ func (m *Manager) unassignWorkBeads(name string) {
 		return
 	}
 
-	for _, issue := range activeWorkBeadsForCleanup(issues) {
+	work := activeWorkBeadsForCleanup(issues)
+	if len(work) == 0 {
+		return
+	}
+	// One town-wide merge-queue read: an MR may live in another DB than its
+	// source bead (gt-pd1c.59).
+	queue := mergeproof.TownMergeQueue(m.townRoot)
+	for _, issue := range work {
 		// Held work is closed or parked, not reopened (ReleaseWorkBead).
-		if _, err := m.beads.ReleaseWorkBead(issue.ID, mergeproof.ForRig(m.rig.Path)); err != nil {
+		if _, err := m.beads.ReleaseWorkBead(issue.ID, queue); err != nil {
 			style.PrintWarning("could not unassign bead %s from %s: %v", issue.ID, name, err)
 		}
 	}

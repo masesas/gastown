@@ -12,7 +12,6 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -100,9 +99,7 @@ func ScanStaleHooks(townRoot string, cfg *StaleHookConfig) (*StaleHookScanResult
 	t := tmux.NewTmux()
 
 	// The merge queue is read once, lazily, for the first stale bead.
-	var idx beads.MergeQueueIndex
-	var idxErr error
-	resolve := mergeproof.Resolver(townRoot)
+	var queue *beads.MergeQueue
 
 	for _, bead := range hookedBeads {
 		hookResult := &StaleHookResult{
@@ -148,10 +145,10 @@ func ScanStaleHooks(townRoot string, cfg *StaleHookConfig) (*StaleHookScanResult
 			checkWorktreeState(townRoot, bead.Assignee, hookResult)
 
 			if !cfg.DryRun {
-				if idx == nil && idxErr == nil {
-					idx, idxErr = mergeQueueIndexFn(townRoot)
+				if queue == nil {
+					queue = mergeQueueFn(townRoot)
 				}
-				releaseStaleHook(townRoot, bead.ID, idx, idxErr, resolve, hookResult, result)
+				releaseStaleHook(townRoot, bead.ID, queue, hookResult, result)
 			}
 		}
 
@@ -260,12 +257,13 @@ func assigneeToWorktreePath(townRoot, assignee string) string {
 // refinery and one whose MR landed is closed (beads.SettleHeldWorkBead);
 // anything else is unhooked to open. An unreadable merge queue unhooks nothing
 // (fail closed: reopening could dispatch work still waiting for its merge).
-func releaseStaleHook(townRoot, beadID string, idx beads.MergeQueueIndex, idxErr error, resolve beads.ProverResolver, hookResult *StaleHookResult, result *StaleHookScanResult) {
-	if idxErr != nil {
-		hookResult.Error = fmt.Sprintf("cannot read merge queue, not unhooking: %v", idxErr)
+func releaseStaleHook(townRoot, beadID string, queue *beads.MergeQueue, hookResult *StaleHookResult, result *StaleHookScanResult) {
+	hold, mrID, err := queue.Hold(beadID)
+	if err != nil {
+		hookResult.Error = fmt.Sprintf("cannot read merge queue, not unhooking: %v", err)
 		return
 	}
-	if hold, mrID := idx.Hold(beadID, resolve); hold.Held() {
+	if hold.Held() {
 		bd := beads.New(beads.ResolveHookDir(townRoot, beadID, townRoot))
 		outcome, err := bd.SettleHeldWorkBead(beadID, hold, mrID)
 		if err != nil {

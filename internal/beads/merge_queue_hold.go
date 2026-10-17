@@ -62,17 +62,6 @@ func MergeQueueHoldOf(mrs []*Issue, resolve ProverResolver) (MergeQueueHold, str
 	return HoldNone, ""
 }
 
-// MergeQueueHoldFor classifies issueID from the merge requests of this beads
-// DB. A query error is returned so callers can fail closed.
-func (b *Beads) MergeQueueHoldFor(issueID string, resolve ProverResolver) (MergeQueueHold, string, error) {
-	bySource, err := b.MergeRequestsBySource()
-	if err != nil {
-		return HoldNone, "", err
-	}
-	hold, mrID := MergeQueueHoldOf(bySource[strings.TrimSpace(issueID)], resolve)
-	return hold, mrID, nil
-}
-
 // MergeQueueIndex holds the merge requests of one or more beads DBs grouped
 // by source issue (MRs live in the submitting polecat's rig DB, which need not
 // be the source bead's DB).
@@ -116,6 +105,87 @@ func TownMergeQueueIndex(townRoot string) (MergeQueueIndex, error) {
 	return idx, nil
 }
 
+// MergeQueue is the town's merge queue read once: every beads DB in the town
+// (TownMergeQueueIndex), because an MR lives in the submitting polecat's rig
+// DB while its source bead may live in another DB (hq-, another rig). It is
+// the one scope in which beads are classified (gt-pd1c.59): every caller that
+// asks "is this bead held?" holds a MergeQueue. A read error is kept and
+// returned by every lookup, so callers fail closed.
+type MergeQueue struct {
+	index   MergeQueueIndex
+	err     error
+	resolve ProverResolver
+}
+
+// ReadMergeQueue reads the town's merge queue (mergeproof.TownMergeQueue adds
+// the town's git provers).
+func ReadMergeQueue(townRoot string, resolve ProverResolver) *MergeQueue {
+	idx, err := TownMergeQueueIndex(townRoot)
+	return NewMergeQueue(idx, err, resolve)
+}
+
+// NewMergeQueue wraps an already-read index (or the error reading it).
+func NewMergeQueue(idx MergeQueueIndex, err error, resolve ProverResolver) *MergeQueue {
+	return &MergeQueue{index: idx, err: err, resolve: resolve}
+}
+
+// Err is the error reading the queue, if any.
+func (q *MergeQueue) Err() error {
+	if q == nil {
+		return errors.New("merge queue not read")
+	}
+	return q.err
+}
+
+// Hold classifies issueID (MergeQueueHoldOf) and returns the deciding MR. An
+// unread queue is an error.
+func (q *MergeQueue) Hold(issueID string) (MergeQueueHold, string, error) {
+	if err := q.Err(); err != nil {
+		return HoldNone, "", err
+	}
+	hold, mrID := q.index.Hold(issueID, q.resolve)
+	return hold, mrID, nil
+}
+
+// MergeRequests returns the MRs (any status) whose source is issueID.
+func (q *MergeQueue) MergeRequests(issueID string) []*Issue {
+	if q == nil {
+		return nil
+	}
+	return q.index[strings.TrimSpace(issueID)]
+}
+
+// CheckSubmission refuses a new MR for issueID while the merge queue holds it
+// through an MR from a different branch: another worker (or a stale branch)
+// must not submit work the refinery already owns. MRs from the same branch
+// are the owner's own (idempotent retry, resubmit after FIX_NEEDED) and are
+// allowed. Shared by gt done and gt mq submit; an unread queue refuses (fail
+// closed).
+func (q *MergeQueue) CheckSubmission(issueID, branch string) error {
+	hold, mrID, err := q.Hold(issueID)
+	if err != nil {
+		return fmt.Errorf("cannot read the merge queue to check %s: %w", issueID, err)
+	}
+	if !hold.Held() {
+		return nil
+	}
+	branch = strings.TrimSpace(branch)
+	for _, mr := range q.MergeRequests(issueID) {
+		pending := !IssueStatus(strings.TrimSpace(mr.Status)).IsTerminal()
+		if !pending && !(hold == HoldLanded && mr.ID == mrID) {
+			continue
+		}
+		mrBranch := ""
+		if fields := ParseMRFields(mr); fields != nil {
+			mrBranch = strings.TrimSpace(fields.Branch)
+		}
+		if mrBranch != branch {
+			return fmt.Errorf("%s is held by the merge queue: MR %s (%s) from branch %q; the refinery owns it until the MR merges or is rejected", issueID, mr.ID, hold, mrBranch)
+		}
+	}
+	return nil
+}
+
 // TownBeadsSearchDirs returns the town root plus every rig directory (and rig
 // mayor clone) that has a .beads directory.
 func TownBeadsSearchDirs(townRoot string) ([]string, error) {
@@ -143,14 +213,32 @@ func TownBeadsSearchDirs(townRoot string) ([]string, error) {
 // ParkWorkBead marks a source bead as held by the merge queue: status
 // in_progress (not in `bd ready`) with no assignee (a reused polecat name
 // never inherits it). The refinery closes it when the MR merges or releases it
-// when the MR is closed without landing.
-func (b *Beads) ParkWorkBead(issueID string) error {
+// when the MR is closed without landing. A bead that is already terminal (the
+// refinery may have just closed it) is left alone and parked is false; bd has
+// no conditional update, so the re-read narrows but cannot close that window.
+func (b *Beads) ParkWorkBead(issueID string) (parked bool, err error) {
+	if terminal, err := b.workBeadTerminal(issueID); err != nil || terminal {
+		return false, err
+	}
 	status := string(StatusInProgress)
 	empty := ""
 	if err := b.Update(issueID, UpdateOptions{Status: &status, Assignee: &empty}); err != nil {
-		return fmt.Errorf("parking work bead %s for the merge queue: %w", issueID, err)
+		return false, fmt.Errorf("parking work bead %s for the merge queue: %w", issueID, err)
 	}
-	return nil
+	return true, nil
+}
+
+// workBeadTerminal re-reads issueID (routed to its own DB) just before a
+// release writes it.
+func (b *Beads) workBeadTerminal(issueID string) (bool, error) {
+	issue, err := b.Show(issueID)
+	if err != nil {
+		return false, fmt.Errorf("reading work bead %s: %w", issueID, err)
+	}
+	if issue == nil {
+		return false, fmt.Errorf("reading work bead %s: %w", issueID, ErrNotFound)
+	}
+	return IssueStatus(strings.TrimSpace(issue.Status)).IsTerminal(), nil
 }
 
 // ReleaseOutcome is what ReleaseWorkBead / SettleHeldWorkBead did.
@@ -164,6 +252,8 @@ const (
 	ReleaseParked ReleaseOutcome = "parked"
 	// ReleaseReopened: no MR holds the bead; it is open with no assignee.
 	ReleaseReopened ReleaseOutcome = "reopened"
+	// ReleaseUnchanged: the bead was already terminal and was not touched.
+	ReleaseUnchanged ReleaseOutcome = "unchanged"
 )
 
 // errNotHeld is returned by SettleHeldWorkBead for HoldNone.
@@ -182,8 +272,12 @@ func (b *Beads) SettleHeldWorkBead(issueID string, hold MergeQueueHold, mrID str
 		}
 		return ReleaseClosed, nil
 	case HoldPending:
-		if err := b.ParkWorkBead(issueID); err != nil {
+		parked, err := b.ParkWorkBead(issueID)
+		if err != nil {
 			return "", err
+		}
+		if !parked {
+			return ReleaseUnchanged, nil
 		}
 		return ReleaseParked, nil
 	default:
@@ -193,27 +287,36 @@ func (b *Beads) SettleHeldWorkBead(issueID string, hold MergeQueueHold, mrID str
 
 // ReleaseWorkBead hands a work bead back after its worker went away (polecat
 // removal, unsling, stale hook cleanup, an MR closed without landing). One
-// rule, from this DB's merge queue (MergeQueueHoldFor): landed work is closed,
-// work with a pending MR is parked, anything else returns to open with no
-// assignee. If the merge queue cannot be read the bead is parked (fail closed:
-// the worker is released but the bead is not made dispatchable) and the
-// lookup error is returned alongside; gt doctor (null-assignee-steps) reopens
-// it later if no MR holds it.
-func (b *Beads) ReleaseWorkBead(issueID string, resolve ProverResolver) (ReleaseOutcome, error) {
-	hold, mrID, lookupErr := b.MergeQueueHoldFor(issueID, resolve)
+// rule, from the town's merge queue (q): landed work is closed, work with a
+// pending MR is parked, anything else returns to open with no assignee. If the
+// queue could not be read the bead is parked (fail closed: the worker is
+// released but the bead is not made dispatchable) and the read error is
+// returned alongside. A bead that is already terminal is left alone.
+func (b *Beads) ReleaseWorkBead(issueID string, q *MergeQueue) (ReleaseOutcome, error) {
+	hold, mrID, lookupErr := q.Hold(issueID)
 	if lookupErr != nil {
-		if err := b.ParkWorkBead(issueID); err != nil {
+		parked, err := b.ParkWorkBead(issueID)
+		if err != nil {
 			return "", errors.Join(lookupErr, err)
+		}
+		if !parked {
+			return ReleaseUnchanged, lookupErr
 		}
 		return ReleaseParked, lookupErr
 	}
 	if hold.Held() {
 		return b.SettleHeldWorkBead(issueID, hold, mrID)
 	}
+	if terminal, err := b.workBeadTerminal(issueID); err != nil || terminal {
+		if err != nil {
+			return "", err
+		}
+		return ReleaseUnchanged, nil
+	}
 	openStatus := string(StatusOpen)
 	empty := ""
 	if err := b.Update(issueID, UpdateOptions{Status: &openStatus, Assignee: &empty}); err != nil {
-		return "", err
+		return "", fmt.Errorf("reopening work bead %s: %w", issueID, err)
 	}
 	return ReleaseReopened, nil
 }

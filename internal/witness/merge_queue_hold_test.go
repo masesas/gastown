@@ -12,11 +12,40 @@ import (
 // every bead (not parallel-safe: overrides a package-level hook).
 func stubMergeQueueHold(t *testing.T, hold beads.MergeQueueHold, mrID string, err error) {
 	t.Helper()
-	old := mergeQueueHoldForBead
-	mergeQueueHoldForBead = func(workDir, beadID string) (beads.MergeQueueHold, string, error) {
-		return hold, mrID, err
+	old := witnessMergeQueue
+	witnessMergeQueue = func(string) *beads.MergeQueue { return heldQueue(hold, mrID, err) }
+	t.Cleanup(func() { witnessMergeQueue = old })
+}
+
+// heldQueue is a merge queue in which every bead has the given hold.
+func heldQueue(hold beads.MergeQueueHold, mrID string, err error) *beads.MergeQueue {
+	return beads.NewMergeQueue(holdIndex{hold: hold, mrID: mrID}.index(), err, nil)
+}
+
+type holdIndex struct {
+	hold beads.MergeQueueHold
+	mrID string
+}
+
+// index gives every bead ID used by the witness tests the configured hold.
+func (h holdIndex) index() beads.MergeQueueIndex {
+	idx := beads.MergeQueueIndex{}
+	for _, id := range []string{"gt-work123", "gt-orphan1", "gt-hooked1", "gt-parked1", "gt-parked2", "gt-base1"} {
+		if mrs := h.mrsFor(id); mrs != nil {
+			idx[id] = mrs
+		}
 	}
-	t.Cleanup(func() { mergeQueueHoldForBead = old })
+	return idx
+}
+
+func (h holdIndex) mrsFor(id string) []*beads.Issue {
+	switch h.hold {
+	case beads.HoldPending:
+		return []*beads.Issue{{ID: h.mrID, Status: "open", Description: "source_issue: " + id + "\n"}}
+	case beads.HoldLanded:
+		return []*beads.Issue{{ID: h.mrID, Status: "closed", Description: "source_issue: " + id + "\nclose_reason: merged\n"}}
+	}
+	return nil
 }
 
 func hookedBeadMock() (*BdCli, *mockBdCalls) {
@@ -72,6 +101,43 @@ func TestResetAbandonedBead_SkipsWhenMergeQueueUnreadable(t *testing.T) {
 	for _, call := range mock.calls {
 		if strings.HasPrefix(call, "update") || strings.HasPrefix(call, "close") {
 			t.Errorf("no write expected when the merge queue is unreadable, call: %s", call)
+		}
+	}
+}
+
+// gt-pd1c.59 review #3: an MR closed by hand (bare bd close) after landing
+// leaves its parked source in_progress with no assignee. The witness orphan
+// scan settles it: landed work is closed; work still pending is left alone.
+func TestDetectOrphanedBeads_SettlesParkedBeadWhoseMRLanded(t *testing.T) {
+	installFakeTmuxNoServer(t)
+	for _, tc := range []struct {
+		hold      beads.MergeQueueHold
+		wantClose bool
+	}{{beads.HoldLanded, true}, {beads.HoldPending, false}, {beads.HoldNone, false}} {
+		old := witnessMergeQueue
+		witnessMergeQueue = func(string) *beads.MergeQueue { return heldQueue(tc.hold, "gt-wisp-mr1", nil) }
+		bd, mock := mockBd(
+			func(args []string) (string, error) {
+				if len(args) > 0 && args[0] == "list" && strings.Contains(strings.Join(args, " "), "--status=in_progress") {
+					return `[{"id":"gt-parked1","assignee":""}]`, nil
+				}
+				return "[]", nil
+			},
+			func(args []string) error { return nil },
+		)
+		DetectOrphanedBeads(bd, t.TempDir(), "testrig", nil)
+		witnessMergeQueue = old
+		closed := false
+		for _, call := range mock.calls {
+			if strings.HasPrefix(call, "close gt-parked1") {
+				closed = true
+			}
+			if strings.Contains(call, "--status=open") {
+				t.Errorf("hold %v: parked bead reopened: %s", tc.hold, call)
+			}
+		}
+		if closed != tc.wantClose {
+			t.Errorf("hold %v: closed = %v, want %v (calls %v)", tc.hold, closed, tc.wantClose, mock.calls)
 		}
 	}
 }

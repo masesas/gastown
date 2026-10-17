@@ -1802,7 +1802,7 @@ var mergeProverResolver = mergeproof.Resolver
 // work is in, or through, a merge request.
 type mergeQueueHeld func(issueID string) bool
 
-// mergeQueueHeldIssues reads every rig's merge requests (beads.TownMergeQueueIndex:
+// mergeQueueHeldIssues reads every rig's merge requests (beads.ReadMergeQueue:
 // MRs are created in the polecat's rig DB, so every rig is scanned) and returns
 // the shared hold predicate (beads.MergeQueueHold, gt-pd1c.59) as used by the
 // convoy feeder and `gt convoy launch`:
@@ -1820,17 +1820,16 @@ type mergeQueueHeld func(issueID string) bool
 // Any unreadable DB is an error: the caller holds dispatch rather than risk a
 // duplicate polecat.
 func mergeQueueHeldIssues(townRoot string) (mergeQueueHeld, error) {
-	idx, err := beads.TownMergeQueueIndex(townRoot)
-	if err != nil {
+	queue := beads.ReadMergeQueue(townRoot, mergeProverResolver(townRoot))
+	if err := queue.Err(); err != nil {
 		return nil, err
 	}
-	resolve := mergeProverResolver(townRoot)
 	memo := make(map[string]bool)
 	return func(issueID string) bool {
 		if held, ok := memo[issueID]; ok {
 			return held
 		}
-		hold, mrID := idx.Hold(issueID, resolve)
+		hold, mrID, _ := queue.Hold(issueID)
 		held := hold.Held()
 		// Escape hatch for deliberate rework: a bead whose MR already landed
 		// is done. Rework needs a new bead.

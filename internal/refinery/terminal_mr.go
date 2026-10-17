@@ -7,7 +7,11 @@ import (
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/mergeproof"
 )
+
+// readTownMergeQueue reads the town-wide merge queue; tests override it.
+var readTownMergeQueue = mergeproof.TownMergeQueue
 
 type terminalMRCloseOptions struct {
 	Reason        string
@@ -23,6 +27,10 @@ type terminalMRCloseOptions struct {
 	// lets an MR closed by hand (bare `bd close`, close_reason not "merged")
 	// still close its source bead. Optional.
 	Prover beads.MergeProver
+	// TownRoot scopes the release of an unmerged MR's source bead: the
+	// town-wide merge queue decides it (an MR may live in another DB than its
+	// source). Without it the source is not released.
+	TownRoot string
 }
 
 type terminalMRCloseResult struct {
@@ -123,11 +131,13 @@ func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (
 			}),
 			MergeCommit: firstNonEmpty(opts.MergeCommit, fields.MergeCommit),
 		})
-	} else if result.Closed {
+	} else if result.Closed || result.AlreadyTerminal {
 		// The other half of the ownership rule (gt-pd1c.59): gt done parks the
-		// source of a submitted MR, so the close that ends an MR without
-		// landing (rejected, superseded, conflict) hands it back for rework.
-		result.SourceRelease, result.SourceReleaseErr = releaseUnmergedSource(b, result.SourceIssue, opts.Prover)
+		// source of a submitted MR, so an MR that ended without landing
+		// (rejected, superseded, conflict, closed by hand) hands it back for
+		// rework. Repeating the close (a second `gt mq reject`) repeats the
+		// release, so a release that failed once can be retried.
+		result.SourceRelease, result.SourceReleaseErr = releaseUnmergedSource(b, result.SourceIssue, opts.TownRoot)
 	}
 
 	if result.AgentBead != "" {
@@ -138,27 +148,35 @@ func closeTerminalMR(b *beads.Beads, mrID string, opts terminalMRCloseOptions) (
 	return result, nil
 }
 
-// releaseUnmergedSource gives the source bead of an MR closed without landing
-// back to the merge-queue rule (beads.ReleaseWorkBead): reopened for rework,
-// parked if another MR of it is still pending, closed if one already landed.
-// Only an unowned, non-terminal source is released: one that a live worker has
-// claimed again, or that is already closed, is left alone. Errors are
-// reported, not returned: the MR close itself succeeded.
-func releaseUnmergedSource(b *beads.Beads, sourceIssue string, prover beads.MergeProver) (beads.ReleaseOutcome, error) {
+// releaseUnmergedSource gives the source bead of an MR that ended without
+// landing back to the merge-queue rule (beads.ReleaseWorkBead over the
+// town-wide queue): reopened for rework, parked if another MR of it is still
+// pending (in any DB), closed if one already landed. Only an unowned,
+// non-terminal source is released: one that a live worker has claimed again,
+// or that is already closed, is left alone. The source is read through the
+// beads routing (its own DB). Problems are returned for reporting, never
+// fatal: the MR close itself succeeded.
+func releaseUnmergedSource(b *beads.Beads, sourceIssue, townRoot string) (beads.ReleaseOutcome, error) {
 	if sourceIssue == "" {
 		return "", nil
 	}
 	issue, err := b.Show(sourceIssue)
 	if err != nil {
 		if errors.Is(err, beads.ErrNotFound) {
-			return "", nil
+			return "", fmt.Errorf("source %s not found, nothing to release", sourceIssue)
 		}
 		return "", fmt.Errorf("read source %s for release: %w", sourceIssue, err)
 	}
-	if issue == nil || beads.IssueStatus(strings.TrimSpace(issue.Status)).IsTerminal() || strings.TrimSpace(issue.Assignee) != "" {
+	if issue == nil {
+		return "", fmt.Errorf("source %s not found, nothing to release", sourceIssue)
+	}
+	if beads.IssueStatus(strings.TrimSpace(issue.Status)).IsTerminal() || strings.TrimSpace(issue.Assignee) != "" {
 		return "", nil
 	}
-	return b.ReleaseWorkBead(sourceIssue, func(string) beads.MergeProver { return prover })
+	if strings.TrimSpace(townRoot) == "" {
+		return "", fmt.Errorf("town root unknown, source %s not released", sourceIssue)
+	}
+	return b.ReleaseWorkBead(sourceIssue, readTownMergeQueue(townRoot))
 }
 
 // reportSourceRelease prints what releaseUnmergedSource did with the source

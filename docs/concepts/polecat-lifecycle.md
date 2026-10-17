@@ -258,6 +258,14 @@ reset, reopen or re-dispatch held work:
 | Only MRs closed without landing (rejected, superseded) | free: reopened for rework |
 | Merge queue unreadable | fail closed: nothing is reset or dispatched |
 
+The merge queue is always read town-wide (every beads DB): an MR lives in the
+submitting polecat's rig DB, its issue may live in another (`hq-`, another
+rig). While the queue holds an issue through an MR from one branch, `gt done`
+and `gt mq submit` from any other branch are refused; the owner's own branch
+may resubmit (FIX_NEEDED). `gt mq reject` reopens a parked issue, and repeating
+it repeats the release. A parked issue whose MR landed but was closed by hand
+(bare `bd close`) is closed by the witness orphan scan, or by `gt doctor --fix`.
+
 ## What "Recycle" Means
 
 **Session cycling**: Normal. Claude restarts, sandbox stays, slot stays.

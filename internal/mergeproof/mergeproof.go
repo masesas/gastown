@@ -96,3 +96,10 @@ func ForRig(rigPath string) beads.ProverResolver {
 	p := ForRigPath(rigPath)
 	return func(string) beads.MergeProver { return p }
 }
+
+// TownMergeQueue reads the town's merge queue (every beads DB) with this
+// town's git provers: the one scope in which work beads are classified as
+// held (beads.MergeQueue, gt-pd1c.59).
+func TownMergeQueue(townRoot string) *beads.MergeQueue {
+	return beads.ReadMergeQueue(townRoot, Resolver(townRoot))
+}

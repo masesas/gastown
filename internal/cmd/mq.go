@@ -156,7 +156,10 @@ var mqRejectCmd = &cobra.Command{
 	Long: `Manually reject a merge request.
 
 This closes the MR with a 'rejected' status without merging.
-The source issue is NOT closed (work is not done).
+The source issue is not closed (work is not done): if gt done parked it for
+the merge queue (in_progress, no assignee) it is reopened for rework, unless
+another MR still holds it. An issue a worker has claimed again is untouched.
+Rejecting an already-rejected MR repeats that release.
 
 Examples:
   gt mq reject greenplace polecat/Nux/gp-xyz --reason "Does not meet requirements"
@@ -522,7 +525,7 @@ func runMQReject(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Reason: %s\n", mqRejectReason)
 
 	if result.IssueID != "" {
-		fmt.Printf("  Issue:  %s %s\n", result.IssueID, style.Dim.Render("(not closed - work not done)"))
+		fmt.Printf("  Issue:  %s %s\n", result.IssueID, style.Dim.Render("(not merged: released to the merge-queue rule, see above)"))
 	}
 
 	if mqRejectNotify {
