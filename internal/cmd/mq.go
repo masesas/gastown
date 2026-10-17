@@ -164,8 +164,11 @@ Rejecting an already-rejected MR repeats that release.
 --confirm-not-landed is the manual exit for an issue held as "unverified"
 (gt doctor null-assignee-steps): the MR is closed but git cannot prove its
 work did not land. A human (overseer, or crew) records the verdict
-landing: not_landed on the MR and the issue is released. Refused for agent
-roles and for MRs whose landing git can already decide.
+landing: not_landed on the MR and the issue is released. It needs an
+interactive terminal and the MR ID typed again (no bypass), and is refused for
+agent roles and for MRs whose landing git can already decide. The verdict never
+overrides a definite git answer; it is audited on the MR (landing_by) and as a
+comment on the issue.
 
 Examples:
   gt mq reject greenplace polecat/Nux/gp-xyz --reason "Does not meet requirements"
@@ -194,8 +197,10 @@ Designed for use by the refinery formula after a successful merge to main.
 --confirm-landed is the manual exit for an issue held as "unverified": the MR
 is closed but git cannot prove whether its work landed. A human (overseer, or
 crew) records landing: landed on the MR and the source issue is closed;
-no merge proof or branch delete runs. Refused for agent roles and for MRs
-whose landing git can already decide.
+no merge proof or branch delete runs. It needs an interactive terminal and
+the MR ID typed again (no bypass), and is refused for agent roles and for MRs
+whose landing git can already decide. The verdict never overrides a definite
+git answer; it is audited on the MR (landing_by) and as a comment on the issue.
 The branch name is read from the MR bead, so no manual branch argument is needed.
 
 Examples:

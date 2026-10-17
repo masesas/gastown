@@ -268,11 +268,15 @@ it repeats the release. A parked issue whose MR landed but was closed by hand
 (bare `bd close`) is closed by the witness orphan scan, or by `gt doctor --fix`.
 
 "Not landed" must be definite: git fetched the target and the commit is not
-reachable from it (an absent commit object after the fetch counts). When git
-cannot decide, the issue stays *unverified* and only a human verdict releases
-it: `gt mq reject <rig> <mr> --confirm-not-landed` reopens it for rework,
-`gt mq post-merge <rig> <mr> --confirm-landed` closes it. Both record
-`landing:` on the MR and are refused for agent roles (see `docs/reference.md`).
+reachable from it. An absent commit object after the fetch counts only in a
+complete clone; in a shallow or partial clone (gastown's `.repo.git` is
+`--depth 1`) it proves nothing. When git cannot decide, the issue stays
+*unverified* and only a human verdict releases it:
+`gt mq reject <rig> <mr> --confirm-not-landed` reopens it for rework,
+`gt mq post-merge <rig> <mr> --confirm-landed` closes it. Both need an
+interactive terminal and the MR ID typed again, are refused for agent roles,
+record `landing:` on the MR plus a comment on the issue, and never override a
+definite git answer (see `docs/reference.md`).
 
 Known limitation: reachability compares the commit recorded at submit. A
 rebase or squash merge rewrites that commit, so such an MR closed by a bare

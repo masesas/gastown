@@ -29,8 +29,10 @@ var rigProverFor = func(rigPath string) beads.MergeProver { return mergeproof.Fo
 // parked if another MR holds it). It is the one manual exit for an unverified
 // hold and refuses whenever the predicate can already decide: an open MR, a
 // structured merged signal, an earlier verdict, or a definite git answer.
-// Callers authorize the actor (humans only, see gt mq).
-func (m *Manager) ConfirmLanding(idOrBranch string, landed bool, actor string) (*LandingVerdictResult, error) {
+// Callers authorize the actor (humans only, see gt mq); actor records the
+// identity source (e.g. "human:alice via tty"), via the command used. The
+// verdict is audited on the MR (landing_by) and as a comment on the source.
+func (m *Manager) ConfirmLanding(idOrBranch string, landed bool, actor, via string) (*LandingVerdictResult, error) {
 	b := beads.New(m.rig.BeadsPath())
 	mr, err := m.findMRForTerminalCleanup(idOrBranch, b)
 	if err != nil {
@@ -62,6 +64,14 @@ func (m *Manager) ConfirmLanding(idOrBranch string, landed bool, actor string) (
 		return nil, fmt.Errorf("recording landing verdict on MR %s: %w", mr.ID, err)
 	}
 
+	audit := fmt.Sprintf("landing verdict %s on MR %s by %s via %s", verdict, mr.ID, fields.LandingBy, strings.TrimSpace(via))
+	source := strings.TrimSpace(fields.SourceIssue)
+	if source != "" {
+		if err := b.AddComment(source, audit); err != nil {
+			_, _ = fmt.Fprintf(m.output, "Warning: could not record the verdict on source %s: %v\n", source, err)
+		}
+	}
+
 	reason := "rejected: not landed (verdict by " + fields.LandingBy + ")"
 	if landed {
 		reason = string(CloseReasonMerged)
@@ -75,7 +85,11 @@ func (m *Manager) ConfirmLanding(idOrBranch string, landed bool, actor string) (
 		TownRoot:      filepath.Dir(m.rig.Path),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("applying landing verdict to MR %s: %w", mr.ID, err)
+		retry := "gt mq reject <rig> " + mr.ID + " --reason \"retry not-landed release\""
+		if landed {
+			retry = "gt mq post-merge <rig> " + mr.ID
+		}
+		return nil, fmt.Errorf("verdict %s is recorded on MR %s, but applying it failed: %w\nRecover: rerun `%s` (the recorded verdict is now proof), or let the witness orphan scan / `gt doctor --fix` settle the source", verdict, mr.ID, err, retry)
 	}
 	reportSourceRelease(m.output, "", closeResult)
 	res := &LandingVerdictResult{

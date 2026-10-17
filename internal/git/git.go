@@ -2190,6 +2190,12 @@ func (g *Git) VerifyPushedCommitReachableFromPushTarget(remote, branch, commit s
 		return fmt.Errorf("verified_push_failed: unable to look up commit %s: %w", shortSHA(commit), err)
 	}
 	if !exists {
+		// In a shallow or partial clone an absent object may simply be below
+		// the shallow boundary or not yet fetched from the promisor: that
+		// proves nothing (gastown clones .repo.git with --depth 1).
+		if incomplete, why := g.historyMayBeIncomplete(); incomplete {
+			return fmt.Errorf("verified_push_failed: commit %s absent from %s clone; cannot tell whether it is on %s/%s", shortSHA(commit), why, remote, branch)
+		}
 		return &CommitNotOnBranchError{msg: fmt.Sprintf("verified_push_failed: commit %s not on %s/%s (commit absent after fetching the branch, remote tip %s)", shortSHA(commit), remote, branch, shortSHA(tip))}
 	}
 	reachable, err := g.IsAncestor(commit, "FETCH_HEAD")
@@ -2335,6 +2341,38 @@ func gitExitCode(err error) (int, bool) {
 func isNotAncestorExit(err error) bool {
 	code, ok := gitExitCode(err)
 	return ok && code == 1
+}
+
+// historyMayBeIncomplete reports whether this clone may lack objects that are
+// reachable from its refs: a shallow clone, or a partial clone (promisor
+// remote or extensions.partialclone). A check that fails counts as
+// incomplete (fail closed). why names the reason.
+func (g *Git) historyMayBeIncomplete() (bool, string) {
+	out, err := g.run("rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return true, "an unverifiable (shallow check failed)"
+	}
+	if strings.TrimSpace(out) == "true" {
+		return true, "a shallow"
+	}
+	if _, err := g.run("config", "--get", "extensions.partialclone"); err == nil {
+		return true, "a partial"
+	} else if code, ok := gitExitCode(err); !ok || code != 1 {
+		return true, "an unverifiable (partial-clone check failed)"
+	}
+	promisors, err := g.run("config", "--get-regexp", `^remote\..*\.promisor$`)
+	if err != nil {
+		if code, ok := gitExitCode(err); ok && code == 1 {
+			return false, "" // no promisor remotes
+		}
+		return true, "an unverifiable (promisor check failed)"
+	}
+	for _, line := range strings.Split(promisors, "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 && strings.EqualFold(fields[1], "true") {
+			return true, "a partial (promisor)"
+		}
+	}
+	return false, ""
 }
 
 // commitObjectExists reports whether the commit object is in this clone.

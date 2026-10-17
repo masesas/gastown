@@ -27,7 +27,7 @@ func TestConfirmLanding_RecordsVerdictOnUnverifiedMR(t *testing.T) {
 	noProver(t)
 	logPath := installTerminalMRBDStub(t, parkedSourceIssues("closed", "commit_sha: c1\\n", ""))
 	stubTownMergeQueue(t, beads.MergeQueueIndex{}, nil)
-	res, err := verdictManager(t).ConfirmLanding("gt-wisp-mr1", false, "overseer")
+	res, err := verdictManager(t).ConfirmLanding("gt-wisp-mr1", false, "human:alice via tty", "gt mq reject --confirm-not-landed")
 	if err != nil {
 		t.Fatalf("ConfirmLanding: %v", err)
 	}
@@ -37,6 +37,9 @@ func TestConfirmLanding_RecordsVerdictOnUnverifiedMR(t *testing.T) {
 	data, _ := os.ReadFile(logPath)
 	if !strings.Contains(string(data), "update gt-wisp-mr1") {
 		t.Fatalf("verdict not written to the MR:\n%s", data)
+	}
+	if !strings.Contains(string(data), "comment") || !strings.Contains(string(data), "gt-work1") {
+		t.Fatalf("verdict not audited on the source bead:\n%s", data)
 	}
 }
 
@@ -49,7 +52,7 @@ func TestConfirmLanding_RefusesWhenAlreadyDecidable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			logPath := installTerminalMRBDStub(t, issues)
-			if _, err := verdictManager(t).ConfirmLanding("gt-wisp-mr1", true, "overseer"); err == nil {
+			if _, err := verdictManager(t).ConfirmLanding("gt-wisp-mr1", true, "human:alice via tty", "gt mq post-merge --confirm-landed"); err == nil {
 				t.Fatal("a decidable MR must not take a manual verdict")
 			}
 			data, _ := os.ReadFile(logPath)

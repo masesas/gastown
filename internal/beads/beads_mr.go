@@ -189,29 +189,18 @@ const (
 	LandingNotLanded = "not_landed"
 )
 
-// UnverifiedReason explains why git cannot decide whether a terminal MR's work
-// landed, or "" when it can (structured signal, human verdict, or a definite
-// git answer). prover may be nil.
+// UnverifiedReason explains why the landing of a terminal MR cannot be
+// decided, or "" when it can (structured signal, definite git answer, or a
+// human verdict). prover may be nil.
 func UnverifiedReason(mr *Issue, prover MergeProver) string {
 	if mr == nil {
 		return "missing MR"
 	}
-	fields := ParseMRFields(mr)
-	if fields == nil {
-		return "MR has no merge-request fields"
-	}
-	status := IssueStatus(strings.TrimSpace(mr.Status))
-	if mrLandingVerdict(status, fields, prover) != verdictUnknown {
+	verdict, reason := mrLandingVerdictReason(IssueStatus(strings.TrimSpace(mr.Status)), ParseMRFields(mr), prover)
+	if verdict != verdictUnknown {
 		return ""
 	}
-	switch {
-	case strings.TrimSpace(fields.CommitSHA) == "" || strings.TrimSpace(fields.Target) == "":
-		return "no commit_sha or target recorded on the MR"
-	case prover == nil:
-		return "no git prover for rig " + strings.TrimSpace(fields.Rig)
-	default:
-		return "git could not verify the commit against the target"
-	}
+	return reason
 }
 
 // landingVerdict is the three-valued answer to "did this MR's work land?".
@@ -237,27 +226,48 @@ func IsCommitNotOnTarget(err error) bool {
 }
 
 func mrLandingVerdict(status IssueStatus, fields *MRFields, prover MergeProver) landingVerdict {
+	verdict, _ := mrLandingVerdictReason(status, fields, prover)
+	return verdict
+}
+
+// mrLandingVerdictReason decides whether an MR's work landed, in this order:
+// structured merged signal (written only by closeTerminalMR) > definite git
+// answer > human verdict (MRFields.Landing, terminal MRs only) > unknown. A
+// recorded verdict therefore never overrides git: a false `landing:` written
+// by hand cannot reopen work git proves landed, nor close work git proves did
+// not land. For verdictUnknown the reason says why git could not decide.
+func mrLandingVerdictReason(status IssueStatus, fields *MRFields, prover MergeProver) (landingVerdict, string) {
 	if fields == nil {
-		return verdictUnknown
+		return verdictUnknown, "MR has no merge-request fields"
 	}
-	// Structured signal, written only by the merged close in closeTerminalMR.
 	if status.IsTerminal() && (strings.EqualFold(strings.TrimSpace(fields.CloseReason), "merged") ||
 		strings.TrimSpace(fields.MergeCommit) != "") {
-		return verdictLanded
+		return verdictLanded, ""
 	}
-	// Human verdict on an MR git could not decide (RecordLandingVerdict).
+	gitVerdict, reason := gitLandingVerdict(fields, prover)
+	if gitVerdict != verdictUnknown {
+		return gitVerdict, ""
+	}
 	if status.IsTerminal() {
 		switch strings.TrimSpace(fields.Landing) {
 		case LandingLanded:
-			return verdictLanded
+			return verdictLanded, ""
 		case LandingNotLanded:
-			return verdictNotLanded
+			return verdictNotLanded, ""
 		}
 	}
+	return verdictUnknown, reason
+}
+
+// gitLandingVerdict is the git part of the landing decision.
+func gitLandingVerdict(fields *MRFields, prover MergeProver) (landingVerdict, string) {
 	target := strings.TrimSpace(fields.Target)
 	commit := strings.TrimSpace(fields.CommitSHA)
-	if prover == nil || target == "" || commit == "" {
-		return verdictUnknown
+	switch {
+	case target == "" || commit == "":
+		return verdictUnknown, "no commit_sha or target recorded on the MR"
+	case prover == nil:
+		return verdictUnknown, "no git prover for rig " + strings.TrimSpace(fields.Rig)
 	}
 	// A commit already in the target when the MR was submitted carried no new
 	// work; reachability would then be a false positive.
@@ -265,21 +275,21 @@ func mrLandingVerdict(status IssueStatus, fields *MRFields, prover MergeProver) 
 		if a, ok := prover.(ancestorChecker); ok {
 			isAnc, err := a.IsAncestor(commit, base)
 			if err != nil {
-				return verdictUnknown
+				return verdictUnknown, "git could not compare the commit with base_sha: " + err.Error()
 			}
 			if isAnc {
-				return verdictNotLanded
+				return verdictNotLanded, ""
 			}
 		}
 	}
 	err := prover.VerifyPushedCommitReachableFromPushTarget("origin", target, commit)
 	switch {
 	case err == nil:
-		return verdictLanded
+		return verdictLanded, ""
 	case IsCommitNotOnTarget(err):
-		return verdictNotLanded
+		return verdictNotLanded, ""
 	default:
-		return verdictUnknown
+		return verdictUnknown, "git could not verify the commit against the target: " + err.Error()
 	}
 }
 

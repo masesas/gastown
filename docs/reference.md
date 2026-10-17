@@ -703,9 +703,19 @@ the work landed (no git prover for the rig, no `commit_sha`/`target` on the
 MR, or a git error other than "commit not on the target"). `gt doctor`
 (`null-assignee-steps`) lists such issues with the MR, the reason and both
 commands. The verdict is written on the MR (`landing: landed|not_landed`,
-`landing_by:`) and then the normal rule acts on it. It is refused for agent
-roles (polecat, refinery, witness, deacon, mayor) and for MRs whose landing is
-already decided; a human shell or crew workspace records it.
+`landing_by: <identity> via tty`), recorded as a comment on the issue, and then
+the normal rule acts on it. Guards: agent roles (polecat, refinery, witness,
+deacon, mayor) and a polecat `BD_ACTOR` are refused; stdin and stdout must be
+a terminal and the MR ID must be typed again (there is no bypass flag); MRs
+whose landing is already decided are refused. A verdict only counts while git
+cannot decide: a definite git answer always wins over a recorded `landing:`.
+If applying the verdict fails after it was recorded, rerun the same command
+(the verdict is then proof) or let the witness orphan scan / `gt doctor --fix`
+settle the issue.
+
+Git proof is definite only in a complete clone. In a shallow or partial clone
+(gastown's `.repo.git` is cloned with `--depth 1`) a commit object that is
+absent after fetching the target proves nothing, so such MRs stay unverified.
 
 #### Integration Branch Commands
 

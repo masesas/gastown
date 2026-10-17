@@ -341,3 +341,51 @@ func TestMergeQueueHold_HumanVerdictDecides(t *testing.T) {
 		t.Fatalf("landing fields do not round-trip: %+v", out)
 	}
 }
+
+// round 5 #1: a recorded verdict only decides what git cannot. A false
+// `landing:` written by hand never overrides a definite git answer.
+func TestMergeQueueHold_GitBeatsHumanVerdict(t *testing.T) {
+	mr := func(landing string) []*Issue {
+		return []*Issue{{ID: "mr1", Status: "closed", Description: "source_issue: gt-x\nrig: gastown\ntarget: main\ncommit_sha: c1\nlanding: " + landing + "\n"}}
+	}
+	landedGit := resolverFor("c1") // git: c1 is on the target
+	notLandedGit := resolverFor()  // git: definitely not on the target
+	unknownGit := ProverResolver(func(string) MergeProver { return failingProver{} })
+	cases := []struct {
+		name    string
+		landing string
+		resolve ProverResolver
+		want    MergeQueueHold
+	}{
+		{"git landed beats not_landed", LandingNotLanded, landedGit, HoldLanded},
+		{"git not landed beats landed", LandingLanded, notLandedGit, HoldNone},
+		{"git unknown: not_landed decides", LandingNotLanded, unknownGit, HoldNone},
+		{"git unknown: landed decides", LandingLanded, unknownGit, HoldLanded},
+		{"no prover: not_landed decides", LandingNotLanded, nil, HoldNone},
+	}
+	for _, c := range cases {
+		if hold, _ := MergeQueueHoldOf(mr(c.landing), c.resolve); hold != c.want {
+			t.Errorf("%s: hold = %v, want %v", c.name, hold, c.want)
+		}
+	}
+}
+
+func TestUnverifiedReason(t *testing.T) {
+	cases := map[string]struct {
+		desc   string
+		prover MergeProver
+		want   string
+	}{
+		"no commit":  {"target: main\n", nil, "no commit_sha or target"},
+		"no prover":  {"rig: gastown\ntarget: main\ncommit_sha: c1\n", nil, "no git prover for rig gastown"},
+		"git error":  {"target: main\ncommit_sha: c1\n", failingProver{}, "git could not verify"},
+		"decided":    {"target: main\ncommit_sha: c1\n", fakeProver{}, ""},
+		"by verdict": {"target: main\ncommit_sha: c1\nlanding: landed\n", nil, ""},
+	}
+	for name, c := range cases {
+		got := UnverifiedReason(&Issue{ID: "mr", Status: "closed", Description: "source_issue: gt-x\n" + c.desc}, c.prover)
+		if (c.want == "" && got != "") || !strings.Contains(got, c.want) {
+			t.Errorf("%s: reason = %q, want %q", name, got, c.want)
+		}
+	}
+}
