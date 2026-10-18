@@ -104,6 +104,12 @@ func (m *Manager) prepareWitnessDir(townRoot string) (string, error) {
 	if err := beads.SetupRedirect(townRoot, witnessDir); err != nil {
 		return "", fmt.Errorf("ensuring witness beads redirect: %w", err)
 	}
+	// A witness/rig worktree is kept clean via the repo's info/exclude, never
+	// the tracked .gitignore. The default witness dir is not a checkout, so
+	// there is nothing to exclude (ErrNotWorktreeRoot).
+	if err := rig.EnsureLocalExcludePatterns(witnessDir); err != nil && !errors.Is(err, rig.ErrNotWorktreeRoot) {
+		style.PrintWarning("could not update witness local git excludes: %v", err)
+	}
 	return witnessDir, nil
 }
 
@@ -179,11 +185,6 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	witnessSettingsDir := config.RoleSettingsDir("witness", m.rig.Path)
 	if err := runtime.EnsureSettingsForRole(witnessSettingsDir, witnessDir, "witness", runtimeConfig); err != nil {
 		return fmt.Errorf("ensuring runtime settings: %w", err)
-	}
-
-	// Ensure .gitignore has required Gas Town patterns
-	if err := rig.EnsureGitignorePatterns(witnessDir); err != nil {
-		style.PrintWarning("could not update witness .gitignore: %v", err)
 	}
 
 	roleConfig, err := m.roleConfig()

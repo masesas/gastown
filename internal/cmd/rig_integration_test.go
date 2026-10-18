@@ -43,25 +43,23 @@ var agentAllowlist = map[string][]string{
 	// Mayor is a clone (not worktree) - it's the canonical copy of the user's repo.
 	// For tracked beads repos, bd init creates files here (runs in mayor/rig).
 	"mayor": {
-		"?? AGENTS.md",  // bd init: creates multi-provider instructions (tracked beads repos only)
-		"?? .claude/",   // bd init: creates .claude/settings.json with onboard prompt
-		"?? .gitignore", // EnsureGitignorePatterns: adds .claude/, .runtime/, .logs/, __pycache__/ patterns
+		"?? AGENTS.md", // bd init: creates multi-provider instructions (tracked beads repos only)
+		"?? .claude/",  // bd init: creates .claude/settings.json with onboard prompt
 	},
 
 	// Refinery is a worktree for the merge queue processor.
 	"refinery": {},
 
 	// Crew workers are user-managed worktrees for human developers.
-	"crew": {
-		"?? state.json", // crew/manager.go: Gas Town metadata (TODO: migrate to beads like polecats)
-		"?? .gitignore", // EnsureGitignorePatterns: adds .claude/, .runtime/, .logs/, __pycache__/ patterns
-	},
+	// Gas Town never writes a role worktree's tracked .gitignore; runtime files
+	// (state.json, .runtime/, .claude/, ...) are hidden by the clone's
+	// .git/info/exclude (rig.EnsureLocalExcludePatterns), so nothing is allowed.
+	"crew": {},
 
 	// Polecats are ephemeral worktrees for autonomous agents.
 	"polecat": {
-		"?? .claude/",   // bd init: creates .claude/commands/ with handoff/review slash commands
-		"?? .gitignore", // EnsureGitignorePatterns: adds .claude/, .runtime/, .logs/, __pycache__/ patterns
-		"?? CLAUDE.md",  // CreatePolecatCLAUDEmd: gt done instructions and lifecycle context
+		"?? .claude/",  // bd init: creates .claude/commands/ with handoff/review slash commands
+		"?? CLAUDE.md", // CreatePolecatCLAUDEmd: gt done instructions and lifecycle context
 	},
 }
 

@@ -306,10 +306,11 @@ func (m *Manager) addLocked(name string, createBranch bool) (*CrewWorker, error)
 		style.PrintWarning("pre-push guard not installed: %v (run 'gt doctor')", err)
 	}
 
-	// Ensure .gitignore has required Gas Town patterns
-	if err := rig.EnsureGitignorePatterns(crewPath); err != nil {
+	// Keep the clone clean via its own .git/info/exclude, never the tracked
+	// .gitignore: a crew worker could commit and push that edit upstream.
+	if err := rig.EnsureLocalExcludePatterns(crewPath); err != nil {
 		// Non-fatal - log warning but continue
-		style.PrintWarning("could not update .gitignore: %v", err)
+		style.PrintWarning("could not update local git excludes: %v", err)
 	}
 
 	// Install runtime settings in the shared crew parent directory.

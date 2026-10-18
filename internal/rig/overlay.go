@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,16 @@ import (
 	"github.com/steveyegge/gastown/internal/style"
 )
 
+// gasTownIgnorePatterns lists the runtime artifacts Gas Town and agent runtimes
+// create at the root of a worktree. They are only ever written to the
+// repository's info/exclude (see gasTownLocalExcludePatterns); Gas Town never
+// writes a tracked .gitignore in a worktree, because that edit dirties the tree
+// (the refinery merge engine refuses a dirty tree) and can be committed and
+// pushed upstream.
+//
+// .claude/ is the broad pattern (covers commands/, settings.json, rules/, etc.):
+// agent runtimes create other files under .claude/ at runtime, and the narrow
+// .claude/commands/ pattern let them leak into git status.
 func gasTownIgnorePatterns() []string {
 	return []string{
 		".runtime/",
@@ -73,84 +84,11 @@ func CopyOverlay(rigPath, destPath string) error {
 	return nil
 }
 
-// EnsureGitignorePatterns ensures the .gitignore has required Gas Town patterns.
-// This is called after cloning to add patterns that may be missing from the source repo.
-func EnsureGitignorePatterns(worktreePath string) error {
-	gitignorePath := filepath.Join(worktreePath, ".gitignore")
-
-	// Required patterns for Gas Town worktrees.
-	// DO NOT add ".beads/" here. Beads manages its own .beads/.gitignore
-	// (created by bd init) which selectively ignores runtime files.
-	// Adding .beads/ here overrides that and breaks bd sync.
-	// This has regressed twice (PR #753 added it, #891 removed it,
-	// #966 re-added it). See overlay_test.go for a regression guard.
-	//
-	// .claude/ is the broad pattern (covers commands/, settings.json, rules/, etc.).
-	// Settings are installed in gastown-managed parent directories via --settings flag,
-	// but Cursor still creates .claude/ inside worktrees at runtime. The narrow
-	// .claude/commands/ pattern missed other Cursor-created files, causing gt done
-	// to fail with "uncommitted changes would be lost" on untracked .claude/ entries.
-	requiredPatterns := gasTownIgnorePatterns()
-
-	// Read existing gitignore content
-	var existingContent string
-	if data, err := os.ReadFile(gitignorePath); err == nil {
-		existingContent = string(data)
-	}
-
-	// Find missing patterns
-	var missing []string
-	for _, pattern := range requiredPatterns {
-		found := false
-		for _, line := range strings.Split(existingContent, "\n") {
-			line = strings.TrimSpace(line)
-			if matchesGitignorePattern(line, pattern) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			missing = append(missing, pattern)
-		}
-	}
-
-	if len(missing) == 0 {
-		return nil // All patterns present
-	}
-
-	// Append missing patterns
-	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("opening .gitignore: %w", err)
-	}
-	defer f.Close()
-
-	// Add header if appending to existing file
-	if existingContent != "" && !strings.HasSuffix(existingContent, "\n") {
-		if _, err := f.WriteString("\n"); err != nil {
-			return err
-		}
-	}
-	if existingContent != "" {
-		if _, err := f.WriteString("\n# Gas Town (added by gt)\n"); err != nil {
-			return err
-		}
-	}
-
-	for _, pattern := range missing {
-		if _, err := f.WriteString(pattern + "\n"); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // gasTownLocalExcludePatterns returns the patterns to write to the repository's
-// info/exclude file. It covers the same runtime artifacts as gasTownIgnorePatterns()
-// plus .beads/, which is safe here because info/exclude is never committed (unlike
-// .gitignore, where .beads/ must NOT appear because Beads manages its own
-// .beads/.gitignore via bd init).
+// info/exclude file: the runtime artifacts of gasTownIgnorePatterns() plus
+// .beads/ (the worktree's beads redirect and PRIME.md). info/exclude is never
+// committed and only hides untracked files, so a repo that tracks its own
+// .beads/ (managed by bd init's .beads/.gitignore) is unaffected.
 //
 // info/exclude lives in the common git dir and applies to every worktree of the
 // repo, so artifacts that Gas Town only creates at a worktree root are anchored
@@ -167,11 +105,30 @@ func gasTownLocalExcludePatterns() []string {
 	return patterns
 }
 
+// ErrNotWorktreeRoot is returned by EnsureLocalExcludePatterns when the path is
+// not the root of a git worktree or clone (it has no .git entry). Callers whose
+// directory is legitimately not a checkout (e.g. a witness without a clone) can
+// test for it with errors.Is and skip.
+var ErrNotWorktreeRoot = errors.New("not the root of a git worktree")
+
 // EnsureLocalExcludePatterns writes the standard Gas Town ignore patterns to the
 // repository's info/exclude file so the worktree stays clean without mutating a
 // tracked .gitignore. For a linked worktree this is the shared file in the common
 // git dir: git never reads info/exclude from a per-worktree git dir.
+//
+// It is the single place every role (polecat, refinery, witness, crew) uses to
+// keep its checkout clean. The patterns are anchored to the worktree root, so
+// worktreePath must be that root: a path without its own .git entry fails with
+// ErrNotWorktreeRoot instead of writing into an enclosing repository's exclude
+// file. The call is idempotent; existing equivalent lines are recognized.
 func EnsureLocalExcludePatterns(worktreePath string) error {
+	if _, err := os.Lstat(filepath.Join(worktreePath, ".git")); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: %s", ErrNotWorktreeRoot, worktreePath)
+		}
+		return fmt.Errorf("checking worktree root: %w", err)
+	}
+
 	excludePath, err := GitInfoExcludePath(worktreePath)
 	if err != nil {
 		return err
