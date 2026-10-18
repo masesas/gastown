@@ -22,6 +22,13 @@ import (
 // (closes), so a test sees each close reason the Go refinery path writes.
 // Unimplemented Storage methods panic (nil embedded interface): an
 // unexpected bead operation fails the test loudly.
+//
+// It enforces bd's ownership guards (gt-pd1c.93), which live in the bd CLI
+// and not in the in-process store, so a fake without them hid a refinery
+// that could never close its own MR: a close is refused unless the bead is
+// unassigned or assigned to the writing actor, and an assignee change of an
+// in_progress bead held by someone else is refused. An empty actor is a
+// human whose git user name matches no agent identity.
 type memStore struct {
 	beadsdk.Storage
 	mu     sync.Mutex
@@ -31,7 +38,37 @@ type memStore struct {
 	nextID int
 }
 
-type closeCall struct{ ID, Reason string }
+type closeCall struct{ ID, Reason, Actor string }
+
+// bdActorMatches is bd's ownership comparison (validation.ActorMatches) for
+// the identities these tests use: exact, or equal after collapsing runs of
+// '.', '_' and '-' (bd's CanonicalActor; the "--" => "/" case is not needed).
+func bdActorMatches(assignee, actor string) bool {
+	if assignee == actor {
+		return true
+	}
+	if assignee == "" || actor == "" {
+		return false
+	}
+	return bdCanonicalActor(assignee) == bdCanonicalActor(actor)
+}
+
+func bdCanonicalActor(s string) string {
+	var b strings.Builder
+	sep := false
+	for _, r := range s {
+		if r == '.' || r == '_' || r == '-' {
+			if !sep {
+				b.WriteByte('_')
+			}
+			sep = true
+			continue
+		}
+		sep = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
 
 func newMemStore(issues ...*beadsdk.Issue) *memStore {
 	s := &memStore{issues: map[string]*beadsdk.Issue{}}
@@ -87,12 +124,19 @@ func (s *memStore) GetDependenciesWithMetadata(_ context.Context, id string) ([]
 	return out, nil
 }
 
-func (s *memStore) UpdateIssue(_ context.Context, id string, updates map[string]interface{}, _ string) error {
+func (s *memStore) UpdateIssue(_ context.Context, id string, updates map[string]interface{}, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	is, ok := s.issues[id]
 	if !ok {
 		return fmt.Errorf("issue %s not found", id)
+	}
+	if v, ok := updates["assignee"]; ok {
+		next, _ := v.(string)
+		if is.Assignee != "" && is.Status == beadsdk.StatusInProgress &&
+			!bdActorMatches(is.Assignee, actor) && !bdActorMatches(is.Assignee, next) {
+			return fmt.Errorf("cannot reassign %s: held by %q (in_progress)", id, is.Assignee)
+		}
 	}
 	for k, v := range updates {
 		str, _ := v.(string)
@@ -111,18 +155,21 @@ func (s *memStore) UpdateIssue(_ context.Context, id string, updates map[string]
 	return nil
 }
 
-func (s *memStore) CloseIssue(_ context.Context, id, reason, _, _ string) error {
+func (s *memStore) CloseIssue(_ context.Context, id, reason, actor, _ string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	is, ok := s.issues[id]
 	if !ok {
 		return fmt.Errorf("issue %s not found", id)
 	}
+	if is.Assignee != "" && !bdActorMatches(is.Assignee, actor) {
+		return fmt.Errorf("cannot close %s: assignee is %q, actor is %q; reclaim or use --force to override", id, is.Assignee, actor)
+	}
 	now := time.Now()
 	is.Status = beadsdk.StatusClosed
 	is.CloseReason = reason
 	is.ClosedAt = &now
-	s.closes = append(s.closes, closeCall{ID: id, Reason: reason})
+	s.closes = append(s.closes, closeCall{ID: id, Reason: reason, Actor: actor})
 	return nil
 }
 
@@ -254,6 +301,8 @@ const (
 func newMergeOneFixture(t *testing.T) *mergeOneFixture {
 	t.Helper()
 	f := &mergeOneFixture{branch: "polecat/nux/gt-src"}
+	// The caller is a human: no agent identity (bd falls back to the git user).
+	t.Setenv("BD_ACTOR", "")
 	f.gtLog = installFakeGT(t)
 	installNoPRGH(t)
 	installFailingBD(t)

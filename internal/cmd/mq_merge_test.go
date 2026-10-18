@@ -121,6 +121,28 @@ func TestRunMQMergeWith_HumanOutput(t *testing.T) {
 			t.Fatalf("output does not tell to rerun post-merge:\n%s", stdout.String())
 		}
 	})
+	t.Run("cleanup failed prints the engine's next command", func(t *testing.T) {
+		eng := &fakeMQMergeEngine{outcome: refinery.MergeOutcome{Kind: refinery.OutcomeCleanupFailed, MRID: "gt-mr",
+			Message: "close merged MR: boom", Next: "gt mq merge gastown gt-mr"}}
+		var stdout bytes.Buffer
+		_ = runMQMergeWith(context.Background(), eng, "gastown", "gt-mr", false, &stdout, io.Discard)
+		if !strings.Contains(stdout.String(), "run: gt mq merge gastown gt-mr") || strings.Contains(stdout.String(), "post-merge") {
+			t.Fatalf("output does not point at the engine's next command only:\n%s", stdout.String())
+		}
+	})
+	t.Run("already landed says nothing was merged again", func(t *testing.T) {
+		eng := &fakeMQMergeEngine{outcome: refinery.MergeOutcome{Kind: refinery.OutcomeMerged, MRID: "gt-mr", Target: "main",
+			SourceIssue: "gt-1", CommitSHA: "fedcba9876543210", AlreadyLanded: true}}
+		var stdout bytes.Buffer
+		if err := runMQMergeWith(context.Background(), eng, "gastown", "gt-mr", false, &stdout, io.Discard); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		for _, want := range []string{"Finalized gt-mr", "already on main", "fedcba98", "not merged again", "Merged in gt-mr"} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Errorf("output missing %q:\n%s", want, stdout.String())
+			}
+		}
+	})
 	t.Run("refusal is reported with its kind", func(t *testing.T) {
 		eng := &fakeMQMergeEngine{outcome: refinery.MergeOutcome{Kind: refinery.OutcomeScopeViolation, MRID: "gt-mr", Message: "merge scope violation: docs/x.md"}}
 		var stdout bytes.Buffer

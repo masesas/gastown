@@ -550,6 +550,10 @@ type Beads struct {
 	// and forIssueID() skip ResolveRoutingTarget and operate against
 	// beadsDir directly.
 	noRoute bool
+
+	// actor, when set (WithActor), is the identity every bd operation of this
+	// wrapper runs as, overriding the inherited BD_ACTOR/BEADS_ACTOR.
+	actor string
 }
 
 // New creates a new Beads wrapper for the given directory.
@@ -610,6 +614,7 @@ func (b *Beads) ForAgentBead() *Beads {
 		store:      b.store,
 		townRoot:   townRoot,
 		noRoute:    true,
+		actor:      b.actor,
 	}
 }
 
@@ -620,10 +625,14 @@ func (b *Beads) agentBeadTarget() *Beads {
 	return b.ForAgentBead()
 }
 
-// getActor returns the BD_ACTOR value for this context.
-// Returns empty string when in isolated mode (tests) to prevent
-// inherited actors from routing to production databases.
+// getActor returns the actor for this context: the explicit one (WithActor),
+// else the BD_ACTOR value. Returns empty string when in isolated mode (tests)
+// without an explicit actor, to prevent inherited actors from routing to
+// production databases.
 func (b *Beads) getActor() string {
+	if b.actor != "" {
+		return b.actor
+	}
 	if b.isolated {
 		return ""
 	}
@@ -699,6 +708,7 @@ func (b *Beads) forIssueID(id string) *Beads {
 		serverPort: b.serverPort,
 		townRoot:   b.townRoot,
 		noRoute:    true,
+		actor:      b.actor,
 	}
 }
 
@@ -977,6 +987,7 @@ func isSubprocessCrash(err error) bool {
 // Without this, getenv() returns the first occurrence, so an inherited BEADS_DIR
 // (e.g., from a parent process or shell context) would shadow the explicit value
 // appended by run(). This was the root cause of gt-uygpe / GH #803.
+// An explicit actor (WithActor) replaces any inherited BD_ACTOR/BEADS_ACTOR.
 func (b *Beads) buildRunEnv() []string {
 	if b.isolated {
 		env := filterBeadsEnv(os.Environ())
@@ -987,19 +998,20 @@ func (b *Beads) buildRunEnv() []string {
 			env = append(env, fmt.Sprintf("BEADS_DOLT_PORT=%d", b.serverPort))
 			env = append(env, "BEADS_DOLT_AUTO_START=0")
 		}
-		return SuppressBDSideEffects(env)
+		return b.withActorEnv(SuppressBDSideEffects(env))
 	}
 	// runWithStdin appends BEADS_DIR after probing bd --allow-stale support, so
 	// keep buildRunEnv focused on Dolt target isolation and avoid duplicate
 	// first-match-sensitive BEADS_DIR entries.
 	env := BuildPinnedBDEnv(os.Environ(), b.getResolvedBeadsDir())
 	env = StripEnvKey(env, "BEADS_DIR")
-	return env
+	return b.withActorEnv(env)
 }
 
 // buildRoutingEnv builds the environment for runWithRouting() calls.
 // Always strips BEADS_DIR so bd uses native routing.
 // In isolated mode: also strips BD_ACTOR, BEADS_*, GT_ROOT, HOME.
+// An explicit actor (WithActor) is then set as BEADS_ACTOR.
 func (b *Beads) buildRoutingEnv() []string {
 	if b.isolated {
 		env := filterBeadsEnv(os.Environ())
@@ -1010,9 +1022,9 @@ func (b *Beads) buildRoutingEnv() []string {
 			env = append(env, fmt.Sprintf("BEADS_DOLT_PORT=%d", b.serverPort))
 			env = append(env, "BEADS_DOLT_AUTO_START=0")
 		}
-		return SuppressBDSideEffects(env)
+		return b.withActorEnv(SuppressBDSideEffects(env))
 	}
-	return BuildRoutingBDEnv(os.Environ(), b.getResolvedBeadsDir())
+	return b.withActorEnv(BuildRoutingBDEnv(os.Environ(), b.getResolvedBeadsDir()))
 }
 
 // filterBeadsEnv removes beads-related environment variables from the given
@@ -1760,6 +1772,7 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 			beadsDir:   targetDir,
 			serverPort: b.serverPort,
 			isolated:   b.isolated,
+			actor:      b.actor,
 		}
 		return bdForCreate.Create(opts)
 	}
@@ -1835,6 +1848,7 @@ func (b *Beads) CreateWithID(id string, opts CreateOptions) (*Issue, error) {
 			beadsDir:   targetDir,
 			serverPort: b.serverPort,
 			isolated:   b.isolated,
+			actor:      b.actor,
 		}
 		return bdForCreate.CreateWithID(id, opts)
 	}

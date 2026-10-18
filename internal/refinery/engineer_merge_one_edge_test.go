@@ -124,7 +124,7 @@ func TestMergeOne_BehindLocalTargetNotCheckedOutIsMoved(t *testing.T) {
 }
 
 func TestFinalizeMergeOne_CleanupFailures(t *testing.T) {
-	t.Run("proof failed: MR stays open, rerun post-merge", func(t *testing.T) {
+	t.Run("proof failed: MR stays open, rerun gt mq merge", func(t *testing.T) {
 		workDir, g, _ := testGitRepo(t)
 		installNoPRGH(t)
 		branch := "polecat/test/not-landed"
@@ -136,8 +136,10 @@ func TestFinalizeMergeOne_CleanupFailures(t *testing.T) {
 		if out.Kind != OutcomeCleanupFailed || terminal {
 			t.Fatalf("outcome %s terminal=%v, want cleanup_failed and not terminal", out.Kind, terminal)
 		}
-		if !strings.Contains(out.Message, "gt mq post-merge test-rig mr-nl") {
-			t.Fatalf("message %q does not say to rerun post-merge", out.Message)
+		// The MR is open: re-running the engine finalizes a landed merge (or
+		// merges one that did not land); post-merge is for a closed MR.
+		if out.Next != "gt mq merge test-rig mr-nl" || !strings.Contains(out.Message, out.Next) {
+			t.Fatalf("next = %q, message %q: want the gt mq merge re-run", out.Next, out.Message)
 		}
 	})
 	t.Run("branch cleanup refused: MR closed, still cleanup_failed", func(t *testing.T) {
@@ -150,6 +152,9 @@ func TestFinalizeMergeOne_CleanupFailures(t *testing.T) {
 			ProcessResult{Success: true, MergeCommit: merge})
 		if out.Kind != OutcomeCleanupFailed || !terminal {
 			t.Fatalf("outcome %s terminal=%v, want cleanup_failed with the MR closed", out.Kind, terminal)
+		}
+		if out.Next != "gt mq post-merge test-rig mr-l" {
+			t.Fatalf("next = %q, want post-merge for a closed MR", out.Next)
 		}
 		if len(out.Warnings) == 0 || !strings.Contains(out.Warnings[0], "MERGED mail") {
 			t.Fatalf("warnings = %v, want the MERGED mail failure", out.Warnings)
