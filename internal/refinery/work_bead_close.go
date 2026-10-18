@@ -81,7 +81,31 @@ func validateMergedCloseReason(reason, mrID string) error {
 
 type workBeadCloser interface {
 	Show(id string) (*beads.Issue, error)
+	Comments(id string) ([]beads.Comment, error)
 	ForceCloseWithReason(reason string, ids ...string) error
+}
+
+// sourceBoundToMR checks that source bead sourceID carries MR mrID's
+// back-link before the merged close forces it shut (gt-pd1c.89): the comment
+// gt done / gt mq submit add when they create the MR
+// (beads.MRBackLinkComment). It guarantees that the source itself names this
+// MR, so stale or mistaken data (an MR whose source_issue points at a bead it
+// was not created for, a pre-back-link MR) never closes a bead "Merged in" and
+// unblocks its merge-blocks dependents. It is defense in depth, NOT a guard
+// against a bd writer, who can add the comment as easily as the MR (a binding
+// a bd writer cannot forge is stage 4). The back-link survives the source's
+// park (assignee cleared) and polecat reuse. Unreadable comments refuse
+// (fail closed).
+func sourceBoundToMR(work workBeadCloser, sourceID, mrID string) error {
+	comments, err := work.Comments(sourceID)
+	if err != nil {
+		return fmt.Errorf("source %s: cannot read its comments to check it belongs to MR %s: %w", sourceID, mrID, err)
+	}
+	if !beads.HasMRBackLink(comments, mrID) {
+		return fmt.Errorf("source %s is not bound to MR %s: it has no %q comment (gt done and gt mq submit write it when they create the MR); "+
+			"refusing to close it. If the MR really is this bead's work, add that comment and rerun", sourceID, mrID, beads.MRBackLinkComment(mrID))
+	}
+	return nil
 }
 
 type issueReader interface {
@@ -141,6 +165,11 @@ func closeMergedWorkBead(work workBeadCloser, agent issueReader, out io.Writer, 
 		closeReason = fmt.Sprintf("%s\ntarget_branch: %s\ncommit_sha: %s", closeReason, req.Target, req.MergeCommit)
 	}
 	if err := validateMergedCloseReason(closeReason, req.MRID); err != nil {
+		logf("[Refinery] Warning: refusing to close work bead %s: %v\n", workBeadID, err)
+		result.CloseErr = err
+		return result
+	}
+	if err := sourceBoundToMR(work, workBeadID, req.MRID); err != nil {
 		logf("[Refinery] Warning: refusing to close work bead %s: %v\n", workBeadID, err)
 		result.CloseErr = err
 		return result

@@ -256,12 +256,9 @@ func TestBuildRefineryPatrolVars_FullConfig(t *testing.T) {
 		"rig":                                 "testrig",
 		"integration_branch_refinery_enabled": "true",
 		"integration_branch_auto_land":        "false",
-		"run_tests":                           "true",
 		"target_branch":                       "main",
-		"delete_merged_branches":              "true",
 		"judgment_enabled":                    "false",
 		"review_depth":                        "standard",
-		"require_review":                      "false",
 	}
 
 	varMap := make(map[string]string)
@@ -284,7 +281,11 @@ func TestBuildRefineryPatrolVars_FullConfig(t *testing.T) {
 	}
 
 	// Verify empty commands and unset strategy are NOT included
-	for _, shouldBeAbsent := range []string{"setup_command", "typecheck_command", "lint_command", "build_command", "merge_strategy"} {
+	// D10 (gt-pd1c.78): gates, run_tests, delete_merged_branches and
+	// require_review are read by gt mq merge from the rig config, never
+	// passed to the formula.
+	for _, shouldBeAbsent := range []string{"setup_command", "typecheck_command", "lint_command", "build_command", "test_command",
+		"run_tests", "delete_merged_branches", "require_review", "merge_strategy"} {
 		if _, ok := varMap[shouldBeAbsent]; ok {
 			t.Errorf("%q should be omitted when empty/unset", shouldBeAbsent)
 		}
@@ -295,7 +296,7 @@ func TestBuildRefineryPatrolVars_FullConfig(t *testing.T) {
 	}
 }
 
-func TestBuildRefineryPatrolVars_AllCommandsSet(t *testing.T) {
+func TestBuildRefineryPatrolVars_GateCommandsAreNotFormulaVars(t *testing.T) {
 	tmpDir := t.TempDir()
 	rigDir := filepath.Join(tmpDir, "testrig")
 	settingsDir := filepath.Join(rigDir, "settings")
@@ -332,21 +333,10 @@ func TestBuildRefineryPatrolVars_AllCommandsSet(t *testing.T) {
 		}
 	}
 
-	// All configured commands should be present (test_command is empty by default)
-	commandExpected := map[string]string{
-		"setup_command":     "pnpm install",
-		"typecheck_command": "tsc --noEmit",
-		"lint_command":      "eslint .",
-		"build_command":     "pnpm build",
-	}
-	for key, want := range commandExpected {
-		got, ok := varMap[key]
-		if !ok {
-			t.Errorf("missing var %q", key)
-			continue
-		}
-		if got != want {
-			t.Errorf("var %q = %q, want %q", key, got, want)
+	// Configured gate commands run inside gt mq merge (D10): no formula var.
+	for _, key := range []string{"setup_command", "typecheck_command", "lint_command", "build_command"} {
+		if v, ok := varMap[key]; ok {
+			t.Errorf("var %q = %q passed to the formula; gt mq merge reads it from the rig config", key, v)
 		}
 	}
 }
@@ -403,9 +393,9 @@ func TestBuildRefineryPatrolVars_EmptyTestCommand(t *testing.T) {
 		}
 	}
 
-	// run_tests should be "false"
-	if got := varMap["run_tests"]; got != "false" {
-		t.Errorf("run_tests = %q, want %q", got, "false")
+	// run_tests is read by gt mq merge, not passed to the formula (D10).
+	if got, ok := varMap["run_tests"]; ok {
+		t.Errorf("run_tests = %q passed to the formula", got)
 	}
 }
 
@@ -466,26 +456,13 @@ func TestBuildRefineryPatrolVars_BoolFormat(t *testing.T) {
 	if got := varMap["integration_branch_auto_land"]; got != "true" {
 		t.Errorf("integration_branch_auto_land = %q, want %q", got, "true")
 	}
-	if got := varMap["delete_merged_branches"]; got != "false" {
-		t.Errorf("delete_merged_branches = %q, want %q", got, "false")
-	}
 	if got := varMap["target_branch"]; got != "develop" {
 		t.Errorf("target_branch = %q, want %q", got, "develop")
 	}
-	if got := varMap["test_command"]; got != "make test" {
-		t.Errorf("test_command = %q, want %q", got, "make test")
-	}
-	if got := varMap["setup_command"]; got != "npm ci" {
-		t.Errorf("setup_command = %q, want %q", got, "npm ci")
-	}
-	if got := varMap["typecheck_command"]; got != "tsc --noEmit" {
-		t.Errorf("typecheck_command = %q, want %q", got, "tsc --noEmit")
-	}
-	if got := varMap["lint_command"]; got != "eslint ." {
-		t.Errorf("lint_command = %q, want %q", got, "eslint .")
-	}
-	if got := varMap["build_command"]; got != "make build" {
-		t.Errorf("build_command = %q, want %q", got, "make build")
+	for _, key := range []string{"delete_merged_branches", "test_command", "setup_command", "typecheck_command", "lint_command", "build_command"} {
+		if got, ok := varMap[key]; ok {
+			t.Errorf("%s = %q passed to the formula; gt mq merge reads it (D10)", key, got)
+		}
 	}
 }
 
@@ -646,8 +623,8 @@ func TestBuildRefineryPatrolVars_RequireReview(t *testing.T) {
 		}
 	}
 
-	if got := varMap["require_review"]; got != "true" {
-		t.Errorf("require_review = %q, want %q", got, "true")
+	if got, ok := varMap["require_review"]; ok {
+		t.Errorf("require_review = %q passed to the formula; gt mq merge reads it (D10)", got)
 	}
 	if got := varMap["merge_strategy"]; got != "pr" {
 		t.Errorf("merge_strategy = %q, want %q", got, "pr")

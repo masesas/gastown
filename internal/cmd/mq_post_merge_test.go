@@ -1,289 +1,98 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
-	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/refinery"
 )
 
-type fakeMQPostMergeManager struct {
-	mr              *refinery.MergeRequest
-	findErr         error
-	postMergeErr    error
-	postMergeCalled bool
-	postMergeMR     *refinery.MergeRequest
+// fakeMQPostMergeEngine records the PostMerge call of gt mq post-merge, which
+// is a thin wrapper over the engine's one finalize (refinery.Engineer.PostMerge).
+type fakeMQPostMergeEngine struct {
+	mr     *refinery.MRInfo
+	report refinery.FinalizeReport
+	err    error
+
+	calledWith string
+	opts       refinery.PostMergeOptions
+	output     io.Writer
 }
 
-func (m *fakeMQPostMergeManager) FindMRForPostMerge(string) (*refinery.MergeRequest, error) {
-	if m.findErr != nil {
-		return nil, m.findErr
-	}
-	return m.mr, nil
+func (f *fakeMQPostMergeEngine) PostMerge(mrID string, opts refinery.PostMergeOptions) (*refinery.MRInfo, refinery.FinalizeReport, error) {
+	f.calledWith, f.opts = mrID, opts
+	return f.mr, f.report, f.err
 }
 
-func (m *fakeMQPostMergeManager) PostMergeMR(mr *refinery.MergeRequest) (*refinery.PostMergeResult, error) {
-	m.postMergeCalled = true
-	m.postMergeMR = mr
-	if m.postMergeErr != nil {
-		return nil, m.postMergeErr
-	}
-	return &refinery.PostMergeResult{MR: m.mr, MRClosed: true, SourceIssueClosed: true, SourceIssueID: m.mr.IssueID}, nil
+func (f *fakeMQPostMergeEngine) SetOutput(w io.Writer) { f.output = w }
+
+func postMergeMRInfo() *refinery.MRInfo {
+	return &refinery.MRInfo{ID: "gt-mr", Branch: "polecat/nux/gt-1+mvcf8o91", Target: "main", SourceIssue: "gt-1", CommitSHA: "abc123def456"}
 }
 
-type fakeMQPostMergeGit struct {
-	verifyErr error
-	openPR    bool
-	deleteErr error
-	remoteTip string
-	localHead string
-	tipErr    error
-
-	verifiedCommits []string
-	deletedBranches []string
-	deletedHeads    []string
-	localDeleted    []string
-}
-
-func (g *fakeMQPostMergeGit) VerifyPushedCommitReachableFromPushTarget(_, _, commit string) error {
-	g.verifiedCommits = append(g.verifiedCommits, commit)
-	return g.verifyErr
-}
-
-func (g *fakeMQPostMergeGit) HasOpenPullRequest(git.PullRequestRef) bool {
-	return g.openPR
-}
-
-func (g *fakeMQPostMergeGit) PushRemoteBranchTip(_, _ string) (string, error) {
-	return g.remoteTip, g.tipErr
-}
-
-func (g *fakeMQPostMergeGit) Rev(string) (string, error) {
-	return g.localHead, nil
-}
-
-func (g *fakeMQPostMergeGit) DeleteRemoteBranchIfAt(_, branch, expectedHash string) error {
-	g.deletedBranches = append(g.deletedBranches, branch)
-	g.deletedHeads = append(g.deletedHeads, expectedHash)
-	return g.deleteErr
-}
-
-func (g *fakeMQPostMergeGit) RemoteHeadBranch(string) (string, error) { return "main", nil }
-
-func (g *fakeMQPostMergeGit) DeleteBranch(branch string, _ bool) error {
-	g.localDeleted = append(g.localDeleted, branch)
-	return nil
-}
-
-func testMQPostMergeMR() *refinery.MergeRequest {
-	return &refinery.MergeRequest{
-		ID:           "gt-mr-proof",
-		Branch:       "polecat/test/gt-proof+mvcf8o91", // real generated shape
-		Worker:       "polecats/test",
-		IssueID:      "gt-proof",
-		TargetBranch: "main",
-		CommitSHA:    "abc123def456",
+func TestRunMQPostMergeWith_FinishedFinalize(t *testing.T) {
+	eng := &fakeMQPostMergeEngine{mr: postMergeMRInfo(), report: refinery.FinalizeReport{
+		BranchCleanup: refinery.BranchCleanup{Branch: "polecat/nux/gt-1+mvcf8o91", RemoteDeleted: true, LocalDeleted: true},
+	}}
+	var out bytes.Buffer
+	if err := runMQPostMergeWith(eng, "gt-mr", refinery.PostMergeOptions{SkipBranchDelete: true}, &out); err != nil {
+		t.Fatalf("runMQPostMergeWith = %v, want nil\n%s", err, out.String())
 	}
-}
-
-func TestRunVerifiedMQPostMerge_ProofFailurePreservesRecordsAndBranch(t *testing.T) {
-	mgr := &fakeMQPostMergeManager{mr: testMQPostMergeMR()}
-	rigGit := &fakeMQPostMergeGit{verifyErr: errors.New("not reachable")}
-
-	_, _, err := runVerifiedMQPostMerge(mgr, t.TempDir(), rigGit, mgr.mr.ID, false)
-	if err == nil || !strings.Contains(err.Error(), "merge proof failed") {
-		t.Fatalf("runVerifiedMQPostMerge error = %v, want merge proof failure", err)
+	if eng.calledWith != "gt-mr" || !eng.opts.SkipBranchDelete || eng.output != &out {
+		t.Fatalf("engine called with %q %+v output=%v", eng.calledWith, eng.opts, eng.output)
 	}
-	if !strings.Contains(err.Error(), mgr.mr.CommitSHA) {
-		t.Fatalf("proof error %q does not mention submitted head %s", err, mgr.mr.CommitSHA)
-	}
-	if mgr.postMergeCalled {
-		t.Fatal("PostMerge called after failed proof")
-	}
-	if len(rigGit.deletedBranches) != 0 {
-		t.Fatalf("remote branch deleted after failed proof: %v", rigGit.deletedBranches)
-	}
-	if len(rigGit.localDeleted) != 0 {
-		t.Fatalf("local branch deleted after failed proof: %v", rigGit.localDeleted)
-	}
-}
-
-func TestRunVerifiedMQPostMerge_VerifiedHeadClosesAndLeaseDeletes(t *testing.T) {
-	mgr := &fakeMQPostMergeManager{mr: testMQPostMergeMR()}
-	rigGit := &fakeMQPostMergeGit{remoteTip: mgr.mr.CommitSHA, localHead: mgr.mr.CommitSHA}
-
-	_, cleanup, err := runVerifiedMQPostMerge(mgr, t.TempDir(), rigGit, mgr.mr.ID, false)
-	if err != nil {
-		t.Fatalf("runVerifiedMQPostMerge: %v", err)
-	}
-	if !mgr.postMergeCalled {
-		t.Fatal("PostMerge was not called after successful proof")
-	}
-	if mgr.postMergeMR != mgr.mr {
-		t.Fatal("PostMerge did not use the verified MR snapshot")
-	}
-	if len(rigGit.verifiedCommits) != 1 || rigGit.verifiedCommits[0] != mgr.mr.CommitSHA {
-		t.Fatalf("verified commits = %v, want [%s]", rigGit.verifiedCommits, mgr.mr.CommitSHA)
-	}
-	if !cleanup.RemoteDeleted || len(rigGit.deletedBranches) != 1 || rigGit.deletedBranches[0] != mgr.mr.Branch {
-		t.Fatalf("remote delete = cleanup=%+v branches=%v", cleanup, rigGit.deletedBranches)
-	}
-	if len(rigGit.deletedHeads) != 1 || rigGit.deletedHeads[0] != mgr.mr.CommitSHA {
-		t.Fatalf("deleted heads = %v, want [%s]", rigGit.deletedHeads, mgr.mr.CommitSHA)
-	}
-	if !cleanup.LocalDeleted || len(rigGit.localDeleted) != 1 || rigGit.localDeleted[0] != mgr.mr.Branch {
-		t.Fatalf("local delete = cleanup=%+v local=%v", cleanup, rigGit.localDeleted)
-	}
-}
-
-func TestRunVerifiedMQPostMerge_SkipBranchDeleteStillRequiresProof(t *testing.T) {
-	mgr := &fakeMQPostMergeManager{mr: testMQPostMergeMR()}
-	rigGit := &fakeMQPostMergeGit{}
-
-	_, cleanup, err := runVerifiedMQPostMerge(mgr, t.TempDir(), rigGit, mgr.mr.ID, true)
-	if err != nil {
-		t.Fatalf("runVerifiedMQPostMerge: %v", err)
-	}
-	if !mgr.postMergeCalled {
-		t.Fatal("PostMerge was not called after successful proof")
-	}
-	if len(rigGit.verifiedCommits) != 1 || rigGit.verifiedCommits[0] != mgr.mr.CommitSHA {
-		t.Fatalf("verified commits = %v, want [%s]", rigGit.verifiedCommits, mgr.mr.CommitSHA)
-	}
-	if !cleanup.Skipped {
-		t.Fatalf("cleanup.Skipped = false, cleanup=%+v", cleanup)
-	}
-	if len(rigGit.deletedBranches) != 0 || len(rigGit.localDeleted) != 0 {
-		t.Fatalf("branch deleted despite skip: remote=%v local=%v", rigGit.deletedBranches, rigGit.localDeleted)
-	}
-}
-
-func TestRunVerifiedMQPostMerge_OpenPRSkipsRemoteDeleteAfterProof(t *testing.T) {
-	mgr := &fakeMQPostMergeManager{mr: testMQPostMergeMR()}
-	rigGit := &fakeMQPostMergeGit{openPR: true, localHead: mgr.mr.CommitSHA}
-
-	_, cleanup, err := runVerifiedMQPostMerge(mgr, t.TempDir(), rigGit, mgr.mr.ID, false)
-	if err != nil {
-		t.Fatalf("runVerifiedMQPostMerge: %v", err)
-	}
-	if !mgr.postMergeCalled {
-		t.Fatal("PostMerge was not called after successful proof")
-	}
-	if !cleanup.OpenPR {
-		t.Fatalf("cleanup.OpenPR = false, cleanup=%+v", cleanup)
-	}
-	if len(rigGit.deletedBranches) != 0 {
-		t.Fatalf("remote branch deleted despite open PR: %v", rigGit.deletedBranches)
-	}
-	if len(rigGit.localDeleted) != 1 || rigGit.localDeleted[0] != mgr.mr.Branch {
-		t.Fatalf("local branch cleanup = %v, want [%s]", rigGit.localDeleted, mgr.mr.Branch)
-	}
-}
-
-func TestRunVerifiedMQPostMerge_LeaseDeleteFailureReturnsAfterPostMerge(t *testing.T) {
-	mgr := &fakeMQPostMergeManager{mr: testMQPostMergeMR()}
-	rigGit := &fakeMQPostMergeGit{remoteTip: mgr.mr.CommitSHA, deleteErr: errors.New("stale info")}
-
-	_, _, err := runVerifiedMQPostMerge(mgr, t.TempDir(), rigGit, mgr.mr.ID, false)
-	if err == nil || !strings.Contains(err.Error(), "remote branch delete") {
-		t.Fatalf("runVerifiedMQPostMerge error = %v, want remote branch delete failure", err)
-	}
-	if !mgr.postMergeCalled {
-		t.Fatal("PostMerge was not called after successful proof")
-	}
-	if len(rigGit.deletedBranches) != 1 || rigGit.deletedBranches[0] != mgr.mr.Branch {
-		t.Fatalf("remote delete attempts = %v, want [%s]", rigGit.deletedBranches, mgr.mr.Branch)
-	}
-	if len(rigGit.deletedHeads) != 1 || rigGit.deletedHeads[0] != mgr.mr.CommitSHA {
-		t.Fatalf("delete lease heads = %v, want [%s]", rigGit.deletedHeads, mgr.mr.CommitSHA)
-	}
-	if len(rigGit.localDeleted) != 0 {
-		t.Fatalf("local branch deleted after remote lease failure: %v", rigGit.localDeleted)
-	}
-}
-
-func TestRunVerifiedMQPostMerge_MissingRemoteBranchIsIdempotentAfterProof(t *testing.T) {
-	mgr := &fakeMQPostMergeManager{mr: testMQPostMergeMR()}
-	rigGit := &fakeMQPostMergeGit{localHead: mgr.mr.CommitSHA}
-
-	_, cleanup, err := runVerifiedMQPostMerge(mgr, t.TempDir(), rigGit, mgr.mr.ID, false)
-	if err != nil {
-		t.Fatalf("runVerifiedMQPostMerge: %v", err)
-	}
-	if !mgr.postMergeCalled {
-		t.Fatal("PostMerge was not called after successful proof")
-	}
-	if !cleanup.AlreadyGone {
-		t.Fatalf("cleanup.AlreadyGone = false, cleanup=%+v", cleanup)
-	}
-	if len(rigGit.deletedBranches) != 0 {
-		t.Fatalf("remote branch delete attempted for missing branch: %v", rigGit.deletedBranches)
-	}
-}
-
-func TestRunVerifiedMQPostMerge_MissingSubmittedHeadFailsClosed(t *testing.T) {
-	mr := testMQPostMergeMR()
-	mr.CommitSHA = ""
-	mgr := &fakeMQPostMergeManager{mr: mr}
-	rigGit := &fakeMQPostMergeGit{}
-
-	_, _, err := runVerifiedMQPostMerge(mgr, t.TempDir(), rigGit, mgr.mr.ID, false)
-	if err == nil || !strings.Contains(err.Error(), "missing submitted commit_sha") {
-		t.Fatalf("runVerifiedMQPostMerge error = %v, want missing submitted head", err)
-	}
-	if mgr.postMergeCalled {
-		t.Fatal("PostMerge called with missing submitted head")
-	}
-	if len(rigGit.deletedBranches) != 0 {
-		t.Fatalf("branch deleted with missing submitted head: %v", rigGit.deletedBranches)
-	}
-}
-
-func TestRunVerifiedMQPostMerge_SourceTargetBranchFailsClosed(t *testing.T) {
-	mr := testMQPostMergeMR()
-	mr.Branch = "main"
-	mr.TargetBranch = "main"
-	mgr := &fakeMQPostMergeManager{mr: mr}
-	rigGit := &fakeMQPostMergeGit{}
-
-	_, _, err := runVerifiedMQPostMerge(mgr, t.TempDir(), rigGit, mgr.mr.ID, false)
-	if err == nil || !strings.Contains(err.Error(), "matches target branch") {
-		t.Fatalf("runVerifiedMQPostMerge error = %v, want source/target failure", err)
-	}
-	if mgr.postMergeCalled {
-		t.Fatal("PostMerge called when source branch matched target")
-	}
-	if len(rigGit.deletedBranches) != 0 {
-		t.Fatalf("branch deleted when source matched target: %v", rigGit.deletedBranches)
-	}
-}
-
-// gt-pd1c.78 G-M7: post-merge proof refuses a target that is not a merge
-// target (an MR whose target was set to its own branch proves nothing).
-func TestVerifyMQPostMergeProofTrustsOnlyMergeTargets(t *testing.T) {
-	g := &fakeMQPostMergeGit{}
-	for target, ok := range map[string]bool{"main": true, "integration/epic": true, "polecat/nux": false, "develop": false} {
-		mr := &refinery.MergeRequest{ID: "gt-mr1", Branch: "polecat/x", TargetBranch: target, CommitSHA: "abc"}
-		err := verifyMQPostMergeProof(g, mr, "main")
-		if ok && err != nil && strings.Contains(err.Error(), "not a merge target") {
-			t.Errorf("%s: trusted target refused: %v", target, err)
-		}
-		if !ok && (err == nil || !strings.Contains(err.Error(), "not a merge target")) {
-			t.Errorf("%s: want not a merge target, got %v", target, err)
+	for _, want := range []string{"gt-mr", "Merged in gt-mr", "deleted (remote and local)"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output %q does not contain %q", out.String(), want)
 		}
 	}
 }
 
-// gt-pd1c.78 N3: the MR branch is a bead field; only a plain branch name is
-// handed to git.
-func TestCleanupMQPostMergeBranchRejectsUnsafeBranch(t *testing.T) {
-	for _, b := range []string{"-x", "polecat/a b", "polecat/../main", "--delete"} {
-		mr := &refinery.MergeRequest{ID: "gt-mr1", Branch: b, CommitSHA: "abc"}
-		if _, err := cleanupMQPostMergeBranch(t.TempDir(), &fakeMQPostMergeGit{}, mr, false); err == nil ||
-			!strings.Contains(err.Error(), "MR gt-mr1 is already closed (merged); branch delete skipped") {
-			t.Errorf("branch %q: %v", b, err)
-		}
+func TestRunMQPostMergeWith_RefusalAndFailedStepsExitNonZero(t *testing.T) {
+	refused := &fakeMQPostMergeEngine{err: errors.New("MR gt-mr: the landing is not bound to this MR: the MR has no recorded merge (merge_commit) of it")}
+	var out bytes.Buffer
+	err := runMQPostMergeWith(refused, "gt-mr", refinery.PostMergeOptions{}, &out)
+	if err == nil || !strings.Contains(err.Error(), "not bound") {
+		t.Fatalf("refusal: err = %v, want the engine's refusal", err)
+	}
+
+	unbound := &fakeMQPostMergeEngine{mr: postMergeMRInfo(), report: refinery.FinalizeReport{
+		SourceErr: errors.New("source gt-1 is not bound to MR gt-mr"),
+	}}
+	out.Reset()
+	err = runMQPostMergeWith(unbound, "gt-mr", refinery.PostMergeOptions{}, &out)
+	if err == nil || !strings.Contains(err.Error(), "not bound") {
+		t.Fatalf("unbound source: err = %v, want a failure naming the source", err)
+	}
+	if strings.Contains(out.String(), "Merged in gt-mr") {
+		t.Fatalf("output claims the source closed: %q", out.String())
+	}
+}
+
+func TestMQPostMergeCallerAllowed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env []string
+		ok  bool
+	}{
+		"human":               {nil, true},
+		"refinery of the rig": {[]string{"GT_ROLE", "gastown/refinery"}, true},
+		"crew of the rig":     {[]string{"GT_ROLE", "gastown/crew/max"}, true},
+		"polecat":             {[]string{"GT_ROLE", "gastown/polecats/nux"}, false},
+		"witness":             {[]string{"GT_ROLE", "gastown/witness"}, false},
+		"refinery of another": {[]string{"GT_ROLE", "other/refinery"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			getenv := prePushEnv(tc.env...)
+			err := mqRefineryCallerAllowed("gt mq post-merge", gtCallerFrom(getenv), getenv, "gastown")
+			if tc.ok != (err == nil) {
+				t.Fatalf("err = %v, want allowed=%v", err, tc.ok)
+			}
+			if err != nil && !strings.Contains(err.Error(), "gt mq post-merge") {
+				t.Fatalf("refusal %q does not name the command", err)
+			}
+		})
 	}
 }

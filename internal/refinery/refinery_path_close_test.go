@@ -44,6 +44,7 @@ func TestRefineryPath_ClosesOnlyWithMergedIn(t *testing.T) {
 		run(t, f.workDir, "git", "branch", f.branch, "origin/"+f.branch)
 		f.store.issues["gt-src2"] = memIssue("gt-src2", "Second feature")
 		f.store.issues["gt-mr2"] = memMRIssue("gt-mr2", second, "main", "gt-src2", secondCommit)
+		f.store.backLink("gt-src2", "gt-mr2")
 
 		e := f.engineer(t)
 		var batch []*MRInfo
@@ -161,13 +162,16 @@ func inspectCloseSites(t *testing.T, fset *token.FileSet, fn *ast.FuncDecl, foun
 		}
 		found[site][fn.Name.Name] = true
 	}
-	var validatePos, closePos token.Pos
+	var validatePos, bindPos, closePos token.Pos
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.CallExpr:
 			sel, ok := x.Fun.(*ast.SelectorExpr)
 			if ident, isIdent := x.Fun.(*ast.Ident); isIdent && ident.Name == "validateMergedCloseReason" {
 				validatePos = x.Pos()
+			}
+			if ident, isIdent := x.Fun.(*ast.Ident); isIdent && ident.Name == "sourceBoundToMR" {
+				bindPos = x.Pos()
 			}
 			if !ok {
 				return true
@@ -197,6 +201,10 @@ func inspectCloseSites(t *testing.T, fset *token.FileSet, fn *ast.FuncDecl, foun
 	})
 	if fn.Name.Name == "closeMergedWorkBead" && (validatePos == token.NoPos || closePos == token.NoPos || validatePos > closePos) {
 		t.Errorf("closeMergedWorkBead must call validateMergedCloseReason before ForceCloseWithReason")
+	}
+	// gt-pd1c.89: the source is bound to the MR before it is forced shut.
+	if fn.Name.Name == "closeMergedWorkBead" && (bindPos == token.NoPos || closePos == token.NoPos || bindPos > closePos) {
+		t.Errorf("closeMergedWorkBead must call sourceBoundToMR before ForceCloseWithReason")
 	}
 }
 

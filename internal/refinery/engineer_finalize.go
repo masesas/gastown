@@ -66,20 +66,39 @@ type BranchCleanup struct {
 	Disabled      bool   `json:"disabled,omitempty"`       // not a polecat branch and delete_merged_branches=false
 	UnsafeName    bool   `json:"unsafe_name,omitempty"`    // not a plain branch name: refused (beads.IsSafeRefName)
 	Protected     bool   `json:"protected,omitempty"`      // the default branch or integration/*: never deleted as a merged source
-	OpenPR        bool   `json:"open_pr,omitempty"`        // remote kept: an open PR (or no PR lookup, e.g. non-GitHub remote) (gas-fk4)
+	Skipped       bool   `json:"skipped,omitempty"`        // kept on request (gt mq post-merge --skip-branch-delete)
+	OpenPR        bool   `json:"open_pr,omitempty"`        // remote kept: an open PR, or a PR state that could not be read (gas-fk4); never for a remote that hosts no PRs (a local repository)
 	RemoteAbsent  bool   `json:"remote_absent,omitempty"`  // already gone on origin
 	RemoteDeleted bool   `json:"remote_deleted,omitempty"` // deleted on origin at commit_sha
 	LocalDeleted  bool   `json:"local_deleted,omitempty"`  // local branch deleted at commit_sha
 	Err           error  `json:"-"`                        // the deletion that failed or was refused
 }
 
-// HandleMRInfoSuccess finalizes a merge that landed: prove it from git
-// (verifyMRInfoPostMergeProof), close the MR bead as merged (closeTerminalMR
-// also closes the source bead "Merged in <mr>"), close moot conflict tasks,
-// delete the source branch, send MERGED to the witness, then the convoy check
-// and the mayor nudge. Each step runs only when the ones it depends on
-// succeeded; the report says which did.
+// finalizeOptions vary the one finalize (finalizeMerged) between its callers.
+type finalizeOptions struct {
+	// releaseSlot releases the conflict-resolution merge slot held as
+	// <rig>/refinery: a merge run does, gt mq post-merge (which merged
+	// nothing) does not.
+	releaseSlot bool
+	// skipBranchDelete keeps the source branch (gt mq post-merge
+	// --skip-branch-delete).
+	skipBranchDelete bool
+}
+
+// HandleMRInfoSuccess finalizes a merge that landed (finalizeMerged after a
+// merge run: the merge slot is released).
 func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) FinalizeReport {
+	return e.finalizeMerged(mr, result, finalizeOptions{releaseSlot: true})
+}
+
+// finalizeMerged is the one finalize of a landed MR (gt mq merge, its
+// already-landed re-run, the batch path and gt mq post-merge): prove it from
+// git (verifyMRInfoPostMergeProof), close the MR bead as merged
+// (closeTerminalMR also closes the source bead "Merged in <mr>" when it is
+// bound to the MR), close moot conflict tasks, delete the source branch, send
+// MERGED to the witness, then the convoy check and the mayor nudge. Each step
+// runs only when the ones it depends on succeeded; the report says which did.
+func (e *Engineer) finalizeMerged(mr *MRInfo, result ProcessResult, opts finalizeOptions) FinalizeReport {
 	var report FinalizeReport
 	workBeadID := resolveMergedWorkBead(e.beads.ForAgentBead(), mergedWorkBeadCloseRequest{
 		MRID:        mr.ID,
@@ -88,15 +107,8 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) Finaliz
 		AgentBead:   mr.AgentBead,
 	})
 
-	// Release merge slot if this was a conflict resolution
-	// The slot is held while conflict resolution is in progress
-	holder := e.rig.Name + "/refinery"
-	if err := e.mergeSlotRelease(holder); err != nil {
-		// Best-effort: slot release failures are always non-fatal.
-		// Slot may not have been held (optional acquisition) or may have expired.
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Note: merge slot release: %v\n", err)
-	} else {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Released merge slot\n")
+	if opts.releaseSlot {
+		e.releaseConflictSlot()
 	}
 	if err := e.verifyMRInfoPostMergeProof(mr); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge proof failed for %s: %v\n", mr.ID, err)
@@ -135,7 +147,11 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) Finaliz
 	e.closeSupersededConflictArtifacts(mr)
 
 	// 2. Delete the source branch.
-	report.BranchCleanup = e.cleanupMergedBranch(mr)
+	if opts.skipBranchDelete {
+		report.BranchCleanup = BranchCleanup{Branch: strings.TrimSpace(mr.Branch), Skipped: true}
+	} else {
+		report.BranchCleanup = e.cleanupMergedBranch(mr)
+	}
 	if report.BranchCleanup.Err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: branch cleanup for %s: %v\n", mr.ID, report.BranchCleanup.Err)
 	}
@@ -167,6 +183,17 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) Finaliz
 
 	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
 	return report
+}
+
+// releaseConflictSlot releases the merge slot a conflict resolution holds as
+// <rig>/refinery. Best effort: the slot may not have been held (optional
+// acquisition) or may have expired.
+func (e *Engineer) releaseConflictSlot() {
+	if err := e.mergeSlotRelease(e.rig.Name + "/refinery"); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Note: merge slot release: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Released merge slot\n")
 }
 
 // verifyMRInfoPostMergeProof proves from git that the submitted commit_sha is
@@ -257,7 +284,11 @@ func (e *Engineer) cleanupMergedBranch(mr *MRInfo) BranchCleanup {
 
 // deleteMergedRemoteBranch deletes a polecat branch on origin at expectedHead,
 // unless it has an open PR (gas-fk4: a PR merged via the provider should show
-// "merged", not "closed") or is already gone.
+// "merged", not "closed"; a PR state that cannot be read counts as open) or
+// is already gone. A remote that hosts no PRs (a local repository such as a
+// file:// mirror) has no PR to protect: git.HasOpenPullRequest answers no
+// without a lookup (gt-pd1c.64). The delete is leased on expectedHead, the
+// submitted commit_sha the landing proof covered.
 func (e *Engineer) deleteMergedRemoteBranch(c *BranchCleanup, mr *MRInfo, expectedHead string) error {
 	if e.git.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: c.Branch, HeadSHA: expectedHead}) {
 		c.OpenPR = true

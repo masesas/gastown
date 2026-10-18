@@ -31,11 +31,12 @@ import (
 // human whose git user name matches no agent identity.
 type memStore struct {
 	beadsdk.Storage
-	mu     sync.Mutex
-	issues map[string]*beadsdk.Issue
-	deps   []*beadsdk.Dependency
-	closes []closeCall
-	nextID int
+	mu       sync.Mutex
+	issues   map[string]*beadsdk.Issue
+	comments map[string][]*beadsdk.Comment
+	deps     []*beadsdk.Dependency
+	closes   []closeCall
+	nextID   int
 }
 
 type closeCall struct{ ID, Reason, Actor string }
@@ -71,7 +72,7 @@ func bdCanonicalActor(s string) string {
 }
 
 func newMemStore(issues ...*beadsdk.Issue) *memStore {
-	s := &memStore{issues: map[string]*beadsdk.Issue{}}
+	s := &memStore{issues: map[string]*beadsdk.Issue{}, comments: map[string][]*beadsdk.Comment{}}
 	for _, is := range issues {
 		s.issues[is.ID] = is
 	}
@@ -171,6 +172,23 @@ func (s *memStore) CloseIssue(_ context.Context, id, reason, actor, _ string) er
 	is.ClosedAt = &now
 	s.closes = append(s.closes, closeCall{ID: id, Reason: reason, Actor: actor})
 	return nil
+}
+
+func (s *memStore) GetIssueComments(_ context.Context, id string) ([]*beadsdk.Comment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*beadsdk.Comment(nil), s.comments[id]...), nil
+}
+
+// backLink adds the comment gt done writes on a source bead for its MR
+// ("MR created: <mr>"), which binds the source to the MR (gt-pd1c.89).
+func (s *memStore) backLink(sourceID, mrID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.comments[sourceID] = append(s.comments[sourceID], &beadsdk.Comment{
+		ID: fmt.Sprintf("c%d", len(s.comments[sourceID])+1), IssueID: sourceID, Author: "testrig/polecats/nux",
+		Text: beads.MRBackLinkComment(mrID), CreatedAt: time.Now(),
+	})
 }
 
 func (s *memStore) SearchIssues(_ context.Context, _ string, filter beadsdk.IssueFilter) ([]*beadsdk.Issue, error) {
@@ -332,6 +350,7 @@ func newMergeOneFixture(t *testing.T) *mergeOneFixture {
 		memIssue(fixtureSource, "Implement the feature"),
 		memMRIssue(fixtureMR, f.branch, "main", fixtureSource, f.commit),
 	)
+	f.store.backLink(fixtureSource, fixtureMR)
 	f.sender = &fakeMailSender{}
 	f.out = &bytes.Buffer{}
 	f.settings(t, nil)

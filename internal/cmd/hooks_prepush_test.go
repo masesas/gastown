@@ -95,7 +95,9 @@ func TestPrePushGuard(t *testing.T) {
 	autoLandOn := &prePushRig{name: "myrig", defaultBranch: "main", autoLand: autoLandSetting{enabled: true}}
 	plain := &prePushRig{name: "myrig", defaultBranch: "main"}
 	broken := &prePushRig{name: "myrig", defaultBranch: "main", allowedErr: errors.New("merge scope: parsing settings")}
-	agent := []string{"GT_ROLE", "refinery"}
+	// Crew: an agent the land, fast-forward and scope rules apply to, but not
+	// the refinery's merge-shape rule 2(c) (TestPrePushGuardRefineryMergeShape).
+	agent := []string{"GT_ROLE", "myrig/crew/dom"}
 
 	tests := []struct {
 		name      string

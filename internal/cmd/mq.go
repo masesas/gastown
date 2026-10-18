@@ -8,14 +8,11 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/mergeproof"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/util"
 )
 
 // MQ command flags
@@ -186,16 +183,29 @@ var mqPostMergeSkipBranchDelete bool
 
 var mqPostMergeCmd = &cobra.Command{
 	Use:   "post-merge <rig> <mr-id>",
-	Short: "Run post-merge cleanup (close MR, delete branch)",
-	Long: `Perform post-merge cleanup after a successful merge.
+	Short: "Finish an MR a merge run closed as merged (source close, branch cleanup)",
+	Long: `Finish the finalize of an MR that gt mq merge already merged and closed as
+merged, but could not fully finalize (gt mq merge reported cleanup_failed with
+"next": "gt mq post-merge <rig> <mr-id>"). It runs the merge engine's one
+finalize (the same code as gt mq merge) under the rig merge lock and merges
+or pushes nothing:
 
-This command consolidates post-merge steps into a single atomic operation:
-	 1. Verify the target branch contains the submitted source head
-	 2. Close the MR bead (status: merged)
-	 3. Close the source issue
-	 4. Delete the remote polecat branch at the submitted head (unless --skip-branch-delete)
+  1. Prove the landing is this MR's: the MR records merge_commit M, git proves
+     M on the trusted target (the rig default branch or integration/*), and M
+     has exactly two parents, the second being the MR's commit_sha. commit_sha
+     merely reachable from the target is refused.
+  2. Close the source issue "Merged in <mr>" (this unblocks merge-blocks
+     dependents), only when the source carries the back-link gt done wrote
+     ("MR created: <mr>").
+  3. Delete the branch on origin and locally at the submitted commit_sha
+     (unless --skip-branch-delete), mail MERGED to the witness, run the
+     convoy check and nudge the mayor.
 
-Designed for use by the refinery formula after a successful merge to main.
+Refused, with nothing changed: an MR that is still open (run gt mq merge: it
+finalizes a merge that already landed without merging again), an MR not
+closed as merged, an unbound landing proof. A source that is not bound to the
+MR is reported and left open. Exit status is non-zero unless every step
+succeeded. Only the refinery or crew of <rig>, or a human, may run it.
 
 --confirm-landed is the manual exit for an issue held as "unverified": the MR
 is closed but git cannot prove whether its work landed. A human (overseer, or
@@ -204,7 +214,6 @@ no merge proof or branch delete runs. It needs an interactive terminal and
 the MR ID typed again (no bypass), and is refused for agent roles and for MRs
 whose landing git can already decide. The verdict never overrides a definite
 git answer; it is audited on the MR (landing_by) and as a comment on the issue.
-The branch name is read from the MR bead, so no manual branch argument is needed.
 
 Examples:
   gt mq post-merge gastown gt-mr-abc123
@@ -212,32 +221,6 @@ Examples:
   gt mq post-merge gastown gt-wisp-abc --confirm-landed`,
 	Args: cobra.ExactArgs(2),
 	RunE: runMQPostMerge,
-}
-
-type mqPostMergeManager interface {
-	FindMRForPostMerge(idOrBranch string) (*refinery.MergeRequest, error)
-	PostMergeMR(mr *refinery.MergeRequest) (*refinery.PostMergeResult, error)
-}
-
-type mqPostMergeGit interface {
-	VerifyPushedCommitReachableFromPushTarget(remote, branch, commit string) error
-	PushRemoteBranchTip(remote, branch string) (string, error)
-	HasOpenPullRequest(ref git.PullRequestRef) bool
-	Rev(ref string) (string, error)
-	DeleteRemoteBranchIfAt(remote, branch, expectedHash string) error
-	DeleteBranch(branch string, force bool) error
-	RemoteHeadBranch(remote string) (string, error)
-}
-
-type mqPostMergeBranchCleanup struct {
-	Branch        string
-	NoBranch      bool
-	Skipped       bool
-	Disabled      bool
-	OpenPR        bool
-	AlreadyGone   bool
-	RemoteDeleted bool
-	LocalDeleted  bool
 }
 
 var mqStatusCmd = &cobra.Command{
@@ -391,7 +374,7 @@ func init() {
 	mqStatusCmd.Flags().BoolVar(&mqStatusJSON, "json", false, "Output as JSON")
 
 	// Post-merge flags
-	mqPostMergeCmd.Flags().BoolVar(&mqPostMergeSkipBranchDelete, "skip-branch-delete", false, "Skip remote branch deletion")
+	mqPostMergeCmd.Flags().BoolVar(&mqPostMergeSkipBranchDelete, "skip-branch-delete", false, "Keep the source branch (on origin and locally)")
 	mqPostMergeCmd.Flags().BoolVar(&mqPostMergeConfirmLanded, "confirm-landed", false, "Human verdict: this closed MR's work landed (closes the source of an unverified hold)")
 
 	// Add subcommands
@@ -565,200 +548,4 @@ func runMQReject(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-func runMQPostMerge(_ *cobra.Command, args []string) error {
-	rigName := args[0]
-	mrID := args[1]
-	if mqPostMergeConfirmLanded {
-		return runMQConfirmLanding(stdioHumanPrompt(), rigName, mrID, true)
-	}
-
-	mgr, r, _, err := getRefineryManager(rigName)
-	if err != nil {
-		return err
-	}
-	rigGit, err := getRigGit(r.Path)
-	if err != nil {
-		return fmt.Errorf("post-merge proof: %w", err)
-	}
-
-	result, branchCleanup, err := runVerifiedMQPostMerge(mgr, r.Path, rigGit, mrID, mqPostMergeSkipBranchDelete)
-	if err != nil {
-		return fmt.Errorf("post-merge cleanup: %w", err)
-	}
-
-	mr := result.MR
-	fmt.Printf("%s Post-merge: %s\n", style.Bold.Render("✓"), mr.ID)
-	fmt.Printf("  Branch: %s\n", mr.Branch)
-	fmt.Printf("  Worker: %s\n", mr.Worker)
-
-	if result.MRClosed {
-		fmt.Printf("  %s MR closed (merged)\n", style.Success.Render("✓"))
-	}
-	if result.SourceIssueClosed {
-		fmt.Printf("  %s Source issue closed: %s\n", style.Success.Render("✓"), result.SourceIssueID)
-	} else if result.SourceIssueNotFound {
-		fmt.Printf("  %s Source issue: %s %s\n", style.Dim.Render("○"), result.SourceIssueID, style.Dim.Render("(already closed or not found)"))
-	}
-
-	if branchCleanup.NoBranch {
-		fmt.Printf("  %s No branch name in MR (skipping branch delete)\n", style.Dim.Render("○"))
-	} else if branchCleanup.Skipped {
-		fmt.Printf("  %s Branch delete skipped (--skip-branch-delete)\n", style.Dim.Render("○"))
-	} else if branchCleanup.Disabled {
-		fmt.Printf("  %s Branch delete disabled by config\n", style.Dim.Render("○"))
-	} else if branchCleanup.OpenPR {
-		fmt.Printf("  %s Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", style.Dim.Render("○"), mr.Branch)
-	} else if branchCleanup.AlreadyGone {
-		fmt.Printf("  %s Remote branch already absent: %s\n", style.Dim.Render("○"), mr.Branch)
-	} else if branchCleanup.RemoteDeleted {
-		fmt.Printf("  %s Deleted remote branch: %s\n", style.Success.Render("✓"), mr.Branch)
-	}
-
-	if branchCleanup.LocalDeleted {
-		fmt.Printf("  %s Deleted local branch: %s\n", style.Success.Render("✓"), mr.Branch)
-	}
-
-	return nil
-}
-
-// runVerifiedMQPostMerge duplicates the refinery engine's finalize step
-// (refinery.Engineer.HandleMRInfoSuccess: proof, merged close, branch
-// cleanup). Until gt-pd1c.78 PR-C folds this command into the engine, the
-// engine is the stricter of the two: it deletes remote branches only for
-// polecat/*, never deletes the default branch or integration/*, and reports a
-// source not closed "Merged in <mr>" as a failure.
-func runVerifiedMQPostMerge(mgr mqPostMergeManager, rigPath string, rigGit mqPostMergeGit, mrID string, skipBranchDelete bool) (*refinery.PostMergeResult, mqPostMergeBranchCleanup, error) {
-	mr, err := mgr.FindMRForPostMerge(mrID)
-	if err != nil {
-		return nil, mqPostMergeBranchCleanup{}, err
-	}
-	if err := verifyMQPostMergeProof(rigGit, mr, mqPostMergeDefaultBranch(rigPath, rigGit)); err != nil {
-		return nil, mqPostMergeBranchCleanup{}, err
-	}
-
-	result, err := mgr.PostMergeMR(mr)
-	if err != nil {
-		return result, mqPostMergeBranchCleanup{}, err
-	}
-
-	branchCleanup, err := cleanupMQPostMergeBranch(rigPath, rigGit, result.MR, skipBranchDelete)
-	return result, branchCleanup, err
-}
-
-// mqPostMergeDefaultBranch is the rig's default branch for the post-merge
-// proof, read the way the provers read it: the configured default_branch,
-// else the remote's own HEAD (never the local origin/HEAD).
-func mqPostMergeDefaultBranch(rigPath string, rigGit mqPostMergeGit) string {
-	if b := config.RigDefaultBranch(rigPath); b != "" {
-		return b
-	}
-	b, _ := rigGit.RemoteHeadBranch("origin")
-	return strings.TrimSpace(b)
-}
-
-func verifyMQPostMergeProof(rigGit mqPostMergeGit, mr *refinery.MergeRequest, defaultBranch string) error {
-	if mr == nil {
-		return fmt.Errorf("merge proof failed: merge request is missing")
-	}
-	target := strings.TrimSpace(mr.TargetBranch)
-	if target == "" {
-		return fmt.Errorf("merge proof failed for MR %s: missing target branch", mr.ID)
-	}
-	// The same target check as the landing provers (gt-pd1c.78 G-M7): a
-	// target that is not the default branch or integration/* proves nothing.
-	if err := mergeproof.UntrustedMergeTarget(target, defaultBranch); err != nil {
-		if strings.TrimSpace(defaultBranch) == "" {
-			return fmt.Errorf("merge proof failed for MR %s: %w (the rig's default branch is unknown: set "+
-				"default_branch in <rig>/config.json, or make the remote advertise HEAD)", mr.ID, err)
-		}
-		return fmt.Errorf("merge proof failed for MR %s: %w", mr.ID, err)
-	}
-	if source := strings.TrimSpace(mr.Branch); source != "" && source == target {
-		return fmt.Errorf("merge proof failed for MR %s: source branch %s matches target branch", mr.ID, source)
-	}
-	commit := strings.TrimSpace(mr.CommitSHA)
-	if commit == "" {
-		return fmt.Errorf("merge proof failed for MR %s: missing submitted commit_sha", mr.ID)
-	}
-	if err := rigGit.VerifyPushedCommitReachableFromPushTarget("origin", target, commit); err != nil {
-		return fmt.Errorf("merge proof failed for MR %s: target %s does not contain submitted head %s: %w", mr.ID, target, commit, err)
-	}
-	return nil
-}
-
-func cleanupMQPostMergeBranch(rigPath string, rigGit mqPostMergeGit, mr *refinery.MergeRequest, skipBranchDelete bool) (mqPostMergeBranchCleanup, error) {
-	cleanup := mqPostMergeBranchCleanup{}
-	if mr == nil {
-		return cleanup, fmt.Errorf("remote branch delete: merge request is missing")
-	}
-
-	cleanup.Branch = strings.TrimSpace(mr.Branch)
-	if cleanup.Branch == "" {
-		cleanup.NoBranch = true
-		return cleanup, nil
-	}
-	// The branch comes from a bead field: only a plain branch name is handed
-	// to git (gt-pd1c.78 N3).
-	if !beads.IsSafeRefName(cleanup.Branch) {
-		// Runs after the MR was closed as merged: say so, so the error is not
-		// read as a failed post-merge. Like every cleanup failure it still
-		// exits non-zero (the branch needs a human).
-		return cleanup, fmt.Errorf("MR %s is already closed (merged); branch delete skipped because the branch name %q "+
-			"is not a plain branch name (delete it by hand)", mr.ID, util.OneLine(cleanup.Branch, 120))
-	}
-	if skipBranchDelete {
-		cleanup.Skipped = true
-		return cleanup, nil
-	}
-	if !mqDeleteMergedBranchesEnabled(rigPath) {
-		cleanup.Disabled = true
-		return cleanup, nil
-	}
-
-	expectedHead := strings.TrimSpace(mr.CommitSHA)
-	if expectedHead == "" {
-		return cleanup, fmt.Errorf("remote branch delete %s: missing submitted commit_sha", cleanup.Branch)
-	}
-
-	// Deleting a branch with an open PR causes GitHub to auto-close the PR as
-	// "closed" (not "merged"), destroying the PR audit trail. (gas-fk4)
-	if rigGit.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: cleanup.Branch, HeadSHA: expectedHead}) {
-		cleanup.OpenPR = true
-	} else {
-		remoteTip, err := rigGit.PushRemoteBranchTip("origin", cleanup.Branch)
-		if err != nil {
-			return cleanup, fmt.Errorf("remote branch delete %s: read remote branch tip: %w", cleanup.Branch, err)
-		}
-		if strings.TrimSpace(remoteTip) == "" {
-			cleanup.AlreadyGone = true
-		} else if err := rigGit.DeleteRemoteBranchIfAt("origin", cleanup.Branch, expectedHead); err != nil {
-			return cleanup, fmt.Errorf("remote branch delete %s at %s: %w", cleanup.Branch, expectedHead, err)
-		} else {
-			cleanup.RemoteDeleted = true
-		}
-	}
-
-	if deleteMQPostMergeLocalBranchIfAt(rigGit, cleanup.Branch, expectedHead) {
-		cleanup.LocalDeleted = true
-	}
-	return cleanup, nil
-}
-
-func deleteMQPostMergeLocalBranchIfAt(rigGit mqPostMergeGit, branch, expectedHead string) bool {
-	localHead, err := rigGit.Rev("refs/heads/" + branch + "^{commit}")
-	if err != nil || strings.TrimSpace(localHead) != strings.TrimSpace(expectedHead) {
-		return false
-	}
-	return rigGit.DeleteBranch(branch, false) == nil
-}
-
-func mqDeleteMergedBranchesEnabled(rigPath string) bool {
-	settingsPath := filepath.Join(rigPath, "settings", "config.json")
-	settings, err := config.LoadRigSettings(settingsPath)
-	if err != nil || settings.MergeQueue == nil {
-		return true
-	}
-	return settings.MergeQueue.IsDeleteMergedBranchesEnabled()
 }

@@ -10,6 +10,8 @@ import (
 
 type fakeWorkBeadStore struct {
 	issues          map[string]*beads.Issue
+	comments        map[string][]beads.Comment
+	commentsErr     error
 	closeCalls      []string
 	lastCloseReason string
 	closeErr        error
@@ -17,7 +19,19 @@ type fakeWorkBeadStore struct {
 }
 
 func newFakeWorkBeadStore() *fakeWorkBeadStore {
-	return &fakeWorkBeadStore{issues: map[string]*beads.Issue{}}
+	return &fakeWorkBeadStore{issues: map[string]*beads.Issue{}, comments: map[string][]beads.Comment{}}
+}
+
+// link adds the back-link gt done writes on a source bead for its MR.
+func (f *fakeWorkBeadStore) link(sourceID, mrID string) {
+	f.comments[sourceID] = append(f.comments[sourceID], beads.Comment{IssueID: sourceID, Author: "rig/polecats/nux", Text: beads.MRBackLinkComment(mrID)})
+}
+
+func (f *fakeWorkBeadStore) Comments(id string) ([]beads.Comment, error) {
+	if f.commentsErr != nil {
+		return nil, f.commentsErr
+	}
+	return f.comments[id], nil
 }
 
 func (f *fakeWorkBeadStore) add(issue *beads.Issue) {
@@ -64,6 +78,7 @@ func agentIssue(id string, desc string) *beads.Issue {
 func TestCloseMergedWorkBead_SourceIssueWinsOverAgentFallback(t *testing.T) {
 	work := newFakeWorkBeadStore()
 	work.add(workIssue("gt-source", string(beads.StatusOpen)))
+	work.link("gt-source", "gt-mr")
 	work.add(workIssue("gt-agent-hint", string(beads.StatusOpen)))
 	agent := newFakeWorkBeadStore()
 	agent.add(agentIssue("gt-agent", "active_mr: gt-mr\nlast_source_issue: gt-agent-hint\n"))
@@ -91,6 +106,7 @@ func TestCloseMergedWorkBead_SourceIssueWinsOverAgentFallback(t *testing.T) {
 func TestCloseMergedWorkBead_FallsBackToVerifiedAgentSource(t *testing.T) {
 	work := newFakeWorkBeadStore()
 	work.add(workIssue("gt-source", string(beads.StatusOpen)))
+	work.link("gt-source", "gt-mr")
 	agent := newFakeWorkBeadStore()
 	agent.add(agentIssue("gt-agent", "active_mr: gt-mr\nbranch: polecat/atom/gt-source+abc123\nlast_source_issue: gt-source\n"))
 
@@ -112,6 +128,7 @@ func TestCloseMergedWorkBead_FallsBackToVerifiedAgentSource(t *testing.T) {
 func TestCloseMergedWorkBead_FallsBackToCompletionMRID(t *testing.T) {
 	work := newFakeWorkBeadStore()
 	work.add(workIssue("gt-source", string(beads.StatusOpen)))
+	work.link("gt-source", "gt-mr")
 	agent := newFakeWorkBeadStore()
 	agent.add(agentIssue("gt-agent", "mr_id: gt-mr\nbranch: polecat/atom/gt-source+abc123\nlast_source_issue: gt-source\n"))
 
@@ -228,6 +245,7 @@ func TestCloseMergedWorkBead_AlreadyTerminalConcreteTargetIsNoop(t *testing.T) {
 func TestCloseMergedWorkBead_CloseErrorLeavesWorkOpen(t *testing.T) {
 	work := newFakeWorkBeadStore()
 	work.add(workIssue("gt-source", string(beads.StatusOpen)))
+	work.link("gt-source", "gt-mr")
 	work.closeErr = errors.New("dolt unavailable")
 
 	result := closeMergedWorkBead(work, nil, nil, mergedWorkBeadCloseRequest{MRID: "gt-mr", SourceIssue: "gt-source"})
@@ -243,6 +261,7 @@ func TestCloseMergedWorkBead_CloseErrorLeavesWorkOpen(t *testing.T) {
 func TestCloseMergedWorkBead_CloseErrorThenTerminalRaceSucceeds(t *testing.T) {
 	work := newFakeWorkBeadStore()
 	work.add(workIssue("gt-source", string(beads.StatusOpen)))
+	work.link("gt-source", "gt-mr")
 	work.closeErr = errors.New("lost close race")
 	work.closeErrCloses = true
 

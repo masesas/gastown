@@ -18,9 +18,11 @@ variables so the formula has correct settings baked in.
 
 Role is auto-detected from GT_ROLE (set by the daemon). Use --role to override.
 
-For refinery patrols, MQ config variables (run_tests, test_command,
-target_branch, etc.) are read from the rig's config.json and settings/config.json and
-passed as --var args to the wisp.
+For refinery patrols, the formula variables (target_branch, integration
+branch settings, merge_strategy, judgment_enabled, review_depth) are read from
+the rig's config.json and settings/config.json and passed as --var args to the
+wisp. Gates, run_tests and branch cleanup are not formula variables: gt mq
+merge reads them from the rig config itself.
 
 Examples:
   gt patrol new                  # Auto-detect role, create patrol

@@ -44,7 +44,7 @@ func (e *Engineer) landingStep(out MergeOutcome, mr *MRInfo, fields *beads.MRFie
 		merge, why := e.provenRecordedMerge(mr, fields)
 		if why != "" {
 			return stepRefuse, out.with(OutcomeNotEligible, fmt.Sprintf("%v: MR %s: commit_sha %s is already on origin/%s, but %s; "+
-				"it is not merged again and nothing is closed (resolve by hand: inspect the MR, then gt mq post-merge or gt mq reject it)",
+				"it is not merged again and nothing is closed (resolve by hand: inspect the MR; gt mq reject it if this is not its merge)",
 				ErrMRNotEligible, mr.ID, shortSHA(mr.CommitSHA), mr.Target, why))
 		}
 		out.MergeCommit = merge

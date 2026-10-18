@@ -207,7 +207,11 @@ Everything above manages Claude Code hooks. The rig pre-push guard is a
 **git** hook that Gas Town installs in every rig repository agents push from
 (gt-pd1c.72). It exists because instructions alone did not stop an agent: in a
 pilot the refinery merged nine MRs with a raw `git push origin temp-mr:<target>`
-and once landed an epic on `main` without approval. Project repos have no
+and once landed an epic on `main` without approval. Since gt-pd1c.78 tahap 3 the
+refinery lands MRs only with `gt mq merge`, and rule 2(c) below refuses every
+refinery push to a merge target that does not have `gt mq merge`'s shape (a
+hand-made merge of the same shape is not refused until stage 4 binds the push
+to the process; the formula's FORBIDDEN list is the rule). Project repos have no
 pre-push hook of their own, and the Gas Town repo's `.githooks/pre-push` only
 guards the Gas Town repo itself.
 
@@ -271,6 +275,7 @@ treat crew as an agent, as before.
 | Delete `integration/*` | allowed only when its tip is already contained in the default branch on the push remote (what `gt mq integration land` cleanup does); otherwise refused, so delete-then-merge cannot hide a land | allowed |
 | Default branch or `integration/*` that newly contains the tip of another `integration/*` branch (a land) | refused when `merge_queue.integration_branch_auto_land` is not `true`, **even with `GT_INTEGRATION_LAND=1`**; with auto-land on, allowed with `GT_INTEGRATION_LAND=1` (set by `gt mq integration land`) | refused unless `GT_INTEGRATION_LAND=1` |
 | Default branch or `integration/*` | every changed path in `remote_sha..local_sha` (new branch: merge-base of the remote default-branch tip, read with `ls-remote`, and `local_sha`) must match `merge_queue.allowed_paths`, when set | not scope-checked |
+| Update of the default branch or `integration/*` of a detected rig by the **refinery** (rule 2(c), gt-pd1c.78 tahap 3) | allowed only in the shape `gt mq merge` pushes: the new tip C is a merge commit with exactly two parents, C^1 is the current remote tip, C^2 is the `commit_sha` of an **open** `gt:merge-request` of this rig whose target is that branch (town merge queue), and C's tree equals `git merge-tree --write-tree C^1 C^2` (parents and merge-tree read like the landing proofs: replace refs, grafts and the commit-graph ignored). The one other shape is `gt mq integration land` (auto-land on, `GT_INTEGRATION_LAND=1`, C^2 the tip of an `integration/*` branch on the push remote). Refused: a fast-forward or a stack of commits, an octopus, a merge of anything that is not an open MR's `commit_sha` (closed MR, other target, other rig, no MR), a merge whose tree differs from the clean merge (changes added in the merge), a refinery creation of a target (except `gt mq integration create`'s covered `integration/*`), an unreadable merge queue. An MR that records no rig does not count. The pushed tree is read like the proofs too, so a local `git replace` cannot make an evil merge look clean. Every refusal points at `gt mq merge <rig> <mr-id>`. A shape proof only: a merge made by hand with the same shape passes, it does not prove which process pushed (stage 4 binds that) | not checked |
 
 The rig is derived from the real (symlink-resolved) git common dir of the
 repository, then the real working directory (`<town>/<rig>/...`, where the rig

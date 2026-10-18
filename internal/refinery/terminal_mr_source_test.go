@@ -44,6 +44,11 @@ case "${1:-}" in
     echo "Error: no issue found matching ${2}" >&2
     exit 1
     ;;
+  comments)
+    if [ -f "` + dir + `/${2}.comments.json" ]; then cat "` + dir + `/${2}.comments.json"; exit 0; fi
+    printf '%s\n' '[]'
+    exit 0
+    ;;
   *)
     printf '%s\n' '[]'
     exit 0
@@ -61,6 +66,8 @@ func terminalMRIssues(mrStatus, mrFields string) map[string]string {
 	return map[string]string{
 		"gt-wisp-mr1": `[{"id":"gt-wisp-mr1","title":"Merge: gt-work1","status":"` + mrStatus + `","issue_type":"task","ephemeral":true,"labels":["gt:merge-request"],"description":"branch: polecat/rust/gt-work1\ntarget: integration/gt-epic\nsource_issue: gt-work1\n` + mrFields + `"}]`,
 		"gt-work1":    `[{"id":"gt-work1","title":"Work","status":"hooked","issue_type":"task","description":""}]`,
+		// The back-link gt done wrote when it created the MR (gt-pd1c.89).
+		"gt-work1.comments": `[{"id":"c1","issue_id":"gt-work1","author":"rig/polecats/rust","text":"MR created: gt-wisp-mr1"}]`,
 	}
 }
 

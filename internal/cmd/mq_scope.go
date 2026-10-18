@@ -37,18 +37,15 @@ merge_queue.allowed_paths (settings/config.json).
 
 The command fetches origin, resolves the tip of origin/<branch> once and diffs
 origin/<target>...<tip>, so a branch re-pushed after submit is checked again.
-On success the last line is "Checked-SHA: <tip>"; the refinery formula merges
-exactly that commit, so a later push is not merged unchecked as long as the
-refinery follows the formula. Exit status is non-zero when any changed path
-is outside allowed_paths (the offending paths are listed), or when the check
-cannot be completed (fail closed). A rig without allowed_paths is unrestricted
-and always passes.
+On success the last line is "Checked-SHA: <tip>", the commit that was checked.
+Exit status is non-zero when any changed path is outside allowed_paths (the
+offending paths are listed), or when the check cannot be completed (fail
+closed). A rig without allowed_paths is unrestricted and always passes.
 
-Designed for the refinery patrol: run it before merge-push and treat a failure
-like a failed gate (FIX_NEEDED, do not merge). 'gt mq merge' runs the same
-check in code on the pinned commit_sha right before it merges, so a refinery
-that lands MRs with 'gt mq merge' needs no separate check-scope step; the
-submit-time gate is gt done / gt mq submit.
+A read-only diagnostic: it changes nothing. The gates that enforce the scope
+are gt done / gt mq submit (submit time), 'gt mq merge' (merge time: the same
+check in code on the pinned commit_sha right before it merges; the refinery
+runs no separate check-scope step) and the managed pre-push hook (push time).
 
 With --range, no MR or fetch is involved: the command checks the two-dot diff
 <old-sha>..<new-sha> in the current repository against the rig's allowed_paths
@@ -71,7 +68,7 @@ func init() {
 
 // mqCheckScopeManager resolves the MR to check.
 type mqCheckScopeManager interface {
-	FindMRForPostMerge(idOrBranch string) (*refinery.MergeRequest, error)
+	FindMRAnyStatus(idOrBranch string) (*refinery.MergeRequest, error)
 }
 
 // mqCheckScopeGit is the git surface check-scope needs.
@@ -115,7 +112,7 @@ func runMQCheckScopeFor(mgr mqCheckScopeManager, rigPath string, g mqCheckScopeG
 		// Unrestricted: no Checked-SHA; the refinery merges origin/<branch> as before.
 		return fmt.Sprintf("%s merge scope unrestricted (no merge_queue.allowed_paths)", style.Dim.Render("○")), nil
 	}
-	mr, err := mgr.FindMRForPostMerge(idOrBranch)
+	mr, err := mgr.FindMRAnyStatus(idOrBranch)
 	if err != nil {
 		return "", fmt.Errorf("merge scope: resolve MR %s: %w", idOrBranch, err)
 	}

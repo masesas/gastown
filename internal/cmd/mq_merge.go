@@ -107,31 +107,37 @@ func runMQMerge(cmd *cobra.Command, args []string) error {
 	return runMQMergeWith(ctx, refinery.NewEngineer(r), rigName, mrID, mqMergeJSON, os.Stdout, os.Stderr)
 }
 
-// mqMergeCallerAllowed lets the refinery, crew and humans (gtCaller.exempt)
-// merge; every other agent role, and conflicting identities, are refused. A
-// refinery or crew caller must belong to rigName: every rig its identity
-// variables name (GT_RIG, the rig of GT_ROLE and of BD_ACTOR) must be rigName,
-// and at least one must be set. A human shell and the overseer name no rig.
-// Like the other coordinator guards this reads the environment, so it stops
-// agents taking the wrong exit by mistake; it is not an authentication
-// boundary (stage 4 binds the process through the pre-receive hook).
+// mqMergeCallerAllowed is mqRefineryCallerAllowed for gt mq merge.
 func mqMergeCallerAllowed(c gtCaller, getenv func(string) string, rigName string) error {
+	return mqRefineryCallerAllowed("gt mq merge", c, getenv, rigName)
+}
+
+// mqRefineryCallerAllowed lets the refinery, crew and humans (gtCaller.exempt)
+// run a refinery merge command (gt mq merge, gt mq post-merge); every other
+// agent role, and conflicting identities, are refused. A refinery or crew
+// caller must belong to rigName: every rig its identity variables name
+// (GT_RIG, the rig of GT_ROLE and of BD_ACTOR) must be rigName, and at least
+// one must be set. A human shell and the overseer name no rig. Like the other
+// coordinator guards this reads the environment, so it stops agents taking
+// the wrong exit by mistake; it is not an authentication boundary (stage 4
+// binds the process through the pre-receive hook).
+func mqRefineryCallerAllowed(command string, c gtCaller, getenv func(string) string, rigName string) error {
 	if c.human() {
 		return nil
 	}
 	if !c.exempt() && c.role != RoleRefinery {
-		return fmt.Errorf("refusing gt mq merge from %s: only the refinery, crew or a human may merge", c.describe())
+		return fmt.Errorf("refusing %s from %s: only the refinery, crew or a human may merge", command, c.describe())
 	}
 	rigs := mqMergeCallerRigs(getenv)
 	if len(rigs) == 0 {
 		if c.role == roleOverseer {
 			return nil
 		}
-		return fmt.Errorf("refusing gt mq merge on rig %s from %s: the caller names no rig (GT_RIG or GT_ROLE <rig>/...)", rigName, c.describe())
+		return fmt.Errorf("refusing %s on rig %s from %s: the caller names no rig (GT_RIG or GT_ROLE <rig>/...)", command, rigName, c.describe())
 	}
 	for _, r := range rigs {
 		if !rig.SameName(r, rigName) {
-			return fmt.Errorf("refusing gt mq merge on rig %s from %s of rig %s: only the refinery or crew of %s may merge it", rigName, c.describe(), r, rigName)
+			return fmt.Errorf("refusing %s on rig %s from %s of rig %s: only the refinery or crew of %s may merge it", command, rigName, c.describe(), r, rigName)
 		}
 	}
 	return nil

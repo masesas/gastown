@@ -235,14 +235,23 @@ func TestRenderRole_Refinery_DefaultBranch(t *testing.T) {
 	if !strings.Contains(output, alwaysUse) {
 		t.Errorf("output missing %q - DefaultBranch not being used in integration-disabled guidance", alwaysUse)
 	}
-	if !strings.Contains(output, "git rebase origin/<rebase-target>") {
-		t.Error("output missing placeholder rebase command")
+	// gt-pd1c.78 tahap 3: the refinery merges only with gt mq merge.
+	for _, want := range []string{
+		"gt mq merge myrig <mr-id> --json",
+		"FORBIDDEN: `git merge`, `git rebase`, `git cherry-pick` or `git push` to the default branch or `integration/*`",
+		"FORBIDDEN: `bd close` or `bd update --status` on an MR bead or its source issue",
+		"FORBIDDEN: deleting polecat branches",
+		"FORBIDDEN: `--force` on `git push`",
+		"This list is the rule",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q", want)
+		}
 	}
-	if !strings.Contains(output, "git checkout <merge-target>") {
-		t.Error("output missing placeholder checkout command")
-	}
-	if !strings.Contains(output, "git push origin <merge-target>") {
-		t.Error("output missing placeholder push command")
+	for _, bad := range []string{"git merge --ff-only", "git push origin", "git rebase origin/", "git checkout -b temp", "bd close <id>"} {
+		if strings.Contains(output, bad) {
+			t.Errorf("output still tells the refinery to merge by hand: %q", bad)
+		}
 	}
 
 	// Verify it does NOT contain hardcoded "main" in git commands

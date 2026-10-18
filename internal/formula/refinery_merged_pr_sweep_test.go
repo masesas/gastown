@@ -11,7 +11,6 @@ func TestRefineryPatrolMergedPRSweepUsesAuthoritativeLookup(t *testing.T) {
 	queueScan := requireFormulaStep(t, f, "queue-scan")
 	mergedSweep := requireFormulaStep(t, f, "merged-pr-sweep")
 	processBranch := requireFormulaStep(t, f, "process-branch")
-	mergePush := requireFormulaStep(t, f, "merge-push")
 
 	if !containsStepNeed(mergedSweep, "queue-scan") {
 		t.Fatalf("merged-pr-sweep needs = %v, want queue-scan", mergedSweep.Needs)
@@ -26,8 +25,6 @@ func TestRefineryPatrolMergedPRSweepUsesAuthoritativeLookup(t *testing.T) {
 	}{
 		{"queue-scan", queueScan.Description},
 		{"merged-pr-sweep", mergedSweep.Description},
-		{"process-branch", processBranch.Description},
-		{"merge-push", mergePush.Description},
 	} {
 		if !strings.Contains(step.description, "gt mq pr-status") {
 			t.Fatalf("%s missing gt mq pr-status authoritative lookup", step.id)
@@ -38,9 +35,14 @@ func TestRefineryPatrolMergedPRSweepUsesAuthoritativeLookup(t *testing.T) {
 		strings.Contains(processBranch.Description, `bd close <mr-id> --reason "Branch no longer exists"`) {
 		t.Fatal("missing-branch guards must not close before authoritative PR lookup")
 	}
+	// A PR merged outside the refinery is finalized by gt mq merge (which
+	// only finalizes a merge bound to the MR) or reported; never closed by hand.
 	if !strings.Contains(mergedSweep.Description, "PR_STATE=MERGED") ||
-		!strings.Contains(mergedSweep.Description, "gt mq post-merge <rig> <mr-id> --skip-branch-delete") {
-		t.Fatal("merged-pr-sweep must drain MERGED PRs via post-merge with branch deletion skipped")
+		!strings.Contains(mergedSweep.Description, "gt mq merge <rig> <mr-id> --json") {
+		t.Fatal("merged-pr-sweep must hand MERGED PRs to gt mq merge")
+	}
+	if strings.Contains(mergedSweep.Description, "--skip-branch-delete") {
+		t.Fatal("merged-pr-sweep must not run gt mq post-merge on an open MR")
 	}
 	if !strings.Contains(mergedSweep.Description, "PR_STATE=CLOSED") ||
 		!strings.Contains(mergedSweep.Description, "do NOT send MERGED") {

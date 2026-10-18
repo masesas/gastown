@@ -455,29 +455,14 @@ func buildRefineryPatrolVars(ctx RoleContext) []string {
 		mq := settings.MergeQueue
 		vars = append(vars, fmt.Sprintf("integration_branch_refinery_enabled=%t", mq.IsRefineryIntegrationEnabled()))
 		vars = append(vars, fmt.Sprintf("integration_branch_auto_land=%t", mq.IsIntegrationBranchAutoLandEnabled()))
-		vars = append(vars, fmt.Sprintf("run_tests=%t", mq.IsRunTestsEnabled()))
-		if mq.SetupCommand != "" {
-			vars = append(vars, fmt.Sprintf("setup_command=%s", mq.SetupCommand))
-		}
-		if mq.TypecheckCommand != "" {
-			vars = append(vars, fmt.Sprintf("typecheck_command=%s", mq.TypecheckCommand))
-		}
-		if mq.LintCommand != "" {
-			vars = append(vars, fmt.Sprintf("lint_command=%s", mq.LintCommand))
-		}
-		if mq.TestCommand != "" {
-			vars = append(vars, fmt.Sprintf("test_command=%s", mq.TestCommand))
-		}
-		if mq.BuildCommand != "" {
-			vars = append(vars, fmt.Sprintf("build_command=%s", mq.BuildCommand))
-		}
-		vars = append(vars, fmt.Sprintf("delete_merged_branches=%t", mq.IsDeleteMergedBranchesEnabled()))
+		// Gates (run_tests, *_command), delete_merged_branches and
+		// require_review are not formula vars (gt-pd1c.78 D10): gt mq merge
+		// reads them from the rig config itself.
 		vars = append(vars, fmt.Sprintf("judgment_enabled=%t", mq.IsJudgmentEnabled()))
 		vars = append(vars, fmt.Sprintf("review_depth=%s", mq.GetReviewDepth()))
 		if mq.MergeStrategy != "" {
 			vars = append(vars, fmt.Sprintf("merge_strategy=%s", mq.MergeStrategy))
 		}
-		vars = append(vars, fmt.Sprintf("require_review=%t", mq.IsRequireReviewEnabled()))
 		return vars
 	}
 
@@ -495,7 +480,7 @@ func buildRefineryPatrolVars(ctx RoleContext) []string {
 					labelMap[label[:idx]] = label[idx+1:]
 				}
 			}
-			for _, key := range []string{"integration_branch_refinery_enabled", "integration_branch_auto_land", "run_tests", "delete_merged_branches", "setup_command", "typecheck_command", "lint_command", "test_command", "build_command", "merge_strategy", "require_review"} {
+			for _, key := range []string{"integration_branch_refinery_enabled", "integration_branch_auto_land", "merge_strategy"} {
 				if val := labelMap[key]; val != "" {
 					vars = append(vars, fmt.Sprintf("%s=%s", key, val))
 				}

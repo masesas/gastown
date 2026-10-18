@@ -146,3 +146,94 @@ func (g *prePushGuard) checkArchiveUpdate(u prePushUpdate) error {
 	}
 	return nil
 }
+
+// refineryMergeExit is the guidance appended to every rule 2(c) refusal.
+const refineryMergeExit = "The refinery lands work only with gt mq merge <rig> <mr-id> " +
+	"(a merge commit of an open MR's commit_sha onto the current tip, pushed by SHA)"
+
+// checkRefineryMerge is rule 2(c): a refinery update of a merge target of its
+// rig must have the shape gt mq merge pushes (see the file doc in
+// hooks_prepush.go). Other callers, and pushes outside a detected rig, are
+// not checked here. Everything that cannot be verified refuses.
+func (g *prePushGuard) checkRefineryMerge(u prePushUpdate, branch string, r *prePushRig) error {
+	c := gtCallerFrom(g.getenv)
+	if r == nil || c.exempt() || c.role != RoleRefinery {
+		return nil
+	}
+	refuse := func(why string) error {
+		return fmt.Errorf("BLOCKED: refinery push to %s refused: %s. %s", branch, why, refineryMergeExit)
+	}
+	if u.RemoteSHA == prePushZeroSHA {
+		if strings.HasPrefix(branch, integrationBranchPrefix) &&
+			mergeproof.CoveredByTargets(g.git, u.LocalSHA, g.tipResolver(g.coverageDefaults(r))) {
+			return nil // gt mq integration create: no new commit
+		}
+		return refuse("the refinery does not create merge targets")
+	}
+	parents, err := g.git.CommitParents(u.LocalSHA)
+	if err != nil {
+		return refuse("cannot read the parents of the pushed commit (" + firstLine(err.Error()) + "; fail closed)")
+	}
+	if len(parents) != 2 {
+		return refuse(fmt.Sprintf("the pushed commit %.12s has %d parent(s), not a merge of exactly two (a fast-forward or octopus is never pushed by gt mq merge)", u.LocalSHA, len(parents)))
+	}
+	if parents[0] != u.RemoteSHA {
+		return refuse(fmt.Sprintf("the merge's first parent %.12s is not the current remote tip %.12s", parents[0], u.RemoteSHA))
+	}
+	if err := g.cleanMergeTree(u.LocalSHA, parents); err != nil {
+		return refuse(err.Error())
+	}
+	if g.integrationLandMerge(u, r, parents[1]) {
+		return nil
+	}
+	if g.loadQueue == nil {
+		return refuse("the merge queue is not available (fail closed)")
+	}
+	mrID, err := g.loadQueue().OpenMergeRequestFor(r.name, branch, parents[1])
+	if err != nil {
+		return refuse("cannot read the merge queue: " + firstLine(err.Error()) + " (fail closed)")
+	}
+	if mrID == "" {
+		return refuse(fmt.Sprintf("the merged commit %.12s is not the commit_sha of an open merge request for %s", parents[1], branch))
+	}
+	return nil
+}
+
+// cleanMergeTree checks that commit's tree is exactly the clean merge of its
+// two parents: nothing was added, dropped or resolved by hand in the merge.
+func (g *prePushGuard) cleanMergeTree(commit string, parents []string) error {
+	want, err := g.git.MergeTreeWrite(parents[0], parents[1])
+	if err != nil {
+		return fmt.Errorf("the parents do not merge cleanly (%s)", firstLine(err.Error()))
+	}
+	// Read like the proofs: a local `git replace` of the pushed commit must
+	// not show the clean tree while the push sends the original object.
+	got, err := g.git.CommitTree(commit)
+	if err != nil {
+		return fmt.Errorf("cannot read the pushed tree (%s; fail closed)", firstLine(err.Error()))
+	}
+	if strings.TrimSpace(got) != strings.TrimSpace(want) {
+		return fmt.Errorf("the merge's tree %.12s differs from the clean merge of its parents %.12s (changes were added in the merge)", got, want)
+	}
+	return nil
+}
+
+// integrationLandMerge reports whether the merge is gt mq integration land's:
+// auto-land on for the rig, GT_INTEGRATION_LAND=1, and the merged commit the
+// tip of another integration/* branch on the push remote (checkLand already
+// allowed that land).
+func (g *prePushGuard) integrationLandMerge(u prePushUpdate, r *prePushRig, merged string) bool {
+	if g.getenv("GT_INTEGRATION_LAND") != "1" || !r.autoLand.enabled {
+		return false
+	}
+	tips, err := g.listRemote("refs/heads/" + integrationBranchPrefix)
+	if err != nil {
+		return false
+	}
+	for _, tip := range tips {
+		if tip.Name != u.RemoteRef && tip.Hash == merged {
+			return true
+		}
+	}
+	return false
+}

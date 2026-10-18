@@ -2,12 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/townlog"
@@ -22,9 +20,6 @@ var (
 
 	// Merge Request Rejected: <branch> - refinery rejected MR
 	patternMergeRejected = regexp.MustCompile(`^Merge Request Rejected:\s+(.+)`)
-
-	// Merge Request Completed: <branch> - refinery completed MR
-	patternMergeCompleted = regexp.MustCompile(`^Merge Request Completed:\s+(.+)`)
 
 	// HELP: <topic> - polecat requesting help
 	patternHelp = regexp.MustCompile(`^HELP:\s+(.+)`)
@@ -44,13 +39,12 @@ var (
 type CallbackType string
 
 const (
-	CallbackPolecatDone    CallbackType = "polecat_done"
-	CallbackMergeRejected  CallbackType = "merge_rejected"
-	CallbackMergeCompleted CallbackType = "merge_completed"
-	CallbackHelp           CallbackType = "help"
-	CallbackEscalation     CallbackType = "escalation"
-	CallbackSling          CallbackType = "sling"
-	CallbackUnknown        CallbackType = "unknown"
+	CallbackPolecatDone   CallbackType = "polecat_done"
+	CallbackMergeRejected CallbackType = "merge_rejected"
+	CallbackHelp          CallbackType = "help"
+	CallbackEscalation    CallbackType = "escalation"
+	CallbackSling         CallbackType = "sling"
+	CallbackUnknown       CallbackType = "unknown"
 	// NOTE: CallbackWitnessReport and CallbackRefineryReport removed.
 	// Routine status reports are no longer sent to Mayor.
 )
@@ -91,7 +85,6 @@ Reads unread messages from the Mayor's inbox and handles each based on
 its type:
 
   POLECAT_DONE       - Log completion, update stats
-  MERGE_COMPLETED    - Notify worker, close source issue
   MERGE_REJECTED     - Notify worker of rejection reason
   HELP:              - Route to human or handle if possible
   ESCALATION:        - Log and route to human
@@ -99,6 +92,8 @@ its type:
 
 Note: Witnesses and Refineries handle routine operations autonomously.
 They only send escalations for genuine problems, not status reports.
+Merges are finalized by the refinery merge engine (gt mq merge), never by a
+callback: a merge-completed mail closes nothing and is left unprocessed.
 
 Unknown message types are logged but left unprocessed.`,
 	RunE: runCallbacksProcess,
@@ -217,10 +212,6 @@ func processCallback(townRoot string, msg *mail.Message, dryRun bool) CallbackRe
 		result.Action, result.Error = handlePolecatDone(townRoot, msg, dryRun)
 		result.Handled = result.Error == nil
 
-	case CallbackMergeCompleted:
-		result.Action, result.Error = handleMergeCompleted(townRoot, msg, dryRun)
-		result.Handled = result.Error == nil
-
 	case CallbackMergeRejected:
 		result.Action, result.Error = handleMergeRejected(townRoot, msg, dryRun)
 		result.Handled = result.Error == nil
@@ -260,8 +251,6 @@ func classifyCallback(subject string) CallbackType {
 		return CallbackPolecatDone
 	case patternMergeRejected.MatchString(subject):
 		return CallbackMergeRejected
-	case patternMergeCompleted.MatchString(subject):
-		return CallbackMergeCompleted
 	case patternHelp.MatchString(subject):
 		return CallbackHelp
 	case patternEscalation.MatchString(subject):
@@ -304,53 +293,6 @@ func handlePolecatDone(townRoot string, msg *mail.Message, dryRun bool) (string,
 		msg.From, exitType, issueID))
 
 	return fmt.Sprintf("logged completion for %s", polecatName), nil
-}
-
-// handleMergeCompleted processes a merge completion callback from Refinery.
-func handleMergeCompleted(townRoot string, msg *mail.Message, dryRun bool) (string, error) {
-	matches := patternMergeCompleted.FindStringSubmatch(msg.Subject)
-	if len(matches) < 2 {
-		return "", fmt.Errorf("could not parse branch from subject: %q", msg.Subject)
-	}
-	branch := matches[1]
-
-	// Extract MR ID and source issue from body
-	var mrID, sourceIssue, mergeCommit string
-	for _, line := range strings.Split(msg.Body, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "MR:") {
-			mrID = strings.TrimSpace(strings.TrimPrefix(line, "MR:"))
-		}
-		if strings.HasPrefix(line, "Source:") {
-			sourceIssue = strings.TrimSpace(strings.TrimPrefix(line, "Source:"))
-		}
-		if strings.HasPrefix(line, "Commit:") {
-			mergeCommit = strings.TrimSpace(strings.TrimPrefix(line, "Commit:"))
-		}
-	}
-
-	if dryRun {
-		return fmt.Sprintf("would close source issue %s (mr=%s, commit=%s)",
-			sourceIssue, mrID, mergeCommit), nil
-	}
-
-	// Log the merge
-	logCallback(townRoot, fmt.Sprintf("merge_completed: branch %s merged (mr=%s, source=%s, commit=%s)",
-		branch, mrID, sourceIssue, mergeCommit))
-
-	// Close the source issue if we have it
-	if sourceIssue != "" {
-		cwd, _ := os.Getwd()
-		bd := beads.New(cwd)
-		reason := fmt.Sprintf("Merged in %s", mergeCommit)
-		if err := bd.Close(sourceIssue, reason); err != nil {
-			// Non-fatal: issue might already be closed or not exist
-			return fmt.Sprintf("logged merge for %s (could not close %s: %v)",
-				branch, sourceIssue, err), nil
-		}
-	}
-
-	return fmt.Sprintf("logged merge for %s, closed %s", branch, sourceIssue), nil
 }
 
 // handleMergeRejected processes a merge rejection callback from Refinery.

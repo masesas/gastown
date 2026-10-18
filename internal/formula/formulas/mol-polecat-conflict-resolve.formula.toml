@@ -259,7 +259,7 @@ description = """
 Push the resolved branch back to {{branch}} for the Refinery to retry.
 
 **Important:** Do not push directly to {{base_branch}} and do not close the MR
-or source issue yourself. The Refinery must run its verified post-merge cleanup.
+or source issue yourself. The Refinery lands it with `gt mq merge`, which closes both.
 
 **1. Merge target one more time (in case it moved):**
 ```bash
@@ -287,7 +287,7 @@ title = "Close this conflict-resolution task"
 needs = ["push-to-main"]
 description = """
 Close only the conflict-resolution task. Leave the original MR and source issue
-open; the Refinery closes them only after verified post-merge proof.
+open; the Refinery's `gt mq merge` closes them only after it proves the merge.
 
 **1. Close this task:**
 ```bash

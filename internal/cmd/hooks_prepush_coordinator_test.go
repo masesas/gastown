@@ -188,7 +188,9 @@ func TestPrePushGuardTargetUpdateRoles(t *testing.T) {
 			update: prePushUpd("refs/heads/integration/epic-b", f.epicSHA, testZeroSHA)},
 		{name: "mayor creates integration/* with new commits: blocked", rig: plain, env: []string{"GT_ROLE", "mayor"},
 			update: prePushUpd("refs/heads/integration/epic-b", f.good, testZeroSHA), wantErr: "agent role mayor"},
-		{name: "refinery push to main: unchanged (allowed)", rig: plain, env: []string{"GT_ROLE", "myrig/refinery"}, update: main},
+		// Rule 2(c): the refinery pushes only gt mq merge's merge shape
+		// (TestPrePushGuardRefineryMergeShape); a plain commit is refused.
+		{name: "refinery push of a plain commit to main: blocked (2(c))", rig: plain, env: []string{"GT_ROLE", "myrig/refinery"}, update: main, wantErr: "1 parent(s)"},
 		{name: "crew push to main: unchanged (allowed)", rig: plain, env: []string{"GT_ROLE", "myrig/crew/dom"}, update: main},
 		{name: "human push to main: unchanged (allowed)", rig: plain, update: main},
 		{name: "overseer push to main: allowed", rig: plain, env: []string{"BD_ACTOR", "overseer"}, update: main},

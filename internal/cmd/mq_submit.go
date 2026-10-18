@@ -275,16 +275,18 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 			style.PrintWarning("MR bead prefix mismatch: %v\nThe refinery may not find this MR — check 'gt mq list %s'", prefixErr, rigName)
 		}
 
-		// Nudge refinery to pick up the new MR
-		nudgeRefinery(rigName, "MERGE_READY received - check inbox for pending work")
-
-		// GH#2599: Back-link source issue to MR bead for discoverability.
+		// GH#2599: Back-link source issue to MR bead, before the refinery is
+		// nudged: it closes the source "Merged in <mr>" only when the source
+		// carries this back-link (gt-pd1c.89).
 		if issueID != "" {
-			comment := fmt.Sprintf("MR created: %s", mrIssue.ID)
-			if err := sourceBD.AddComment(issueID, comment); err != nil {
-				style.PrintWarning("could not back-link source issue %s to MR %s: %v", issueID, mrIssue.ID, err)
+			if err := sourceBD.AddComment(issueID, beads.MRBackLinkComment(mrIssue.ID)); err != nil {
+				style.PrintWarning("could not back-link source issue %s to MR %s: %v\nThe refinery will merge the MR but will not close %s until it carries the comment %q (add it with bd comments add).",
+					issueID, mrIssue.ID, err, issueID, beads.MRBackLinkComment(mrIssue.ID))
 			}
 		}
+
+		// Nudge refinery to pick up the new MR
+		nudgeRefinery(rigName, "MERGE_READY received - check inbox for pending work")
 
 		// Supersede older open MRs for the same source issue.
 		// When a new polecat reattempts an issue, the old MR (different branch)
