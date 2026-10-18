@@ -808,17 +808,38 @@ waiting; a second run is refused (`precondition`), and the engine's batch path
 takes the same lock. It refuses an MR that is not an open
 `gt:merge-request` of the rig, is blocked, is claimed by anyone but the rig's
 refinery (exactly `<rig>/refinery`, or one of its runs
-`<rig>/refinery/merge-<pid>-<n>`), records a `close_reason`, has
+`<rig>/refinery/merge-<pid>-<n>` whose process no longer exists on this host
+or is this process; a run whose pid is alive, or cannot be parsed, is never
+taken over), records a `close_reason` other than `merged`, has
 a `source_issue` that is not a plain bead id, a branch that is not a plain
 branch name, no full `commit_sha`, or a target that is not the rig default
 branch or `integration/*`. It claims the MR for this run
 (`<rig>/refinery/merge-<pid>-<n>`) and reads the claim back: if another writer
-won, it stops and leaves that claim alone. It then refuses a
+won, it stops and leaves that claim alone. Every bead write of the run is made
+as that claimant (bd actor `BEADS_ACTOR=<claimant>`): bd refuses to close a
+bead whose assignee is not the actor ("cannot close ...: assignee is ...,
+actor is ..."), so a run acting as the caller (a human's git user, or
+`<rig>/refinery`) could never close the MR it claimed. bd's audit trail
+therefore names the run claimant as the writer. It then refuses a
 refinery worktree with an unfinished merge/rebase/cherry-pick/revert, any
 uncommitted or untracked file, or a local target with commits missing on
 `origin/<target>` (they are never pushed; a local target that is only behind
 is fast-forwarded). A branch missing locally but on origin at exactly
-`commit_sha` is created there. It then rechecks eligibility (an MR whose bead
+`commit_sha` is created there (after the landing check below). Before
+merging it asks git whether `commit_sha` is already on the trusted target
+(the same proof as after a push). If so, the run finalizes without merging,
+gating or pushing again (`"already_landed": true`) only when the MR records
+`merge_commit` M, git proves M on the target, and M has exactly two parents
+with `commit_sha` as the second (the merge the engine pushed; it records M on
+the MR right after the push, before any finalize step that can fail). A
+`commit_sha` already on the target without such a merge (e.g. an MR whose
+`commit_sha` is some commit already on main) is refused `not_eligible`: it is
+not merged again and nothing is closed or mailed; resolve it by hand. An MR
+that records `close_reason: merged` without proof that `commit_sha` landed is
+refused (`not_eligible`, or `error` when git cannot decide) and nothing is
+closed. When git cannot decide for an MR without that verdict
+(e.g. a shallow clone whose boundary hides the branch base) the merge
+proceeds: the push check below refuses a merge that adds nothing. It then rechecks eligibility (an MR whose bead
 says `close_reason: merged` is closed only when git proves its `commit_sha` is
 on the trusted target; otherwise nothing is closed), runs the merge-scope
 gate, merges `commit_sha` with a merge commit, runs every gate on the merged
@@ -864,10 +885,13 @@ progress goes to stderr):
 `slot_timeout`, `branch_missing`, `cleanup_failed`, `precondition`, `error`;
 `message` explains a failure and `warnings` lists non-fatal problems (e.g.
 the MERGED mail could not be sent, or `run_tests=false` merged without gates);
-`gates_ran` counts the gate commands that ran. `cleanup_failed` means the merge
-is on origin but finalizing it failed: the proof, closing the MR, closing the
-source `Merged in <mr>`, or the branch cleanup. Fix the cause and run
-`gt mq post-merge <rig> <mr-id>`. The source counts as finalized when it was
+`gates_ran` counts the gate commands that ran; `already_landed` is set when
+the run only finalized an MR whose `commit_sha` was already on the target.
+`cleanup_failed` means the merge is on origin but finalizing it failed: the
+proof, closing the MR, closing the source `Merged in <mr>`, or the branch
+cleanup. Fix the cause and run the command in `next`: `gt mq merge <rig>
+<mr-id>` again while the MR is still open (it finds the landed commit and only
+finalizes), `gt mq post-merge <rig> <mr-id>` once the MR is closed. The source counts as finalized when it was
 closed `Merged in <mr>`, was already closed with a `Merged in ...` reason, or
 is not closed by a merge by design: the MR has no source bead, or the source
 is `no_merge`, `review_only` or `merge_strategy=local`. Anything else (the

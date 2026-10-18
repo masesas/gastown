@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -23,7 +24,9 @@ type MergeOutcomeKind string
 
 const (
 	// OutcomeMerged: merged, pushed, proven, MR closed as merged, source
-	// closed "Merged in <mr>", branch cleaned up, MERGED mailed.
+	// closed "Merged in <mr>", branch cleaned up, MERGED mailed. With
+	// already_landed the MR's commit_sha was already proven on its target, so
+	// nothing was merged or pushed again: only the finalize steps ran.
 	OutcomeMerged MergeOutcomeKind = "merged"
 	// OutcomeConflict: the MR conflicts with its target. A conflict-resolution
 	// task blocks the MR; the claim is released.
@@ -46,8 +49,10 @@ const (
 	// lost); the mayor is told.
 	OutcomeBranchMissing MergeOutcomeKind = "branch_missing"
 	// OutcomeCleanupFailed: the merge landed on origin but finalizing it
-	// (proof, closing the MR, or deleting the branch) failed. Fix the cause
-	// and run `gt mq post-merge <rig> <mr>`.
+	// (proof, closing the MR or its source, or deleting the branch) failed.
+	// Fix the cause and run the command in next: `gt mq merge <rig> <mr>` while
+	// the MR is still open (it finalizes the landed merge without merging
+	// again), `gt mq post-merge <rig> <mr>` once it is closed.
 	OutcomeCleanupFailed MergeOutcomeKind = "cleanup_failed"
 	// OutcomePrecondition: the refinery worktree or the configuration is not
 	// fit for a merge (dirty tree, unfinished merge/rebase, stray local
@@ -70,7 +75,12 @@ type MergeOutcome struct {
 	GatesRan      int              `json:"gates_ran"`
 	Message       string           `json:"message,omitempty"`
 	BranchCleanup *BranchCleanup   `json:"branch_cleanup,omitempty"`
-	Warnings      []string         `json:"warnings,omitempty"`
+	// AlreadyLanded: commit_sha was already proven on the target when this
+	// run started, so it only finalized the MR (no merge, gates or push).
+	AlreadyLanded bool `json:"already_landed,omitempty"`
+	// Next is the command that finishes the MR after a cleanup_failed.
+	Next     string   `json:"next,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Merged reports whether the MR was merged and fully finalized.
@@ -94,25 +104,48 @@ const mergeLockName = "refinery-merge.lock"
 // mergeClaimSeq makes per-run claimants unique within a process.
 var mergeClaimSeq uint64
 
-// refineryIdentity is this rig's refinery; claims by it, or by any of its
-// MergeOne runs ("<rig>/refinery/<run>"), are ours while we hold the merge
-// lock (an earlier run that died without releasing).
+// refineryIdentity is this rig's refinery; claims by it, or by one of its
+// MergeOne runs ("<rig>/refinery/<run>") that is no longer running, are ours
+// while we hold the merge lock.
 func (e *Engineer) refineryIdentity() string { return e.rig.Name + "/refinery" }
 
 // runClaimantPattern is the shape of a MergeOne run claimant after
-// "<rig>/refinery/" (newClaimant).
-var runClaimantPattern = regexp.MustCompile(`^merge-[0-9]+-[0-9]+$`)
+// "<rig>/refinery/" (newClaimant); the first number is the run's pid.
+var runClaimantPattern = regexp.MustCompile(`^merge-([0-9]+)-[0-9]+$`)
 
-// ownClaim reports whether an MR assignee is empty, exactly this rig's
-// refinery, or a MergeOne run claimant of it ("<rig>/refinery/merge-<pid>-<n>").
-func (e *Engineer) ownClaim(assignee string) bool {
+// ownClaim reports whether an MR assignee is ours to take: empty, exactly
+// this rig's refinery, or a stale MergeOne run claimant of it
+// (claimRefusal).
+func (e *Engineer) ownClaim(assignee string) bool { return e.claimRefusal(assignee, "<mr>") == "" }
+
+// claimRefusal says why assignee is not ours to take, or "" when it is. A run
+// claimant "<rig>/refinery/merge-<pid>-<n>" is stale, and so ours, when its
+// pid is this process (MergeOne holds the merge lock, so no other run of this
+// process is in flight) or no process with that pid exists on this host. A
+// live pid, or one that cannot be parsed, is refused: claims are never taken
+// from a run that may still be working.
+func (e *Engineer) claimRefusal(assignee, mrID string) string {
 	assignee = strings.TrimSpace(assignee)
 	id := e.refineryIdentity()
 	if assignee == "" || assignee == id {
-		return true
+		return ""
 	}
+	release := "release it first: gt refinery release " + mrID
 	run, ok := strings.CutPrefix(assignee, id+"/")
-	return ok && runClaimantPattern.MatchString(run)
+	assignee = util.OneLine(assignee, 120) // bead data: one line in messages
+	m := runClaimantPattern.FindStringSubmatch(run)
+	if !ok || m == nil {
+		return fmt.Sprintf("is claimed by %s (%s)", assignee, release)
+	}
+	pid, err := strconv.Atoi(m[1])
+	if err != nil || pid <= 0 {
+		return fmt.Sprintf("is claimed by %s, a merge run with an invalid pid (%s)", assignee, release)
+	}
+	if pid == os.Getpid() || !claimantProcessAlive(pid) {
+		return ""
+	}
+	return fmt.Sprintf("is claimed by %s, a merge run whose process %d is still running "+
+		"(let it finish; if it is stuck, stop it, or %s)", assignee, pid, release)
 }
 
 // newClaimant is a claimant unique to this MergeOne run, so the
@@ -144,9 +177,13 @@ func (e *Engineer) lockMergeWorktree() (func(), error) {
 
 // MergeOne lands one MR end to end, the single Go path for a refinery merge
 // (gt-pd1c.78 tahap 3): the rig merge lock; LoadConfig (gates required unless
-// run_tests=false); LoadMRForMerge; a compare-and-set claim;
-// CheckWorktreeReady; ProcessMRInfo (eligibility recheck, scope gate, merge,
-// gates, verified push); HandleMRInfoSuccess (proof, close "merged" + source
+// run_tests=false); LoadMRForMerge; a compare-and-set claim by a per-run
+// claimant, as which every bead write of the run is made (asClaimant: bd only
+// lets the assignee close a bead, gt-pd1c.93); CheckWorktreeReady; then, when
+// git already proves commit_sha on the target, only the finalize steps
+// (already_landed: a re-run after cleanup_failed never merges again);
+// otherwise ProcessMRInfo (eligibility recheck, scope gate, merge, gates,
+// verified push); HandleMRInfoSuccess (proof, close "merged" + source
 // "Merged in <mr>", branch cleanup, MERGED mail) or HandleMRInfoFailure. The
 // claim is released on every outcome that leaves the MR open. auto_push=false
 // is refused: a merge that is not pushed cannot be finalized. ctx cancels
@@ -165,7 +202,12 @@ func (e *Engineer) MergeOne(ctx context.Context, mrID string) (out MergeOutcome)
 		return out
 	}
 	claimant := e.newClaimant()
-	if out, ok = e.claimForMerge(out, mr, claimant); !ok {
+	run, err := e.asClaimant(claimant)
+	if err != nil {
+		return out.with(OutcomeError, fmt.Sprintf("act as claimant %s: %v", claimant, err))
+	}
+	fields, out, ok := run.claimForMerge(out, mr, claimant)
+	if !ok {
 		return out
 	}
 	terminal := false
@@ -173,12 +215,26 @@ func (e *Engineer) MergeOne(ctx context.Context, mrID string) (out MergeOutcome)
 		if terminal {
 			return
 		}
-		if err := e.ReleaseMR(mr.ID); err != nil {
+		if err := run.ReleaseMR(mr.ID); err != nil {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("release claim on %s: %v (run gt refinery release %s)", mr.ID, err, mr.ID))
 		}
 	}()
-	out, terminal = e.runMergeOne(ctx, out, mr)
+	out, terminal = run.runMergeOne(ctx, out, mr, fields)
 	return out
+}
+
+// asClaimant returns a copy of e whose bead operations all run as claimant
+// (beads.WithActor): the run owns its claim in bd's eyes, so bd's ownership
+// guards let it close the MR it claimed (gt-pd1c.93). The caller's identity
+// (a human's git user, or <rig>/refinery) never equals a run claimant.
+func (e *Engineer) asClaimant(claimant string) (*Engineer, error) {
+	scoped, err := e.beads.WithActor(claimant)
+	if err != nil {
+		return nil, err
+	}
+	run := *e
+	run.beads = scoped
+	return &run, nil
 }
 
 // prepareMergeOne loads the configuration and the MR; ok=false means out is
@@ -211,42 +267,54 @@ func (e *Engineer) prepareMergeOne(out MergeOutcome) (*MRInfo, MergeOutcome, boo
 
 // claimForMerge claims mr for this run and reads the claim back
 // (compare-and-set): when another writer won, the MR is not ours and its
-// claim is left alone.
-func (e *Engineer) claimForMerge(out MergeOutcome, mr *MRInfo, claimant string) (MergeOutcome, bool) {
+// claim is left alone. It returns the MR fields as read back with the claim.
+func (e *Engineer) claimForMerge(out MergeOutcome, mr *MRInfo, claimant string) (*beads.MRFields, MergeOutcome, bool) {
 	if err := e.ClaimMR(mr.ID, claimant); err != nil {
-		return out.with(OutcomeError, fmt.Sprintf("claim MR %s: %v", mr.ID, err)), false
+		return nil, out.with(OutcomeError, fmt.Sprintf("claim MR %s: %v", mr.ID, err)), false
 	}
 	issue, err := e.beads.Show(mr.ID)
 	if err != nil || issue == nil {
-		return out.with(OutcomeError, fmt.Sprintf("read back the claim on %s: %v (claim state unknown: check it, then gt refinery release %s)", mr.ID, err, mr.ID)), false
+		return nil, out.with(OutcomeError, fmt.Sprintf("read back the claim on %s: %v (claim state unknown: check it, then gt refinery release %s)", mr.ID, err, mr.ID)), false
 	}
 	if got := strings.TrimSpace(issue.Assignee); got != claimant {
-		return out.with(OutcomeNotEligible, fmt.Sprintf("%v: MR %s was claimed by %s while this run claimed it", ErrMRNotEligible, mr.ID, got)), false
+		return nil, out.with(OutcomeNotEligible, fmt.Sprintf("%v: MR %s was claimed by %s while this run claimed it", ErrMRNotEligible, mr.ID, got)), false
 	}
-	return out, true
+	fields := beads.ParseMRFields(issue)
+	if fields == nil {
+		fields = &beads.MRFields{}
+	}
+	return fields, out, true
 }
 
-// runMergeOne checks the worktree, merges and finalizes or reports the
-// failure. terminal: the MR is no longer open (keep the claim).
-func (e *Engineer) runMergeOne(ctx context.Context, out MergeOutcome, mr *MRInfo) (MergeOutcome, bool) {
-	if err := e.CheckWorktreeReady(mr); err != nil {
-		if errors.Is(err, ErrSourceBranchMissing) {
-			e.HandleMRInfoFailure(mr, ProcessResult{BranchNotFound: true, Error: err.Error()})
-			return out.with(OutcomeBranchMissing, err.Error()), false
-		}
-		if errors.Is(err, ErrWorktreeNotReady) {
-			return out.with(OutcomePrecondition, err.Error()), false
-		}
-		return out.with(OutcomeError, err.Error()), false
+// runMergeOne checks the worktree, then finalizes an MR whose commit_sha is
+// already on its target (a run that pushed but failed to finalize, or a merge
+// by hand) or merges it, and finalizes or reports the failure. fields are the
+// MR fields read back with the claim. terminal: the MR is no longer open
+// (keep the claim).
+func (e *Engineer) runMergeOne(ctx context.Context, out MergeOutcome, mr *MRInfo, fields *beads.MRFields) (MergeOutcome, bool) {
+	if err := e.checkWorktreeBase(mr); err != nil {
+		return e.worktreeRefusal(out, mr, err), false
 	}
 	if err := ctx.Err(); err != nil {
 		return out.with(OutcomeError, fmt.Sprintf("canceled before merge: %v", err)), false
+	}
+	var step mergeStep
+	step, out = e.landingStep(out, mr, fields)
+	switch step {
+	case stepFinalize:
+		return e.finalizeLanded(out, mr)
+	case stepRefuse:
+		return out, false
+	}
+	if err := e.ensureLocalSourceBranch(mr); err != nil {
+		return e.worktreeRefusal(out, mr, err), false
 	}
 
 	result := e.ProcessMRInfo(ctx, mr)
 	out.CommitSHA = mr.CommitSHA
 	out.GatesRan = result.GatesRan
 	if result.Success {
+		out = e.recordMergeCommit(out, mr, result.MergeCommit)
 		return e.finalizeMergeOne(out, mr, result)
 	}
 	kind := failureOutcomeKind(result)
@@ -260,6 +328,47 @@ func (e *Engineer) runMergeOne(ctx context.Context, out MergeOutcome, mr *MRInfo
 	// that close failed: then it is still open and the claim is released.
 	terminal := result.NoMerge && !e.mrIsOpen(mr.ID)
 	return out.with(kind, result.Error), terminal
+}
+
+// recordMergeCommit writes the pushed merge commit to the MR before any
+// finalize step that can fail, so a failed finalize always leaves the
+// evidence a re-run needs to finalize without merging again (landingStep).
+// A failed write is a warning: the finalize below records it again.
+func (e *Engineer) recordMergeCommit(out MergeOutcome, mr *MRInfo, merge string) MergeOutcome {
+	merge = strings.TrimSpace(merge)
+	if merge == "" || mr == nil || strings.TrimSpace(mr.ID) == "" || e.isSyntheticMergeMechanicsMR(mr) {
+		return out
+	}
+	err := func() error {
+		issue, err := e.beads.Show(mr.ID)
+		if err != nil || issue == nil {
+			return fmt.Errorf("read MR: %v", err)
+		}
+		fields := beads.ParseMRFields(issue)
+		if fields == nil {
+			return errors.New("MR has no merge-request fields")
+		}
+		fields.MergeCommit = merge
+		desc := beads.SetMRFields(issue, fields)
+		return e.beads.Update(mr.ID, beads.UpdateOptions{Description: &desc})
+	}()
+	if err != nil {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("record merge_commit %s on %s: %v (a failed finalize then needs gt mq post-merge)",
+			shortSHA(merge), mr.ID, err))
+	}
+	return out
+}
+
+// worktreeRefusal maps a CheckWorktreeReady error to the outcome.
+func (e *Engineer) worktreeRefusal(out MergeOutcome, mr *MRInfo, err error) MergeOutcome {
+	if errors.Is(err, ErrSourceBranchMissing) {
+		e.HandleMRInfoFailure(mr, ProcessResult{BranchNotFound: true, Error: err.Error()})
+		return out.with(OutcomeBranchMissing, err.Error())
+	}
+	if errors.Is(err, ErrWorktreeNotReady) {
+		return out.with(OutcomePrecondition, err.Error())
+	}
+	return out.with(OutcomeError, err.Error())
 }
 
 // mrIsOpen reports whether MR id is still open (true when it cannot be read,
@@ -285,8 +394,18 @@ func (e *Engineer) finalizeMergeOne(out MergeOutcome, mr *MRInfo, result Process
 	if report.OK() {
 		return out.with(OutcomeMerged, ""), true
 	}
-	msg := fmt.Sprintf("merge %s landed on origin/%s but %v; fix the cause, then run: gt mq post-merge %s %s",
-		shortSHA(result.MergeCommit), mr.Target, report.Err(), e.rig.Name, mr.ID)
+	// While the MR is open, re-running the engine finalizes it (the landed
+	// commit is detected, nothing is merged again); once it is closed, only
+	// the post-merge cleanup is left.
+	out.Next = fmt.Sprintf("gt mq merge %s %s", e.rig.Name, mr.ID)
+	if report.MRClosed() {
+		out.Next = fmt.Sprintf("gt mq post-merge %s %s", e.rig.Name, mr.ID)
+	}
+	landed := "merge " + shortSHA(result.MergeCommit)
+	if strings.TrimSpace(result.MergeCommit) == "" {
+		landed = "commit_sha " + shortSHA(mr.CommitSHA)
+	}
+	msg := fmt.Sprintf("%s landed on origin/%s but %v; fix the cause, then run: %s", landed, mr.Target, report.Err(), out.Next)
 	return out.with(OutcomeCleanupFailed, msg), report.MRClosed()
 }
 
@@ -324,11 +443,13 @@ func (e *Engineer) waitPendingMail() {
 	}
 }
 
-// LoadMRForMerge reads MR mrID and returns it when it may be merged now: a
-// gt:merge-request bead of this rig, open, not owned-direct, with a plain
+// LoadMRForMerge reads MR mrID and returns it when it may be merged (or, when
+// it already landed, finalized) now: a gt:merge-request bead of this rig,
+// open, not owned-direct, no close_reason other than merged, with a plain
 // branch name, a trusted target (the rig default branch or integration/*,
 // mergeproof.UntrustedMergeTarget), a full commit_sha, no unresolved
-// blocker, and unassigned or claimed by this refinery. Refusals wrap
+// blocker, and unassigned, claimed by this refinery, or claimed by one of its
+// runs that is no longer running (claimRefusal). Refusals wrap
 // ErrMRNotEligible; read failures do not.
 func (e *Engineer) LoadMRForMerge(mrID string) (*MRInfo, error) {
 	if !beads.IsSafeID(mrID) {
@@ -369,8 +490,11 @@ func (e *Engineer) mergeIneligibility(issue *beads.Issue) (*beads.MRFields, stri
 	if fields.Rig != "" && !rig.SameName(fields.Rig, e.rig.Name) {
 		return nil, fmt.Sprintf("belongs to rig %s", fields.Rig)
 	}
-	if reason := strings.TrimSpace(fields.CloseReason); reason != "" {
-		return nil, fmt.Sprintf("records close_reason %q; an MR with a close verdict is not merged again (gt mq post-merge finalizes a landed one)", util.OneLine(reason, 80))
+	// close_reason merged is left to MergeOne: it finalizes the MR when git
+	// proves commit_sha landed and refuses it otherwise. Any other verdict
+	// (rejected, superseded, ...) is final.
+	if reason := strings.TrimSpace(fields.CloseReason); reason != "" && !strings.EqualFold(reason, string(CloseReasonMerged)) {
+		return nil, fmt.Sprintf("records close_reason %q; an MR with a close verdict is not merged again", util.OneLine(reason, 80))
 	}
 	if src := strings.TrimSpace(fields.SourceIssue); src != "" && !beads.IsSafeID(src) {
 		return nil, fmt.Sprintf("source_issue %q is not a plain bead id", util.OneLine(src, 80))
@@ -390,8 +514,8 @@ func (e *Engineer) mergeIneligibility(issue *beads.Issue) (*beads.MRFields, stri
 	if blocker := beads.FirstUnresolvedBlockerID(issue); blocker != "" || beads.HasUnresolvedBlockers(issue) {
 		return nil, fmt.Sprintf("is blocked by %s", firstNonEmpty(blocker, "an open dependency"))
 	}
-	if assignee := strings.TrimSpace(issue.Assignee); !e.ownClaim(assignee) {
-		return nil, fmt.Sprintf("is claimed by %s (release it first: gt refinery release %s)", assignee, issue.ID)
+	if refusal := e.claimRefusal(issue.Assignee, issue.ID); refusal != "" {
+		return nil, refusal
 	}
 	return fields, ""
 }
@@ -405,6 +529,16 @@ func (e *Engineer) mergeIneligibility(issue *beads.Issue) (*beads.MRFields, stri
 // commit_sha, a local branch is created there (D6). Refusals wrap
 // ErrWorktreeNotReady or ErrSourceBranchMissing.
 func (e *Engineer) CheckWorktreeReady(mr *MRInfo) error {
+	if err := e.checkWorktreeBase(mr); err != nil {
+		return err
+	}
+	return e.ensureLocalSourceBranch(mr)
+}
+
+// checkWorktreeBase is CheckWorktreeReady without the source branch step:
+// no unfinished operation, a clean tree, origin fetched, a sound local
+// target. MergeOne runs it before deciding whether the MR already landed.
+func (e *Engineer) checkWorktreeBase(mr *MRInfo) error {
 	if op, err := e.git.OperationInProgress(); err != nil {
 		return fmt.Errorf("%w: %v", ErrWorktreeNotReady, err)
 	} else if op != "" {
@@ -421,10 +555,7 @@ func (e *Engineer) CheckWorktreeReady(mr *MRInfo) error {
 	if err := e.git.Fetch("origin"); err != nil {
 		return fmt.Errorf("%w: fetch origin: %v", ErrWorktreeNotReady, err)
 	}
-	if err := e.checkLocalTarget(mr.Target); err != nil {
-		return err
-	}
-	return e.ensureLocalSourceBranch(mr)
+	return e.checkLocalTarget(mr.Target)
 }
 
 // checkLocalTarget refuses a local target branch with commits that are not

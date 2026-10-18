@@ -61,7 +61,19 @@ the outcome is printed as one JSON object on stdout in every case (engine
 progress goes to stderr); "kind" is one of merged, conflict, gates_failed,
 scope_violation, not_eligible, needs_approval, slot_timeout, branch_missing,
 cleanup_failed, precondition, error. cleanup_failed means the merge is on
-origin but finalizing failed: fix the cause and run 'gt mq post-merge'.
+origin but finalizing failed: fix the cause and run the command in "next"
+('gt mq merge' again while the MR is open, 'gt mq post-merge' once it is
+closed).
+
+An MR whose own merge is already on the target (a run that pushed but failed
+to finalize: the MR records merge_commit, git proves it on the target and its
+second parent is commit_sha) is not merged again: the run only finalizes it
+(close, source close, branch cleanup, MERGED) and reports "already_landed":
+true. A commit_sha already on the target without such a recorded merge is
+refused (not_eligible); resolve it by hand. The run claims the MR as <rig>/refinery/merge-<pid>-<n>
+and makes every bead write as that claimant, because bd only lets a bead's
+assignee close it. A claim left by such a run is taken over only when its
+process no longer runs on this host.
 
 Examples:
   gt mq merge gastown gt-mr-abc123
@@ -192,16 +204,27 @@ func printMQMergeOutcome(w io.Writer, rigName string, out refinery.MergeOutcome)
 			_, _ = fmt.Fprintf(w, "  %s\n", out.Message)
 		}
 		if out.Kind == refinery.OutcomeCleanupFailed {
-			_, _ = fmt.Fprintf(w, "  The merge is on origin. After fixing the cause run: gt mq post-merge %s %s\n", rigName, out.MRID)
+			next := out.Next
+			if next == "" {
+				next = fmt.Sprintf("gt mq post-merge %s %s", rigName, out.MRID)
+			}
+			_, _ = fmt.Fprintf(w, "  The merge is on origin. After fixing the cause run: %s\n", next)
 		}
 		printMQMergeWarnings(w, out)
 		return
 	}
-	_, _ = fmt.Fprintf(w, "%s Merged %s into %s: %s\n", style.Bold.Render("✓"), out.MRID, out.Target, shortMQMergeSHA(out.MergeCommit))
+	if out.AlreadyLanded {
+		_, _ = fmt.Fprintf(w, "%s Finalized %s: commit %s was already on %s (not merged again)\n",
+			style.Bold.Render("✓"), out.MRID, shortMQMergeSHA(out.CommitSHA), out.Target)
+	} else {
+		_, _ = fmt.Fprintf(w, "%s Merged %s into %s: %s\n", style.Bold.Render("✓"), out.MRID, out.Target, shortMQMergeSHA(out.MergeCommit))
+	}
 	if out.SourceIssue != "" {
 		_, _ = fmt.Fprintf(w, "  Source %s closed (Merged in %s)\n", out.SourceIssue, out.MRID)
 	}
-	_, _ = fmt.Fprintf(w, "  Gates: %d ran\n", out.GatesRan)
+	if !out.AlreadyLanded {
+		_, _ = fmt.Fprintf(w, "  Gates: %d ran\n", out.GatesRan)
+	}
 	if c := out.BranchCleanup; c != nil {
 		switch {
 		case c.RemoteDeleted && c.LocalDeleted:

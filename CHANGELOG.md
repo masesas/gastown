@@ -24,6 +24,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`gt mq merge` can close the MR it claimed** — bd 1.3.0 refuses `bd close`
+  when the bead's assignee is not the actor, and the engine claimed the MR as
+  its run (`<rig>/refinery/merge-<pid>-<n>`) but wrote as the caller (a
+  human's git user, or `<rig>/refinery`), so every merge pushed and then ended
+  `cleanup_failed` with the MR open and the source unclosed. Each run now makes
+  all its bead writes as its claimant (`beads.Beads.WithActor`, bd
+  `BEADS_ACTOR`), without `--force`. Recovery is built in: re-running
+  `gt mq merge <rig> <mr>` on an open MR whose own merge is already on the
+  target only finalizes it (`"already_landed": true`: close, source
+  `Merged in <mr>`, branch cleanup, MERGED; no merge, gates or push). That
+  needs the MR's recorded `merge_commit`, proven on the target by git, with two
+  parents and `commit_sha` as the second (recorded right after the push); a
+  `commit_sha` already on the target without it is refused, never finalized or
+  merged again (security review H1: otherwise any commit on main could close an
+  arbitrary source "Merged in"). An MR
+  recording `close_reason: merged` without that proof is refused, and a
+  leftover run claim is taken over only when its process no longer exists. A
+  `cleanup_failed` outcome now names the command to run in `next`
+  (gt-pd1c.93). The MergeOne test store enforces bd's ownership guards, which
+  the in-process store does not, so this class of bug fails tests.
 - **Role worktrees stay clean: gt no longer edits a tracked `.gitignore`** —
   starting the refinery or witness and `gt crew add` appended a
   `# Gas Town (added by gt)` block to the worktree's tracked `.gitignore`, so

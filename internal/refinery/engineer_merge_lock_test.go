@@ -2,6 +2,7 @@ package refinery
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,14 +64,14 @@ func TestMergeLockFileIsPrivate(t *testing.T) {
 	}
 }
 
-// 3: only the rig's refinery identity and its MergeOne run claimants count
-// as ours.
+// 3: only the rig's refinery identity and its MergeOne run claimants that
+// no longer run count as ours (liveness: TestOwnClaim_RunClaimantLiveness).
 func TestOwnClaim(t *testing.T) {
 	e := &Engineer{rig: &rig.Rig{Name: "testrig"}}
 	for assignee, want := range map[string]bool{
-		"":                             true,
-		"testrig/refinery":             true,
-		"testrig/refinery/merge-12-3":  true,
+		"":                 true,
+		"testrig/refinery": true,
+		fmt.Sprintf("testrig/refinery/merge-%d-3", deadPID(t)): true,
 		"testrig/refinery/x":           false,
 		"testrig/refinery/merge-a-b":   false,
 		"testrig/refinery/merge-1-2/x": false,
