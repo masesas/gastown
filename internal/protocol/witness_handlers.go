@@ -60,8 +60,8 @@ func (h *DefaultWitnessHandler) HandleMerged(payload *MergedPayload) error {
 		// Continue - notification is best-effort
 	}
 
-	// Initiate polecat cleanup using AutoNukeIfClean
-	// This verifies cleanup_status before nuking to prevent work loss.
+	// AutoNukeIfClean never nukes (persistent polecats, gt-4ac); any nuke goes
+	// through gt polecat nuke, which decides from git (gt-pd1c.96).
 	nukeResult := witness.AutoNukeIfClean(h.WorkDir, h.Rig, payload.Polecat)
 	if nukeResult.Nuked {
 		fmt.Fprintf(h.Output, "[Witness] ✓ Auto-nuked polecat %s: %s\n", payload.Polecat, nukeResult.Reason)

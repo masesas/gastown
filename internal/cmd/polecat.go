@@ -189,8 +189,9 @@ This is the nuclear option for post-merge cleanup. It:
   4. Closes the agent bead (if exists)
 
 SAFETY CHECKS: The command refuses to nuke a polecat if:
-  - cleanup_status is dirty, unknown, or missing
-  - Worktree fallback detects unpushed/uncommitted/stashed changes
+  - Its worktree has unpushed (not proven on the remote), uncommitted or stashed
+    work, or its git state cannot be read (checked now, whatever the agent bead says)
+  - cleanup_status on the agent bead is dirty, unknown, or missing (unless provably stale)
   - Polecat has an open merge request (MR bead or active_mr)
   - Polecat has work on its hook
 
@@ -239,9 +240,10 @@ var polecatCheckRecoveryCmd = &cobra.Command{
 	Long: `Check recovery status of a polecat based on cleanup_status, active_mr, and merge queue state.
 
 Used by the Witness to determine appropriate cleanup action:
-  - SAFE_TO_NUKE: cleanup_status is 'clean', active_mr is terminal, AND work submitted to merge queue
+  - SAFE_TO_NUKE: the worktree's git state (checked now) is clean, cleanup_status is 'clean',
+    active_mr is terminal, AND work submitted to merge queue
   - NEEDS_MQ_SUBMIT: git is clean but work was never submitted to the merge queue
-  - NEEDS_RECOVERY: cleanup_status, active_mr, or fallback git predicates require recovery
+  - NEEDS_RECOVERY: git state, cleanup_status, or active_mr require recovery
 
 This prevents accidental data loss when cleaning up dormant polecats.
 The Witness should escalate NEEDS_RECOVERY and NEEDS_MQ_SUBMIT cases to the Mayor.
@@ -992,7 +994,7 @@ func getGitStateWithTargets(worktreePath string, targets []string) (*GitState, e
 	}
 
 	worktreeGit := git.NewGit(worktreePath)
-	workStatus, err := worktreeGit.CheckUncommittedWork()
+	workStatus, err := worktreeGit.CheckWorktreeWork()
 	if err != nil {
 		return nil, fmt.Errorf("git status: %w", err)
 	}
@@ -1009,18 +1011,17 @@ func getGitStateWithTargets(worktreePath string, targets []string) (*GitState, e
 
 	branch, _ := worktreeGit.CurrentBranch()
 	preservation, preserveErr := worktreeGit.BranchPreservationStatus(branch, "origin", targets)
-	if preserveErr != nil && (errors.Is(preserveErr, git.ErrRemoteProofUnavailable) || workStatus.UnpushedUnverified) {
-		// No remote proof is not "preserved" (gt-pd1c.86): callers treat the
-		// error as git_state=unknown and refuse to nuke or reuse.
+	if preserveErr != nil {
+		// Any preservation error means "not proven preserved" (gt-pd1c.86,
+		// gt-pd1c.96): callers treat it as git_state=unknown and refuse to
+		// nuke or reuse.
 		return nil, unprovenPreservationError(branch, preserveErr)
 	}
-	if preserveErr == nil {
-		state.ComparisonBase = preservation.ComparisonBase
-		state.UnpreservedPatchCount = preservation.UnpreservedPatchCount
-		if preservation.UnpreservedPatchCount > 0 {
-			state.UnpushedCommits = preservation.UnpreservedPatchCount
-			state.Clean = false
-		}
+	state.ComparisonBase = preservation.ComparisonBase
+	state.UnpreservedPatchCount = preservation.UnpreservedPatchCount
+	if preservation.UnpreservedPatchCount > 0 {
+		state.UnpushedCommits = preservation.UnpreservedPatchCount
+		state.Clean = false
 	}
 
 	// Check for stashes using Git.StashCount() which filters by current branch.
@@ -1367,7 +1368,7 @@ func activeMRGitSafeForWorktree(worktreePath string) bool {
 	if err != nil || branch == "" {
 		return false
 	}
-	status, err := g.CheckUncommittedWork()
+	status, err := g.CheckWorktreeWork()
 	if err != nil || !status.CleanExcludingRuntime() || status.StashCount > 0 || status.CommitsAtRisk() {
 		return false
 	}
@@ -2150,6 +2151,37 @@ func cleanupOrphanedProcesses() {
 	}
 }
 
+// cleanupStalePolecats nukes the stale polecats in infos that pass the nuke
+// safety check (checkPolecatSafety) and returns how many were nuked. nuke gets the polecat name and whether to purge closed
+// ephemeral beads itself (false when the caller purges once for the batch).
+func cleanupStalePolecats(infos []*polecat.StalenessInfo, target func(name string) polecatTarget, nuke func(name string, purge bool) error) int {
+	stale := 0
+	for _, info := range infos {
+		if info.IsStale {
+			stale++
+		}
+	}
+	nuked := 0
+	for _, info := range infos {
+		if !info.IsStale {
+			continue
+		}
+		// Same gate as gt polecat nuke without --force (gt-pd1c.96 M2): the
+		// staleness scan is not proof that nothing would be lost.
+		if res := checkPolecatSafety(target(info.Name)); res.Blocked {
+			fmt.Printf("Skipping %s: %s\n", info.Name, strings.Join(res.Reasons, "; "))
+			continue
+		}
+		fmt.Printf("Nuking %s...\n", info.Name)
+		if err := nuke(info.Name, stale <= 1); err != nil {
+			fmt.Printf("  %s (%v)\n", style.Error.Render("failed"), err)
+		} else {
+			nuked++
+		}
+	}
+	return nuked
+}
+
 func runPolecatStale(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	mgr, r, err := getPolecatManager(rigName)
@@ -2243,19 +2275,14 @@ func runPolecatStale(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			fmt.Printf("Cleaning up %d stale polecat(s)...\n", staleCount)
-			nuked := 0
 			batchPurge := staleCount > 1
-			for _, info := range staleInfos {
-				if !info.IsStale {
-					continue
-				}
-				fmt.Printf("Nuking %s...\n", info.Name)
-				if err := nukePolecatFullWithOptions(info.Name, rigName, mgr, r, nukePolecatOptions{PurgeClosedEphemerals: !batchPurge}); err != nil {
-					fmt.Printf("  %s (%v)\n", style.Error.Render("failed"), err)
-				} else {
-					nuked++
-				}
-			}
+			nuked := cleanupStalePolecats(staleInfos,
+				func(name string) polecatTarget {
+					return polecatTarget{rigName: rigName, polecatName: name, mgr: mgr, r: r}
+				},
+				func(name string, purge bool) error {
+					return nukePolecatFullWithOptions(name, rigName, mgr, r, nukePolecatOptions{PurgeClosedEphemerals: purge})
+				})
 			if batchPurge && nuked > 0 {
 				purgeClosedEphemeralBeads(beads.New(r.Path))
 			}

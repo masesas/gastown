@@ -76,6 +76,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unused "Merge Request Completed:" callback closed its `Source:` bead with
   `Merged in <commit sha>` on any sender's word; it is removed and such a mail
   is left unprocessed.
+- **Nuke, remove, repair and slot reuse decide from git, not from the agent's
+  cleanup_status** — `gt polecat nuke`'s safety check, `Manager.RemoveWithOptions`
+  (`gt polecat remove`), `RepairWorktree` and broken-sandbox reclaim skipped the
+  git check whenever the polecat's agent bead said `cleanup_status: clean`, a
+  value the agent itself wrote (`gt done --cleanup-status=clean`, or `bd`), so
+  unpushed or uncommitted work could be discarded without the remote proof of
+  gt-pd1c.86. All of them now compute the worktree state at decision time
+  (`git.CheckUncommittedWork`, remote preservation proof); the bead value can
+  only add a blocker or a report. A local git error (status, stash) or a
+  worktree git cannot read now refuses (`polecat.ErrWorkUnproven`,
+  `*polecat.UnprovenWorkError`) instead of proceeding; `--force` still
+  discards (gt-pd1c.95). A structurally broken idle sandbox is therefore no
+  longer reclaimed automatically; discard it with `gt polecat nuke --force`.
+  Git only counts as proof for the worktree's own checkout: new
+  `Git.VerifyWorktreeRoot` / `Git.CheckWorktreeWork` (`git.ErrNotWorktreeRoot`,
+  which `rig.ErrNotWorktreeRoot` now is) refuse a worktree whose `.git` is gone
+  and that git would resolve to an enclosing repository (e.g. a git-initialized
+  town root reporting clean). `gt polecat stale --cleanup` now nukes only
+  polecats that pass the `gt polecat nuke` safety check, and a stale scan that
+  cannot read a worktree's git state no longer calls it stale
+  (`StalenessInfo.GitCheckError`). The nuke git-state check treats every
+  preservation error as unproven, not only an unreachable remote.
+  **Breaking:** `gt done --cleanup-status` is removed; gt done always computes
+  the status from git and records it, `unknown` included (gt-pd1c.96).
 
 - **`gt mq merge` can close the MR it claimed** — bd 1.3.0 refuses `bd close`
   when the bead's assignee is not the actor, and the engine claimed the MR as

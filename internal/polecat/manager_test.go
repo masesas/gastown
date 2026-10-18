@@ -2170,28 +2170,9 @@ func TestCleanupOrphanPolecatStatePreservesOldLayoutWorktree(t *testing.T) {
 	}
 }
 
-func TestReclaimBrokenIdlePolecatRemovesCleanStructuralFailure(t *testing.T) {
-	mgr, _ := setupCanonicalBranchManagerTest(t)
-	mgr.tmux = tmux.NewTmux()
-	if !mgr.tmux.IsAvailable() {
-		t.Skip("tmux is required to prove no live polecat session")
-	}
-
-	p, err := mgr.AddWithOptions("toast", AddOptions{})
-	if err != nil {
-		t.Fatalf("AddWithOptions: %v", err)
-	}
-	if err := os.Remove(filepath.Join(p.ClonePath, ".git")); err != nil {
-		t.Fatalf("break worktree .git: %v", err)
-	}
-
-	if err := mgr.ReclaimBrokenIdlePolecat("toast"); err != nil {
-		t.Fatalf("ReclaimBrokenIdlePolecat: %v", err)
-	}
-	if _, err := os.Stat(mgr.polecatDir("toast")); !os.IsNotExist(err) {
-		t.Fatalf("polecat dir still exists after reclaim, stat err=%v", err)
-	}
-}
+// TestReclaimBrokenIdlePolecatRefusesWithoutGitProof (removal_proof_test.go)
+// replaces the former "removes clean structural failure" test: the clean claim
+// came from the agent bead, which is no proof (gt-pd1c.96).
 
 func TestReclaimBrokenIdlePolecatFailsClosedWithoutSessionEvidence(t *testing.T) {
 	mgr, _ := setupCanonicalBranchManagerTest(t)

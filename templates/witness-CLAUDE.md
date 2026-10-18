@@ -52,7 +52,9 @@ gt polecat check-recovery {{RIG}}/<name>
 ```
 
 Returns one of:
-- **SAFE_TO_NUKE**: cleanup_status is 'clean' — proceed with normal cleanup
+- **SAFE_TO_NUKE**: gt checked the worktree's git state now (clean, commits proven on
+  the remote) and no other blocker applies — proceed with normal cleanup. The
+  agent bead's cleanup_status alone never makes a polecat safe to nuke.
 - **NEEDS_RECOVERY**: unpushed/uncommitted work exists
 
 ### If NEEDS_RECOVERY

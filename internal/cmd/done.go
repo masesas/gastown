@@ -70,7 +70,7 @@ var (
 	doneIssue         string
 	donePriority      int
 	doneStatus        string
-	doneCleanupStatus string
+	doneCleanupStatus string // computed by gt from git, never an agent flag (gt-pd1c.96)
 	doneResume        bool
 	donePreVerified   bool
 	doneTarget        string
@@ -413,6 +413,31 @@ func cleanupStatusAfterSuccessfulPush(status string) string {
 	return status
 }
 
+// detectDoneCleanupStatus computes gt done's cleanup status from the
+// worktree: CheckUncommittedWork plus the remote preservation proof of the
+// branch. A check that fails yields "unknown" (never "clean").
+func detectDoneCleanupStatus(g *git.Git, branch string) string {
+	workStatus, err := g.CheckUncommittedWork()
+	if err != nil {
+		style.PrintWarning("could not detect cleanup status: %v", err)
+		return "unknown"
+	}
+	pushed, unpushedCount, pushErr := g.BranchPushedToRemote(branch, "origin")
+	if pushErr != nil {
+		style.PrintWarning("could not check if branch is pushed: %v", pushErr)
+	}
+	return cleanupStatusFromWorkState(workStatus, pushed, unpushedCount, pushErr)
+}
+
+// recordedCleanupStatus is the agent-bead value for gt done's computed
+// status ("" = nothing to record).
+func recordedCleanupStatus(status string) string {
+	if status == "" {
+		return ""
+	}
+	return string(parseCleanupStatus(status))
+}
+
 func cleanupStatusFromWorkState(workStatus *git.UncommittedWorkStatus, branchPushed bool, unpushedCount int, branchPushedErr error) string {
 	if workStatus == nil {
 		return "unknown"
@@ -694,7 +719,6 @@ func init() {
 	doneCmd.Flags().StringVar(&doneIssue, "issue", "", "Source issue ID (default: parse from branch name)")
 	doneCmd.Flags().IntVarP(&donePriority, "priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
 	doneCmd.Flags().StringVar(&doneStatus, "status", ExitCompleted, "Exit status: COMPLETED, ESCALATED, or DEFERRED")
-	doneCmd.Flags().StringVar(&doneCleanupStatus, "cleanup-status", "", "Git cleanup status: clean, uncommitted, unpushed, stash, unknown (ZFC: agent-observed)")
 	doneCmd.Flags().BoolVar(&doneResume, "resume", false, "Resume from last checkpoint (auto-detected, for Witness recovery)")
 	doneCmd.Flags().BoolVar(&donePreVerified, "pre-verified", false, "Record on the MR that the polecat ran gates after rebasing onto target (informational; the refinery still runs its gates)")
 	doneCmd.Flags().StringVar(&doneTarget, "target", "", "Explicit MR target branch (overrides formula_vars and auto-detection)")
@@ -757,23 +781,10 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		style.PrintWarning("%v", reviewOnlyErr)
 	}
 
-	// Auto-detect cleanup status if not explicitly provided
-	// This prevents premature polecat cleanup by ensuring witness knows git state
-	if doneCleanupStatus == "" {
-		workStatus, err := g.CheckUncommittedWork()
-		if err != nil {
-			style.PrintWarning("could not auto-detect cleanup status: %v", err)
-		} else {
-			// CheckUncommittedWork.UnpushedCommits doesn't work for branches
-			// without upstream tracking (common for polecats). Use the more
-			// robust BranchPushedToRemote which compares against origin/main.
-			pushed, unpushedCount, pushErr := g.BranchPushedToRemote(branch, "origin")
-			if pushErr != nil {
-				style.PrintWarning("could not check if branch is pushed: %v", pushErr)
-			}
-			doneCleanupStatus = cleanupStatusFromWorkState(workStatus, pushed, unpushedCount, pushErr)
-		}
-	}
+	// gt computes the cleanup status from git; the agent cannot supply it
+	// (gt-pd1c.96). It drives the safety nets below and is recorded on the
+	// agent bead as a hint (removal and reuse re-check git themselves).
+	doneCleanupStatus = detectDoneCleanupStatus(g, branch)
 
 	// SAFETY NET (gt-pvx, stash recovery): If we detected stashes belonging to
 	// this branch, auto-pop them so the existing uncommitted-work auto-commit
@@ -825,7 +836,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				} else {
 					// Pops succeeded but produced nothing dirty (e.g. stashes were
 					// already merged). Recompute status normally.
-					doneCleanupStatus = ""
+					doneCleanupStatus = detectDoneCleanupStatus(g, branch)
 				}
 			}
 		}
@@ -1115,11 +1126,9 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// report-only completion. Fork-backed rigs must not infer success from fork main.
 		// For polecats, zero commits usually means the polecat sleepwalked through
 		// implementation without writing code (gastown#1484, beads#emma).
-		// The --cleanup-status=clean escape is preserved for legitimate report-only
-		// tasks (audits, reviews) that the formula explicitly directs to use it.
+		// A clean tree (status computed by gt, gt-pd1c.96) passes for legitimate
+		// report-only tasks (audits, reviews).
 		// no_merge/review_only tasks (GH#2496, gt-kvf) also bypass: non-code work has no commits by design.
-		// IMPORTANT: The error message must NOT mention --cleanup-status=clean.
-		// LLM agents read error messages and self-bypass (the original bug).
 		if aheadCount == 0 {
 			if os.Getenv("GT_POLECAT") != "" && doneCleanupStatus != "clean" && !isNoMergeTask {
 				// Before failing, check whether commits exist on the remote feature branch.
@@ -1141,7 +1150,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				}
 			}
 
-			// Non-polecat (crew/mayor), polecat with --cleanup-status=clean
+			// Non-polecat (crew/mayor), polecat with a clean tree
 			// (report-only tasks like audits/reviews), or no_merge polecat
 			// (non-code tasks like email/research per GH#2496):
 			// zero commits is valid.
@@ -2385,15 +2394,12 @@ doneStateUpdate:
 		fmt.Fprintf(os.Stderr, "Warning: couldn't set agent %s to %s: %v\n", agentBeadID, doneState, err)
 	}
 
-	// ZFC #10: Self-report cleanup status
-	// Agent observes git state and passes cleanup status via --cleanup-status flag
-	if doneCleanupStatus != "" {
-		cleanupStatus := parseCleanupStatus(doneCleanupStatus)
-		if cleanupStatus != polecat.CleanupUnknown {
-			if err := agentBd.UpdateAgentCleanupStatus(agentBeadID, string(cleanupStatus)); err != nil {
-				// Non-fatal: don't return — done-intent labels still need clearing (za-o9e)
-				fmt.Fprintf(os.Stderr, "Warning: couldn't update agent %s cleanup status: %v\n", agentBeadID, err)
-			}
+	// Record the cleanup status gt computed from git (gt-pd1c.96), including
+	// "unknown", so a stale value from an earlier run does not survive.
+	if cleanupStatus := recordedCleanupStatus(doneCleanupStatus); cleanupStatus != "" {
+		if err := agentBd.UpdateAgentCleanupStatus(agentBeadID, cleanupStatus); err != nil {
+			// Non-fatal: don't return — done-intent labels still need clearing (za-o9e)
+			fmt.Fprintf(os.Stderr, "Warning: couldn't update agent %s cleanup status: %v\n", agentBeadID, err)
 		}
 	}
 
@@ -2631,8 +2637,7 @@ func findHookedBeadForAgent(bd *beads.Beads, agentID string) string {
 	return issueID
 }
 
-// parseCleanupStatus converts a string flag value to a CleanupStatus.
-// ZFC: Agent observes git state and passes the appropriate status.
+// parseCleanupStatus converts gt done's computed status to a CleanupStatus.
 func parseCleanupStatus(s string) polecat.CleanupStatus {
 	switch strings.ToLower(s) {
 	case "clean":

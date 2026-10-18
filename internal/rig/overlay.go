@@ -1,7 +1,6 @@
 package rig
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/style"
 )
 
@@ -108,8 +108,9 @@ func gasTownLocalExcludePatterns() []string {
 // ErrNotWorktreeRoot is returned by EnsureLocalExcludePatterns when the path is
 // not the root of a git worktree or clone (it has no .git entry). Callers whose
 // directory is legitimately not a checkout (e.g. a witness without a clone) can
-// test for it with errors.Is and skip.
-var ErrNotWorktreeRoot = errors.New("not the root of a git worktree")
+// test for it with errors.Is and skip. It is git.ErrNotWorktreeRoot, the one
+// sentinel for "not the root of its own checkout" (gt-pd1c.96).
+var ErrNotWorktreeRoot = git.ErrNotWorktreeRoot
 
 // EnsureLocalExcludePatterns writes the standard Gas Town ignore patterns to the
 // repository's info/exclude file so the worktree stays clean without mutating a

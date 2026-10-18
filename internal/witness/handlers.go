@@ -436,7 +436,8 @@ func HandleHelp(workDir, rigName string, msg *mail.Message, router *mail.Router)
 }
 
 // HandleMerged processes a MERGED message from the Refinery.
-// Verifies cleanup_status before allowing nuke, escalates if work is at risk.
+// Verifies the commit is on main and reports cleanup_status (a hint); it does
+// not nuke (persistent polecats, gt-4ac).
 func HandleMerged(bd *BdCli, workDir, rigName string, msg *mail.Message) *HandlerResult {
 	result := &HandlerResult{
 		MessageID:    msg.ID,
@@ -655,8 +656,8 @@ type agentBeadResponse struct {
 // Returns the status string: "clean", "has_uncommitted", "has_stash", "has_unpushed"
 // Returns empty string if agent bead doesn't exist or has no cleanup_status.
 //
-// ZFC #10: This enables the Witness to verify it's safe to nuke before proceeding.
-// The polecat self-reports its git state when running `gt done`, and we trust that report.
+// The value is a report (gt done records the git state it computed), not proof
+// that a nuke is safe: gt polecat nuke re-checks git itself (gt-pd1c.96).
 func getCleanupStatus(bd *BdCli, workDir, rigName, polecatName string) string {
 	// Construct agent bead ID using the rig's configured prefix
 	// This supports non-gt prefixes like "bd-" for the beads rig
@@ -1040,7 +1041,7 @@ func slotOpenDecision(workDir, townRoot, rigName, polecatName, exitType string) 
 		if targetRefLookupFailed {
 			input.MQLookupFailed = true
 		}
-		if status, err := g.CheckUncommittedWork(); err == nil {
+		if status, err := g.CheckWorktreeWork(); err == nil {
 			input.GitDirty = !status.CleanExcludingRuntime()
 			input.StashCount = status.StashCount
 			input.UnpushedCommits = status.UnpushedCommits
@@ -3539,7 +3540,7 @@ func activeMRGitSafe(workDir, rigName, polecatName string) bool {
 	if err != nil || branch == "" {
 		return false
 	}
-	status, err := g.CheckUncommittedWork()
+	status, err := g.CheckWorktreeWork()
 	if err != nil {
 		return false
 	}
