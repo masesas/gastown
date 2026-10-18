@@ -11,9 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -85,6 +83,11 @@ type GateConfig struct {
 	// "post-squash" (second group). Both run on the merged result before push;
 	// on any gate failure the local merge is reset and nothing is pushed.
 	Phase GatePhase `json:"phase"`
+
+	// Order sorts gates within a phase: ascending Order, then name. Default 0.
+	// Gates generated from settings/config.json commands use setup=0 (pre-merge)
+	// and typecheck=1, lint=2, build=3, test=4 (post-squash).
+	Order int `json:"order"`
 }
 
 // GateResult holds the outcome of a single gate execution.
@@ -267,8 +270,8 @@ type Engineer struct {
 	config                *MergeQueueConfig
 	prProvider            PRProvider // VCS-specific PR operations (nil when MergeStrategy != "pr")
 	workDir               string
-	output                io.Writer    // Output destination for user-facing messages
-	router                *mail.Router // Mail router for sending protocol messages
+	output                io.Writer  // Output destination for user-facing messages
+	router                mailSender // Protocol mail (MERGED, FIX_NEEDED); mail.Router in production
 	mergeSlotEnsureExists func() (string, error)
 	mergeSlotAcquire      func(holder string, addWaiter bool) (*beads.MergeSlotStatus, error)
 	mergeSlotRelease      func(holder string) error
@@ -318,173 +321,6 @@ func (e *Engineer) SetOutput(w io.Writer) {
 	e.output = w
 }
 
-// LoadConfig loads merge queue configuration from the rig's config.json.
-func (e *Engineer) LoadConfig() error {
-	configPath := filepath.Join(e.rig.Path, "config.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Use defaults if no config file
-			return nil
-		}
-		return fmt.Errorf("reading config: %w", err)
-	}
-
-	// Parse config file to extract merge_queue section
-	var rawConfig struct {
-		MergeQueue json.RawMessage `json:"merge_queue"`
-	}
-	if err := json.Unmarshal(data, &rawConfig); err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-
-	if rawConfig.MergeQueue == nil {
-		// No merge_queue section, use defaults
-		return nil
-	}
-
-	// Parse merge_queue section into our config struct
-	// We need special handling for poll_interval (string -> Duration)
-	var mqRaw struct {
-		Enabled              *bool                     `json:"enabled"`
-		OnConflict           *string                   `json:"on_conflict"`
-		RunTests             *bool                     `json:"run_tests"`
-		TestCommand          *string                   `json:"test_command"`
-		DeleteMergedBranches *bool                     `json:"delete_merged_branches"`
-		RetryFlakyTests      *int                      `json:"retry_flaky_tests"`
-		PollInterval         *string                   `json:"poll_interval"`
-		MaxConcurrent        *int                      `json:"max_concurrent"`
-		StaleClaimTimeout    *string                   `json:"stale_claim_timeout"`
-		Gates                map[string]*gateConfigRaw `json:"gates"`
-		GatesParallel        *bool                     `json:"gates_parallel"`
-		AutoPush             *bool                     `json:"auto_push"`
-		MergeStrategy        *string                   `json:"merge_strategy"`
-		VCSProvider          *string                   `json:"vcs_provider"`
-		RequireReview        *bool                     `json:"require_review"`
-	}
-
-	if err := json.Unmarshal(rawConfig.MergeQueue, &mqRaw); err != nil {
-		return fmt.Errorf("parsing merge_queue config: %w", err)
-	}
-
-	// Apply non-nil values to config (preserving defaults for missing fields)
-	if mqRaw.Enabled != nil {
-		e.config.Enabled = *mqRaw.Enabled
-	}
-	if mqRaw.OnConflict != nil {
-		e.config.OnConflict = *mqRaw.OnConflict
-	}
-	if mqRaw.RunTests != nil {
-		e.config.RunTests = *mqRaw.RunTests
-	}
-	if mqRaw.TestCommand != nil {
-		e.config.TestCommand = *mqRaw.TestCommand
-	}
-	if mqRaw.DeleteMergedBranches != nil {
-		e.config.DeleteMergedBranches = *mqRaw.DeleteMergedBranches
-	}
-	if mqRaw.RetryFlakyTests != nil {
-		e.config.RetryFlakyTests = *mqRaw.RetryFlakyTests
-	}
-	if mqRaw.MaxConcurrent != nil {
-		e.config.MaxConcurrent = *mqRaw.MaxConcurrent
-	}
-	if mqRaw.PollInterval != nil {
-		dur, err := time.ParseDuration(*mqRaw.PollInterval)
-		if err != nil {
-			return fmt.Errorf("invalid poll_interval %q: %w", *mqRaw.PollInterval, err)
-		}
-		e.config.PollInterval = dur
-	}
-	if mqRaw.StaleClaimTimeout != nil {
-		dur, err := time.ParseDuration(*mqRaw.StaleClaimTimeout)
-		if err != nil {
-			return fmt.Errorf("invalid stale_claim_timeout %q: %w", *mqRaw.StaleClaimTimeout, err)
-		}
-		if dur <= 0 {
-			return fmt.Errorf("stale_claim_timeout must be positive, got %v", dur)
-		}
-		e.config.StaleClaimTimeout = dur
-	}
-
-	// Parse gates configuration
-	if mqRaw.Gates != nil {
-		e.config.Gates = make(map[string]*GateConfig, len(mqRaw.Gates))
-		for name, raw := range mqRaw.Gates {
-			gc := &GateConfig{Cmd: raw.Cmd}
-			if raw.Timeout != "" {
-				dur, err := time.ParseDuration(raw.Timeout)
-				if err != nil {
-					return fmt.Errorf("invalid timeout for gate %q: %w", name, err)
-				}
-				if dur <= 0 {
-					return fmt.Errorf("gate %q timeout must be positive, got %v", name, dur)
-				}
-				gc.Timeout = dur
-			}
-			switch raw.Phase {
-			case "", "pre-merge":
-				gc.Phase = GatePhasePreMerge
-			case "post-squash":
-				gc.Phase = GatePhasePostSquash
-			default:
-				return fmt.Errorf("gate %q has invalid phase %q: must be \"pre-merge\" or \"post-squash\"", name, raw.Phase)
-			}
-			e.config.Gates[name] = gc
-		}
-	}
-	if mqRaw.GatesParallel != nil {
-		e.config.GatesParallel = *mqRaw.GatesParallel
-	}
-	if mqRaw.AutoPush != nil {
-		e.config.AutoPush = *mqRaw.AutoPush
-	}
-	if mqRaw.MergeStrategy != nil {
-		e.config.MergeStrategy = *mqRaw.MergeStrategy
-	}
-	if mqRaw.VCSProvider != nil {
-		e.config.VCSProvider = *mqRaw.VCSProvider
-	}
-	if mqRaw.RequireReview != nil {
-		e.config.RequireReview = mqRaw.RequireReview
-	}
-
-	// Initialize the PR provider when merge_strategy=pr.
-	if e.config.MergeStrategy == "pr" {
-		if err := e.initPRProvider(); err != nil {
-			return fmt.Errorf("initializing PR provider: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// initPRProvider creates the appropriate PRProvider based on vcs_provider config.
-// Defaults to GitHub when vcs_provider is empty or "github".
-func (e *Engineer) initPRProvider() error {
-	switch e.config.VCSProvider {
-	case "", "github":
-		e.prProvider = newGitHubPRProvider(e.git)
-	case "bitbucket":
-		p, err := newBitbucketPRProvider(e.git)
-		if err != nil {
-			return err
-		}
-		e.prProvider = p
-	default:
-		return fmt.Errorf("unknown vcs_provider %q (supported: github, bitbucket)", e.config.VCSProvider)
-	}
-	return nil
-}
-
-// gateConfigRaw is the JSON-friendly representation of a gate config
-// with timeout as a string duration.
-type gateConfigRaw struct {
-	Cmd     string `json:"cmd"`
-	Timeout string `json:"timeout"`
-	Phase   string `json:"phase"`
-}
-
 // Config returns the current merge queue configuration.
 func (e *Engineer) Config() *MergeQueueConfig {
 	return e.config
@@ -501,6 +337,8 @@ type ProcessResult struct {
 	BranchNotFound bool // Source branch no longer exists (e.g. cleaned up after cherry-pick)
 	NoMerge        bool // MR/source is intentionally not merge-eligible, not a build failure
 	NeedsApproval  bool // PR exists but lacks required approving review (merge_strategy=pr)
+	ScopeViolation bool // MR changes paths outside merge_queue.allowed_paths (mergescope); nothing merged or pushed
+	GatesRan       int  // Number of gate commands (or the legacy test command) that ran
 }
 
 // doMerge performs the actual git merge operation.
@@ -551,6 +389,24 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 	if err := e.git.Pull("origin", target); err != nil {
 		// Pull might fail if nothing to pull, that's ok
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: pull from origin/%s: %v (continuing)\n", target, err)
+	}
+
+	// Remember the pre-merge tip so a rejected merge is undone exactly, without
+	// discarding earlier unpushed merges or rewinding to a stale origin ref
+	// when the pull above failed. It is also the base of the scope gate.
+	preMergeSHA, err := e.git.Rev("HEAD")
+	if err != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to read %s before merge: %v", target, err),
+		}
+	}
+
+	// Step 2.5: Merge-scope gate (gt-pd1c.68) on exactly what would land: the
+	// pinned submitted commit against the target tip, before anything is
+	// merged or pushed (submodule commits included).
+	if scope := e.checkMergeScope(preMergeSHA, mergeRef); !scope.Success {
+		return scope
 	}
 
 	// Step 3: Check for merge conflicts (using local branch)
@@ -608,16 +464,6 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 
 	// Step 4: Merge locally, preserving the submitted head in target ancestry.
 	// Every gate runs on this merged tree (gt-pd1c.45), so the merge comes first.
-	// Remember the pre-merge tip so a rejected merge is undone exactly, without
-	// discarding earlier unpushed merges (auto_push=false) or rewinding to a
-	// stale origin ref when the pull above failed.
-	preMergeSHA, err := e.git.Rev("HEAD")
-	if err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("failed to read %s before merge: %v", target, err),
-		}
-	}
 	// Get the original commit message from the polecat branch to preserve the
 	// conventional commit format (feat:/fix:) in the merge commit message.
 	mergeMsg, err := e.git.GetBranchCommitMessage(branch)
@@ -650,16 +496,28 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 		}
 	}
 
+	// The merge as built: gates run branch-controlled code, so what is pushed
+	// must be exactly this commit (verifyBuiltMerge), never what HEAD became.
+	builtSHA, builtTree, err := e.headAndTree()
+	if err != nil {
+		if resetErr := e.resetToPreMerge(preMergeSHA, target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: %v\n", resetErr)
+		}
+		return ProcessResult{Success: false, Error: fmt.Sprintf("read the built merge: %v", err)}
+	}
+
 	// Step 5: Run every configured gate (or the legacy test command) on the
 	// merged result. Gates always run: a polecat's pre-verified claim is never
 	// a substitute for the refinery's own gates (gt-pd1c.40).
-	if gateResult := e.runMergeGates(ctx); !gateResult.Success {
+	gateResult := e.runMergeGates(ctx)
+	if !gateResult.Success {
 		if resetErr := e.resetToPreMerge(preMergeSHA, target); resetErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: %v\n", resetErr)
 			gateResult.Error = fmt.Sprintf("%s; %v", gateResult.Error, resetErr)
 		}
 		return gateResult
 	}
+	gatesRan := gateResult.GatesRan
 
 	// PR merge path: when merge_strategy=pr, use the VCS provider's merge API
 	// instead of a direct push. This respects branch protection/restriction
@@ -670,16 +528,18 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 		if resetErr := e.resetToPreMerge(preMergeSHA, target); resetErr != nil {
 			return ProcessResult{Success: false, Error: resetErr.Error()}
 		}
-		return e.doMergePR(ctx, mr)
+		pr := e.doMergePR(ctx, mr)
+		pr.GatesRan = gatesRan
+		return pr
 	}
 
-	// Step 6: Get the merge commit SHA
-	mergeCommit, err := e.git.Rev("HEAD")
-	if err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("failed to get merge commit SHA: %v", err),
+	// Step 6: The merge commit to push: the verified built merge.
+	mergeCommit := builtSHA
+	if verr := e.verifyBuiltMerge(builtSHA, builtTree, preMergeSHA, mergeRef); verr != nil {
+		if resetErr := e.resetToPreMerge(preMergeSHA, target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: %v\n", resetErr)
 		}
+		return ProcessResult{Success: false, TestsFailed: true, GatesRan: gatesRan, Error: verr.Error()}
 	}
 
 	// Step 7-8: Push to origin (when auto_push is enabled).
@@ -688,7 +548,7 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 		// Only serialize pushes to the rig's default branch (typically main).
 		// Integration-branch and feature-branch pushes don't need serialization.
 		var pushHolder string
-		if target == e.rig.DefaultBranch() {
+		if target == e.defaultBranch() {
 			var slotErr error
 			pushHolder, slotErr = e.acquireMainPushSlot(ctx)
 			if slotErr != nil {
@@ -724,8 +584,16 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 			return eligibility
 		}
 
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing to origin/%s...\n", target)
-		if err := e.git.Push("origin", target, false); err != nil {
+		// Push the verified commit by SHA, not the branch: nothing that landed
+		// on the local target after verification can ride along.
+		if verr := e.verifyBuiltMerge(mergeCommit, builtTree, preMergeSHA, mergeRef); verr != nil {
+			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after merge verification failure: %v\n", target, resetErr)
+			}
+			return ProcessResult{Success: false, TestsFailed: true, GatesRan: gatesRan, Error: verr.Error()}
+		}
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Pushing %s to origin/%s...\n", shortSHA(mergeCommit), target)
+		if err := e.git.Push("origin", mergeCommit+":refs/heads/"+target, false); err != nil {
 			// Reset the checked-out target branch to undo the local merge commit.
 			// Without this, the next retry could see stale local state from the failed push.
 			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
@@ -753,6 +621,7 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo) ProcessResult {
 	return ProcessResult{
 		Success:     true,
 		MergeCommit: mergeCommit,
+		GatesRan:    gatesRan,
 	}
 }
 
@@ -925,8 +794,20 @@ func (e *Engineer) recheckMRStillMergeable(mr *MRInfo, target string) ProcessRes
 		}
 		if closeReason := strings.TrimSpace(fields.CloseReason); closeReason != "" {
 			if strings.EqualFold(closeReason, string(CloseReasonMerged)) {
-				if err := e.closeMRWithReason(mr, string(CloseReasonMerged)); err != nil {
+				// close_reason is a bead field anyone can write: it closes the
+				// MR and its source as merged only when git proves the
+				// recorded commit_sha is on the trusted target.
+				proof := &MRInfo{ID: mrID, Branch: fields.Branch, Target: fields.Target, CommitSHA: strings.TrimSpace(fields.CommitSHA)}
+				if err := e.verifyMRInfoPostMergeProof(proof); err != nil {
+					return ProcessResult{Success: false, Error: fmt.Sprintf(
+						"MR %s records close_reason merged, but git does not prove it landed (%v); refusing to close or merge it", mrID, err)}
+				}
+				closed, err := e.closeMRWithReason(mr, string(CloseReasonMerged))
+				if err != nil {
 					return ProcessResult{Success: false, Error: fmt.Sprintf("failed to close already-merged MR %s: %v", mrID, err)}
+				}
+				if serr := mergedSourceErr(closed); serr != nil {
+					return ProcessResult{Success: false, Error: fmt.Sprintf("closed already-merged MR %s, but %v", mrID, serr)}
 				}
 				return mergeIneligibleResult("MR close_reason is %s", closeReason)
 			}
@@ -941,7 +822,7 @@ func (e *Engineer) recheckMRStillMergeable(mr *MRInfo, target string) ProcessRes
 		if fields.Target != target {
 			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR target changed from %s to %s", target, fields.Target))
 		}
-		if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
+		if fields.Rig != "" && !rig.SameName(fields.Rig, e.rig.Name) {
 			return e.rejectMRBeforeMerge(mr, fmt.Sprintf("MR belongs to rig %s", fields.Rig))
 		}
 		if strings.TrimSpace(fields.SourceIssue) == "" {
@@ -1069,252 +950,6 @@ func (e *Engineer) acquireMainPushSlot(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("merge slot %s: %w after %d retries", slotID, errMergeSlotTimeout, e.mergeSlotMaxRetries)
 }
 
-// ValidateTestCommand validates that a test command is safe to execute.
-// TestCommand comes from the rig's operator-controlled config.json, not from
-// user input or PR branches. This validation provides defense-in-depth for the
-// trusted infrastructure config path.
-func ValidateTestCommand(cmd string) error {
-	if strings.TrimSpace(cmd) == "" {
-		return fmt.Errorf("test command must not be empty")
-	}
-	return nil
-}
-
-// runTests runs the configured test command and returns the result.
-func (e *Engineer) runTests(ctx context.Context) ProcessResult {
-	if err := ValidateTestCommand(e.config.TestCommand); err != nil {
-		return ProcessResult{
-			Success: false,
-			Error:   fmt.Sprintf("invalid test command: %v", err),
-		}
-	}
-
-	// Run the test command with retries for flaky tests
-	maxRetries := e.config.RetryFlakyTests
-	if maxRetries < 1 {
-		maxRetries = 1
-	}
-
-	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		if attempt > 1 {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Retrying tests (attempt %d/%d)...\n", attempt, maxRetries)
-		}
-
-		// Trust boundary: TestCommand comes from rig's config.json (operator-controlled
-		// infrastructure config), not from PR branches or user input. Shell execution
-		// is intentional for flexibility (pipes, env vars, etc).
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Executing test command: %s\n", e.config.TestCommand)
-		cmd := exec.CommandContext(ctx, "sh", "-c", e.config.TestCommand) //nolint:gosec // G204: TestCommand is from trusted rig config
-		util.SetDetachedProcessGroup(cmd)
-		cmd.Dir = e.workDir
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		err := cmd.Run()
-		if err == nil {
-			return ProcessResult{Success: true}
-		}
-		lastErr = err
-
-		// Check if context was canceled
-		if ctx.Err() != nil {
-			return ProcessResult{
-				Success: false,
-				Error:   "test run canceled",
-			}
-		}
-	}
-
-	return ProcessResult{
-		Success:     false,
-		TestsFailed: true,
-		Error:       fmt.Sprintf("tests failed after %d attempts: %v", maxRetries, lastErr),
-	}
-}
-
-// runGate executes a single quality gate command and returns the result.
-func (e *Engineer) runGate(ctx context.Context, name string, gate *GateConfig) GateResult {
-	start := time.Now()
-
-	if strings.TrimSpace(gate.Cmd) == "" {
-		return GateResult{
-			Name:    name,
-			Success: false,
-			Error:   "gate command is empty",
-			Elapsed: time.Since(start),
-		}
-	}
-
-	// Apply per-gate timeout if configured
-	gateCtx := ctx
-	if gate.Timeout > 0 {
-		var cancel context.CancelFunc
-		gateCtx, cancel = context.WithTimeout(ctx, gate.Timeout)
-		defer cancel()
-	}
-
-	cmd := exec.CommandContext(gateCtx, "sh", "-c", gate.Cmd) //nolint:gosec // G204: Gate commands are from trusted rig config
-	util.SetDetachedProcessGroup(cmd)
-	cmd.Dir = e.workDir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	elapsed := time.Since(start)
-
-	if err == nil {
-		return GateResult{
-			Name:    name,
-			Success: true,
-			Elapsed: elapsed,
-		}
-	}
-
-	errMsg := fmt.Sprintf("%v", err)
-	if gateCtx.Err() == context.DeadlineExceeded {
-		errMsg = fmt.Sprintf("timed out after %v", gate.Timeout)
-	}
-	if stderrStr := strings.TrimSpace(stderr.String()); stderrStr != "" {
-		// Cap stderr to avoid huge error messages
-		if len(stderrStr) > 500 {
-			stderrStr = stderrStr[:500] + "..."
-		}
-		errMsg = fmt.Sprintf("%s: %s", errMsg, stderrStr)
-	}
-
-	return GateResult{
-		Name:    name,
-		Success: false,
-		Error:   errMsg,
-		Elapsed: elapsed,
-	}
-}
-
-// runMergeGates is the single gate entry point for every merge path (single
-// MR, merge_strategy=pr, batch stack and bisection). The working tree must hold
-// the merged result (target plus the MR or batch), not yet pushed.
-//
-// With gates configured, the pre-merge group runs first (in parallel when
-// gates_parallel is set) and the post-squash group runs after it passes,
-// sequentially. Without gates, the legacy run_tests/test_command runs instead.
-// A canceled context is reported as a plain failure, never TestsFailed, so a
-// refinery shutdown does not make doMerge reject the MR under test. (The batch
-// retry/bisect loops still only check Success.)
-func (e *Engineer) runMergeGates(ctx context.Context) ProcessResult {
-	var result ProcessResult
-	switch {
-	case len(e.config.Gates) > 0:
-		result = e.runGatesForPhase(ctx, GatePhasePreMerge)
-		if result.Success {
-			result = e.runGatesForPhase(ctx, GatePhasePostSquash)
-		}
-	case e.config.RunTests && e.config.TestCommand != "":
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Running tests: %s\n", e.config.TestCommand)
-		result = e.runTests(ctx)
-		if result.Success {
-			_, _ = fmt.Fprintln(e.output, "[Engineer] Tests passed")
-		}
-		result.TestsFailed = !result.Success
-	default:
-		return ProcessResult{Success: true}
-	}
-	if !result.Success && ctx.Err() != nil {
-		return ProcessResult{Success: false, Error: fmt.Sprintf("gate run canceled: %v", ctx.Err())}
-	}
-	return result
-}
-
-// resetToPreMerge undoes a local merge by resetting the checked-out target to
-// the tip recorded before the merge.
-func (e *Engineer) resetToPreMerge(preMergeSHA, target string) error {
-	if err := e.git.ResetHard(preMergeSHA); err != nil {
-		return fmt.Errorf("failed to reset %s to pre-merge %s: %w", target, shortSHA(preMergeSHA), err)
-	}
-	return nil
-}
-
-// runGatesForPhase executes gates matching the given phase.
-// Gates run in parallel if GatesParallel is true; otherwise sequentially.
-// Any single gate failure means overall failure.
-func (e *Engineer) runGatesForPhase(ctx context.Context, phase GatePhase) ProcessResult {
-	// Filter gates for this phase. Empty phase is treated as pre-merge (default).
-	gates := make(map[string]*GateConfig)
-	for name, gc := range e.config.Gates {
-		gatePhase := gc.Phase
-		if gatePhase == "" {
-			gatePhase = GatePhasePreMerge
-		}
-		if gatePhase == phase {
-			gates[name] = gc
-		}
-	}
-	if len(gates) == 0 {
-		return ProcessResult{Success: true}
-	}
-
-	// Sort gate names for deterministic ordering
-	names := make([]string, 0, len(gates))
-	for name := range gates {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	parallel := e.config.GatesParallel && phase == GatePhasePreMerge // post-squash always sequential
-	_, _ = fmt.Fprintf(e.output, "[Engineer] Running %d %s gate(s) (parallel=%v)\n", len(names), phase, parallel)
-
-	var results []GateResult
-
-	if parallel {
-		results = make([]GateResult, len(names))
-		var wg sync.WaitGroup
-		for i, name := range names {
-			// Log from this goroutine only: e.output is not safe for concurrent writes.
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", name, gates[name].Cmd)
-			wg.Add(1)
-			go func(idx int, gateName string) {
-				defer wg.Done()
-				results[idx] = e.runGate(ctx, gateName, gates[gateName])
-			}(i, name)
-		}
-		wg.Wait()
-	} else {
-		for _, name := range names {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: starting (%s)\n", name, gates[name].Cmd)
-			result := e.runGate(ctx, name, gates[name])
-			results = append(results, result)
-			if !result.Success {
-				// Sequential mode: stop on first failure
-				break
-			}
-		}
-	}
-
-	// Report results
-	var failures []string
-	for _, r := range results {
-		if r.Success {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: passed (%v)\n", r.Name, r.Elapsed.Truncate(time.Millisecond))
-		} else {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Gate %q: FAILED (%v) - %s\n", r.Name, r.Elapsed.Truncate(time.Millisecond), r.Error)
-			failures = append(failures, fmt.Sprintf("%s: %s", r.Name, r.Error))
-		}
-	}
-
-	if len(failures) > 0 {
-		return ProcessResult{
-			Success:     false,
-			TestsFailed: true,
-			Error:       fmt.Sprintf("quality gates failed: %s", strings.Join(failures, "; ")),
-		}
-	}
-
-	_, _ = fmt.Fprintln(e.output, "[Engineer] All quality gates passed")
-	return ProcessResult{Success: true}
-}
-
 // syncCrewWorkspaces pulls latest changes to all crew workspaces.
 // This ensures crew members have access to newly merged code without manual sync.
 func (e *Engineer) syncCrewWorkspaces() {
@@ -1367,107 +1002,6 @@ func (e *Engineer) ProcessMRInfo(ctx context.Context, mr *MRInfo) ProcessResult 
 	return e.doMerge(ctx, mr)
 }
 
-// HandleMRInfoSuccess handles a successful merge from MRInfo.
-func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) bool {
-	workBeadID := resolveMergedWorkBead(e.beads.ForAgentBead(), mergedWorkBeadCloseRequest{
-		MRID:        mr.ID,
-		Branch:      mr.Branch,
-		SourceIssue: mr.SourceIssue,
-		AgentBead:   mr.AgentBead,
-	})
-
-	// Release merge slot if this was a conflict resolution
-	// The slot is held while conflict resolution is in progress
-	holder := e.rig.Name + "/refinery"
-	if err := e.mergeSlotRelease(holder); err != nil {
-		// Best-effort: slot release failures are always non-fatal.
-		// Slot may not have been held (optional acquisition) or may have expired.
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Note: merge slot release: %v\n", err)
-	} else {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Released merge slot\n")
-	}
-	if err := e.verifyMRInfoPostMergeProof(mr); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge proof failed for %s: %v\n", mr.ID, err)
-		return false
-	}
-
-	// 1. Close the MR bead as merged. closeTerminalMR also closes the source
-	// issue (the single merged-MR rule). Synthetic/bead-less MRs have no MR bead
-	// to close, so their source issue is closed directly.
-	if mr.ID != "" && !e.isSyntheticMergeMechanicsMR(mr) {
-		if err := e.closeMRWithReason(mr, string(CloseReasonMerged), result.MergeCommit); err != nil {
-			_, _ = fmt.Fprintf(e.output, "[Engineer] Post-merge cleanup failed for %s: %v\n", mr.ID, err)
-			return false
-		}
-	} else {
-		closeMergedWorkBead(e.beads, nil, e.output, mergedWorkBeadCloseRequest{
-			MRID:        mr.ID,
-			Target:      mr.Target,
-			SourceIssue: workBeadID,
-			MergeCommit: result.MergeCommit,
-		})
-	}
-
-	// 1.2. Close conflict-resolution tasks that this land has made moot (hq-jnap).
-	// Conflict beads otherwise outlive the successful re-land of their content
-	// and rot as open issues (re-dlcs/re-4i3b/re-gcii pattern).
-	e.closeSupersededConflictArtifacts(mr)
-
-	// 2. Delete source branch (remote first, then local only if still exact).
-	// Polecat branches (polecat/*) are always cleaned up — they are ephemeral
-	// work branches that should never persist after merge. Other branches
-	// respect the DeleteMergedBranches config.
-	isPolecat := strings.HasPrefix(mr.Branch, "polecat/")
-	if mr.Branch != "" && (e.config.DeleteMergedBranches || isPolecat) {
-		// Remote delete — only polecat branches. Non-polecat branches may belong
-		// to contributor forks with open upstream PRs; deleting them from origin
-		// causes GitHub to auto-close those PRs via head_ref_delete. (GH#2669)
-		// gas-fk4: Also skip deletion for polecat branches that have open PRs.
-		// When merge_strategy=pr, polecat branches have GitHub PRs that should
-		// be closed via gh pr merge (showing "merged"), not via branch deletion
-		// (which shows "closed" and destroys the PR audit trail).
-		expectedHead := strings.TrimSpace(mr.CommitSHA)
-		remoteDeleteSafe := true
-		if isPolecat {
-			if e.git.HasOpenPullRequest(git.PullRequestRef{URL: mr.PRURL, Number: mr.PRNumber, Branch: mr.Branch, HeadSHA: expectedHead}) {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping remote branch delete for %s: open PR exists (gas-fk4)\n", mr.Branch)
-			} else if err := e.git.DeleteRemoteBranchIfAt("origin", mr.Branch, expectedHead); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete remote branch %s: %v\n", mr.Branch, err)
-				remoteDeleteSafe = false
-			} else {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted remote branch: %s\n", mr.Branch)
-			}
-		}
-		if remoteDeleteSafe {
-			if err := e.deleteLocalBranchIfAt(mr.Branch, expectedHead); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete local branch %s: %v\n", mr.Branch, err)
-			} else {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mr.Branch)
-			}
-		}
-	}
-
-	// 3. Check and auto-close completed convoys
-	// After closing a source issue, its parent convoy may now be complete.
-	// Run convoy check to auto-close and notify subscribers.
-	e.postMergeConvoyCheck(mr)
-
-	// 4. Nudge mayor about successful merge so dispatcher can unblock
-	// dependent work. Without this, mayor only discovers completion by polling.
-	// Uses nudge (not mail) to avoid permanent Dolt commits for routine signals (GH#2434).
-	nudgeMsg := fmt.Sprintf("MERGED: %s issue=%s branch=%s", mr.ID, mr.SourceIssue, mr.Branch)
-	nudgeCmd := exec.Command("gt", "nudge", "mayor/", nudgeMsg)
-	util.SetDetachedProcessGroup(nudgeCmd)
-	nudgeCmd.Dir = e.workDir
-	if err := nudgeCmd.Run(); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about merge: %v\n", err)
-	}
-
-	// 5. Log success
-	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
-	return true
-}
-
 func (e *Engineer) ensureMRInfoCommitSHA(mr *MRInfo) error {
 	if mr == nil {
 		return fmt.Errorf("merge request is missing")
@@ -1516,25 +1050,6 @@ func (e *Engineer) submittedBranchHead(mr *MRInfo) (string, error) {
 	return commit, nil
 }
 
-func (e *Engineer) deleteLocalBranchIfAt(branch, expectedHead string) error {
-	branch = strings.TrimSpace(branch)
-	expectedHead = strings.TrimSpace(expectedHead)
-	if branch == "" {
-		return fmt.Errorf("missing source branch")
-	}
-	if expectedHead == "" {
-		return fmt.Errorf("missing submitted commit_sha")
-	}
-	localHead, err := e.git.Rev("refs/heads/" + branch + "^{commit}")
-	if err != nil {
-		return fmt.Errorf("resolve local branch head: %w", err)
-	}
-	if strings.TrimSpace(localHead) != expectedHead {
-		return fmt.Errorf("local branch head changed from submitted %s to %s", shortSHA(expectedHead), shortSHA(localHead))
-	}
-	return e.git.DeleteBranch(branch, false)
-}
-
 func requirePullRequestHead(pr *git.PullRequestInfo, expectedHead string) error {
 	expectedHead = strings.TrimSpace(expectedHead)
 	if expectedHead == "" {
@@ -1549,30 +1064,6 @@ func requirePullRequestHead(pr *git.PullRequestInfo, expectedHead string) error 
 	}
 	if actualHead != expectedHead {
 		return fmt.Errorf("PR #%d head changed from submitted %s to %s", pr.Number, shortSHA(expectedHead), shortSHA(actualHead))
-	}
-	return nil
-}
-
-func (e *Engineer) verifyMRInfoPostMergeProof(mr *MRInfo) error {
-	if mr == nil {
-		return fmt.Errorf("merge request is missing")
-	}
-	if e.git == nil {
-		return fmt.Errorf("git client is missing")
-	}
-	target := strings.TrimSpace(mr.Target)
-	if target == "" {
-		return fmt.Errorf("missing target branch")
-	}
-	if source := strings.TrimSpace(mr.Branch); source != "" && source == target {
-		return fmt.Errorf("source branch %s matches target branch", source)
-	}
-	commit := strings.TrimSpace(mr.CommitSHA)
-	if commit == "" {
-		return fmt.Errorf("missing submitted commit_sha")
-	}
-	if err := e.git.VerifyPushedCommitReachableFromPushTarget("origin", target, commit); err != nil {
-		return fmt.Errorf("target %s does not contain submitted head %s: %w", target, commit, err)
 	}
 	return nil
 }
@@ -1630,27 +1121,22 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 		return
 	}
 
-	// Nudge polecat directly about the merge failure.
-	// Previously sent MERGE_FAILED mail to witness (which relayed to polecat),
-	// but that created permanent Dolt commits for routine protocol signals.
-	// The witness discovers merge failures from MR bead status during patrol.
-	failureType := "build"
+	// Tell the worker. A conflict is delegated to a conflict-resolution task
+	// (below), so the polecat only gets a heads-up nudge. Every other failure
+	// (tests, scope, build) is FIX_NEEDED mail to the polecat (witness when the
+	// worker is unknown), as the refinery formula promises: it survives a
+	// session restart and carries the MR bead and attempt number, and the mail
+	// router already notifies the recipient, so the former MERGE_FAILED
+	// polecat nudge would only duplicate it.
+	failureType := mergeFailureType(result)
 	if result.Conflict {
-		failureType = "conflict"
-	} else if result.TestsFailed {
-		failureType = "tests"
-	}
-	polecatName := strings.TrimPrefix(mr.Worker, "polecats/")
-	nudgeTarget := fmt.Sprintf("%s/%s", e.rig.Name, polecatName)
-	nudgeMsg := fmt.Sprintf("MERGE_FAILED: branch=%s issue=%s type=%s error=%s — fix and resubmit with 'gt done'",
-		mr.Branch, mr.SourceIssue, failureType, result.Error)
-	nudgeCmd := exec.Command("gt", "nudge", nudgeTarget, nudgeMsg)
-	util.SetDetachedProcessGroup(nudgeCmd)
-	nudgeCmd.Dir = e.workDir
-	if err := nudgeCmd.Run(); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge %s about merge failure: %v\n", polecatName, err)
+		e.nudgePolecatAboutConflict(mr, result.Error)
+	} else if sent, err := e.sendFixNeeded(mr, failureType, result.Error); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: FIX_NEEDED for %s: %v\n", mr.ID, err)
+	} else if sent {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Sent FIX_NEEDED for %s (%s)\n", mr.ID, failureType)
 	} else {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Nudged %s about merge failure (%s)\n", polecatName, failureType)
+		_, _ = fmt.Fprintf(e.output, "[Engineer] FIX_NEEDED for %s at %s was already sent; not repeated\n", mr.ID, shortSHA(mr.CommitSHA))
 	}
 
 	// Nudge mayor about merge failure so dispatcher can unblock or reassign
@@ -1701,7 +1187,8 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 }
 
 func (e *Engineer) closeIneligibleMR(mr *MRInfo, reason string) error {
-	return e.closeMRWithReason(mr, "rejected: "+reason)
+	_, err := e.closeMRWithReason(mr, "rejected: "+reason)
+	return err
 }
 
 // townRoot is the town of the engineer's rig (<town>/<rig>), or "".
@@ -1721,9 +1208,11 @@ func (e *Engineer) mergeProver() beads.MergeProver {
 	return e.git
 }
 
-func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit ...string) error {
+// closeMRWithReason closes the MR bead through closeTerminalMR (which also
+// closes or releases its source) and returns what it did.
+func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit ...string) (*terminalMRCloseResult, error) {
 	if mr == nil || strings.TrimSpace(mr.ID) == "" {
-		return nil
+		return &terminalMRCloseResult{}, nil
 	}
 	var commit string
 	if len(mergeCommit) > 0 {
@@ -1745,7 +1234,7 @@ func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit
 		TownRoot:      e.townRoot(),
 	})
 	if err != nil {
-		return err
+		return result, err
 	}
 	if result.Closed {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Closed MR bead: %s (%s)\n", mr.ID, closeReason)
@@ -1754,7 +1243,7 @@ func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to clear agent bead %s active_mr: %v\n", result.AgentBead, result.AgentActiveMRClearErr)
 	}
 	reportSourceRelease(e.output, "[Engineer] ", result)
-	return nil
+	return result, nil
 }
 
 func mergeRequestFromMRInfo(mr *MRInfo) *MergeRequest {
@@ -1967,7 +1456,7 @@ func (e *Engineer) closeSupersededConflictArtifacts(merged *MRInfo) {
 			continue
 		}
 		reason := fmt.Sprintf("superseded by %s", merged.ID)
-		if err := e.closeMRWithReason(other, reason); err != nil {
+		if _, err := e.closeMRWithReason(other, reason); err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close superseded MR %s: %v\n", other.ID, err)
 		} else {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Closed superseded MR %s: %s\n", other.ID, reason)
@@ -2151,7 +1640,7 @@ func (e *Engineer) ListReadyMRs() ([]*MRInfo, error) {
 		}
 
 		// Filter by rig — wisps are shared across all rigs (GH#2718).
-		if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
+		if fields.Rig != "" && !rig.SameName(fields.Rig, e.rig.Name) {
 			continue
 		}
 
@@ -2212,7 +1701,7 @@ func (e *Engineer) ListBlockedMRs() ([]*MRInfo, error) {
 		}
 
 		// Filter by rig — wisps are shared across all rigs (GH#2718).
-		if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
+		if fields.Rig != "" && !rig.SameName(fields.Rig, e.rig.Name) {
 			continue
 		}
 
@@ -2252,7 +1741,7 @@ func (e *Engineer) ListAllOpenMRs() ([]*MRInfo, error) {
 		}
 
 		// Filter by rig — wisps are shared across all rigs (GH#2718).
-		if fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
+		if fields.Rig != "" && !rig.SameName(fields.Rig, e.rig.Name) {
 			continue
 		}
 
@@ -2286,7 +1775,7 @@ func (e *Engineer) ListQueueAnomalies(now time.Time) ([]*MRAnomaly, error) {
 	filtered := make([]*beads.Issue, 0, len(issues))
 	for _, issue := range issues {
 		fields := beads.ParseMRFields(issue)
-		if fields != nil && fields.Rig != "" && !strings.EqualFold(fields.Rig, e.rig.Name) {
+		if fields != nil && fields.Rig != "" && !rig.SameName(fields.Rig, e.rig.Name) {
 			continue
 		}
 		filtered = append(filtered, issue)

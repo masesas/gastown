@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mergeproof"
+	"github.com/steveyegge/gastown/internal/mergescope"
 	"github.com/steveyegge/gastown/internal/pushguard"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
@@ -78,7 +79,7 @@ import (
 //   - Scope guard (agents only): the pushed range remote_sha..local_sha (for a
 //     new branch: merge-base of the remote default branch tip, read with
 //     ls-remote, and local_sha) must stay inside merge_queue.allowed_paths
-//     (checkMergeScopeWith, as gt done and gt mq submit).
+//     (mergescope.Check, as gt done, gt mq submit and gt mq merge).
 //
 // Everything that cannot be verified is refused (fail closed). Errors never
 // include the push URL (it may carry credentials).
@@ -296,7 +297,7 @@ func resolvePrePushRig(townRoot, path string) (*prePushRig, error) {
 		return nil, nil
 	}
 	r := &prePushRig{name: name, autoLand: loadAutoLandSetting(rigPath), defaultBranch: config.RigDefaultBranch(rigPath)}
-	r.allowed, r.allowedErr = loadMergeScope(rigPath)
+	r.allowed, r.allowedErr = mergescope.Load(rigPath)
 	r.mergeQueueOff = !rigMergeQueueActive(townRoot, name)
 	return r, nil
 }
@@ -679,7 +680,7 @@ func (g *prePushGuard) checkScope(u prePushUpdate, branch, defaultBranch string,
 	} else if _, err := g.git.Rev(base + "^{commit}"); err != nil {
 		return fmt.Errorf("BLOCKED: push to %s: the remote branch tip is not in this repository; fetch first, then push again", branch)
 	}
-	if _, err := checkMergeScopeWith(r.allowed, base, "..", u.LocalSHA, g.git.DiffNameOnlyRange); err != nil {
+	if _, err := mergescope.Check(r.allowed, base, mergescope.TwoDot, u.LocalSHA, g.git.DiffNameOnlyRange); err != nil {
 		return fmt.Errorf("BLOCKED: push to %s (rig %s): %w", branch, r.name, err)
 	}
 	return nil

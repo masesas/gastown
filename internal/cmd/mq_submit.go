@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/mergescope"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
@@ -372,7 +373,7 @@ func resolveMQSubmitCommitSHA(g *git.Git, branch string) (string, error) {
 // rig has a scope; a fetch failure is a warning because a stale base can only
 // widen the diff (more paths checked), never hide branch changes.
 func enforceSubmitMergeScope(rigPath string, g *git.Git, defaultBranch, target, branch, commitSHA string) error {
-	allowed, err := loadMergeScope(rigPath)
+	allowed, err := mergescope.Load(rigPath)
 	if err != nil || len(allowed) == 0 {
 		return err
 	}
@@ -386,7 +387,7 @@ func enforceSubmitMergeScope(rigPath string, g *git.Git, defaultBranch, target, 
 	if head == "" {
 		head = "refs/heads/" + branch
 	}
-	_, err = checkMergeScope(g, allowed, base, head)
+	_, err = mergescope.Check(allowed, base, mergescope.MergeBase, head, g.DiffNameOnly)
 	return err
 }
 

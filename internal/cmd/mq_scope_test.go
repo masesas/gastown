@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	gitpkg "github.com/steveyegge/gastown/internal/git"
+	"github.com/steveyegge/gastown/internal/mergescope"
 	"github.com/steveyegge/gastown/internal/refinery"
 )
 
@@ -73,125 +74,6 @@ func initMQScopeRepo(t *testing.T, featurePaths ...string) string {
 	runGitForMQSubmitTest(t, repo, "commit", "-m", "feature")
 	runGitForMQSubmitTest(t, repo, "push", "-u", "origin", "polecat/nux/gt-1")
 	return repo
-}
-
-func TestLoadMergeScope(t *testing.T) {
-	t.Run("missing settings file is unrestricted", func(t *testing.T) {
-		got, err := loadMergeScope(t.TempDir())
-		if err != nil || got != nil {
-			t.Fatalf("loadMergeScope() = %q, %v; want nil, nil", got, err)
-		}
-	})
-	t.Run("settings without merge_queue is unrestricted", func(t *testing.T) {
-		rig := t.TempDir()
-		writeMQScopeRigSettings(t, rig, nil)
-		got, err := loadMergeScope(rig)
-		if err != nil || got != nil {
-			t.Fatalf("loadMergeScope() = %q, %v; want nil, nil", got, err)
-		}
-	})
-	t.Run("configured allowed_paths are returned", func(t *testing.T) {
-		rig := t.TempDir()
-		writeMQScopeRigSettings(t, rig, map[string]any{"allowed_paths": []string{"apps/**"}})
-		got, err := loadMergeScope(rig)
-		if err != nil || !reflect.DeepEqual(got, []string{"apps/**"}) {
-			t.Fatalf("loadMergeScope() = %q, %v; want [apps/**], nil", got, err)
-		}
-	})
-	t.Run("unreadable settings fail closed", func(t *testing.T) {
-		rig := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(rig, "settings"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(rig, "settings", "config.json"), []byte("{not json"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := loadMergeScope(rig); err == nil {
-			t.Fatal("loadMergeScope() on corrupt settings = nil error, want fail-closed error")
-		}
-	})
-}
-
-func TestCheckMergeScope(t *testing.T) {
-	allowed := []string{"apps/**", "contracts/openapi.yaml"}
-
-	t.Run("in-scope diff passes", func(t *testing.T) {
-		repo := initMQScopeRepo(t, "apps/mobile/main.dart", "contracts/openapi.yaml")
-		g := gitpkg.NewGit(repo)
-		n, err := checkMergeScope(g, allowed, "origin/main", "HEAD")
-		if err != nil {
-			t.Fatalf("checkMergeScope() = %v, want nil", err)
-		}
-		if n != 2 {
-			t.Fatalf("checkMergeScope() checked %d paths, want 2", n)
-		}
-	})
-
-	t.Run("out-of-scope diff is rejected with offending paths", func(t *testing.T) {
-		repo := initMQScopeRepo(t, ".brief-reviews/kp-4az-r1/mobile-consumer.md", "apps/mobile/main.dart")
-		g := gitpkg.NewGit(repo)
-		_, err := checkMergeScope(g, allowed, "origin/main", "HEAD")
-		var scopeErr *MergeScopeError
-		if !errors.As(err, &scopeErr) {
-			t.Fatalf("checkMergeScope() = %v, want *MergeScopeError", err)
-		}
-		if !reflect.DeepEqual(scopeErr.Paths, []string{".brief-reviews/kp-4az-r1/mobile-consumer.md"}) {
-			t.Fatalf("violations = %q", scopeErr.Paths)
-		}
-		if !strings.Contains(err.Error(), ".brief-reviews/kp-4az-r1/mobile-consumer.md") {
-			t.Fatalf("error message %q does not name the offending path", err)
-		}
-		if !strings.Contains(err.Error(), "allowed_paths") {
-			t.Fatalf("error message %q does not name the config key", err)
-		}
-	})
-
-	t.Run("rename into scope still reports the removed source path", func(t *testing.T) {
-		repo := initMQScopeRepo(t, "apps/mobile/extra.dart")
-		runGitForMQSubmitTest(t, repo, "mv", "docs/guide.md", "apps/guide.md")
-		runGitForMQSubmitTest(t, repo, "commit", "-m", "move in")
-		g := gitpkg.NewGit(repo)
-		_, err := checkMergeScope(g, allowed, "origin/main", "HEAD")
-		var scopeErr *MergeScopeError
-		if !errors.As(err, &scopeErr) || !reflect.DeepEqual(scopeErr.Paths, []string{"docs/guide.md"}) {
-			t.Fatalf("checkMergeScope() = %v, want violation [docs/guide.md]", err)
-		}
-	})
-
-	t.Run("leading-space directory is not confused with apps/", func(t *testing.T) {
-		repo := initMQScopeRepo(t, " apps/evil.txt")
-		g := gitpkg.NewGit(repo)
-		_, err := checkMergeScope(g, allowed, "origin/main", "HEAD")
-		var scopeErr *MergeScopeError
-		if !errors.As(err, &scopeErr) || !reflect.DeepEqual(scopeErr.Paths, []string{" apps/evil.txt"}) {
-			t.Fatalf("checkMergeScope() = %v, want violation [\" apps/evil.txt\"]", err)
-		}
-	})
-
-	t.Run("empty allowed list is unrestricted and does not touch git", func(t *testing.T) {
-		g := gitpkg.NewGit(t.TempDir()) // not a repo: any git call would fail
-		if _, err := checkMergeScope(g, nil, "origin/main", "HEAD"); err != nil {
-			t.Fatalf("checkMergeScope(nil allowed) = %v, want nil", err)
-		}
-	})
-
-	t.Run("diff failure fails closed", func(t *testing.T) {
-		g := gitpkg.NewGit(t.TempDir())
-		if _, err := checkMergeScope(g, allowed, "origin/main", "HEAD"); err == nil {
-			t.Fatal("checkMergeScope() with broken git = nil, want error")
-		}
-	})
-}
-
-func TestMergeScopeErrorTruncatesLongLists(t *testing.T) {
-	paths := make([]string, 0, mergeScopeMaxListed+5)
-	for i := 0; i < mergeScopeMaxListed+5; i++ {
-		paths = append(paths, filepath.ToSlash(filepath.Join("out", string(rune('a'+i%26)), "f")))
-	}
-	msg := (&MergeScopeError{Paths: paths, Base: "origin/main", Head: "HEAD"}).Error()
-	if !strings.Contains(msg, "and 5 more") {
-		t.Fatalf("message %q does not summarise the remainder", msg)
-	}
 }
 
 type fakeMQScopeManager struct {
@@ -259,7 +141,7 @@ func TestRunMQCheckScopeFor(t *testing.T) {
 		rig := t.TempDir()
 		writeMQScopeRigSettings(t, rig, map[string]any{"allowed_paths": allowed})
 		_, err := runMQCheckScopeFor(fakeMQScopeManager{mr: mr}, rig, gitpkg.NewGit(repo), "gt-mr-1")
-		var scopeErr *MergeScopeError
+		var scopeErr *mergescope.Error
 		if !errors.As(err, &scopeErr) || !reflect.DeepEqual(scopeErr.Paths, []string{".brief-reviews/x.md"}) {
 			t.Fatalf("runMQCheckScopeFor() = %v, want violation [.brief-reviews/x.md]", err)
 		}
@@ -307,38 +189,8 @@ func TestRunMQCheckScopeFor(t *testing.T) {
 	})
 }
 
-func TestEnforceMergeScope(t *testing.T) {
+func TestEnforceSubmitMergeScope(t *testing.T) {
 	allowed := []string{"apps/**", "contracts/openapi.yaml"}
-
-	t.Run("rejects out-of-scope branch before MR creation", func(t *testing.T) {
-		repo := initMQScopeRepo(t, ".brief-reviews/kp-4az-r1/mobile-consumer.md")
-		rig := t.TempDir()
-		writeMQScopeRigSettings(t, rig, map[string]any{"allowed_paths": allowed})
-		head := runGitForMQSubmitTest(t, repo, "rev-parse", "HEAD")
-		err := enforceMergeScope(rig, gitpkg.NewGit(repo), "origin/main", head)
-		var scopeErr *MergeScopeError
-		if !errors.As(err, &scopeErr) {
-			t.Fatalf("enforceMergeScope() = %v, want *MergeScopeError", err)
-		}
-	})
-
-	t.Run("accepts in-scope branch", func(t *testing.T) {
-		repo := initMQScopeRepo(t, "contracts/openapi.yaml")
-		rig := t.TempDir()
-		writeMQScopeRigSettings(t, rig, map[string]any{"allowed_paths": allowed})
-		if err := enforceMergeScope(rig, gitpkg.NewGit(repo), "origin/main", "HEAD"); err != nil {
-			t.Fatalf("enforceMergeScope() = %v, want nil", err)
-		}
-	})
-
-	t.Run("rig without allowed_paths keeps old behaviour", func(t *testing.T) {
-		repo := initMQScopeRepo(t, ".brief-reviews/x.md")
-		rig := t.TempDir()
-		writeMQScopeRigSettings(t, rig, map[string]any{"run_tests": true})
-		if err := enforceMergeScope(rig, gitpkg.NewGit(repo), "origin/main", "HEAD"); err != nil {
-			t.Fatalf("enforceMergeScope() = %v, want nil (unrestricted)", err)
-		}
-	})
 
 	t.Run("gt mq submit gate checks the submitted commit", func(t *testing.T) {
 		repo := initMQScopeRepo(t, ".brief-reviews/kp-4az-r1/mobile-consumer.md")
@@ -348,13 +200,13 @@ func TestEnforceMergeScope(t *testing.T) {
 		runGitForMQSubmitTest(t, repo, "checkout", "main") // --branch submit: HEAD differs
 		g := gitpkg.NewGit(repo)
 		err := enforceSubmitMergeScope(rig, g, "main", "main", "polecat/nux/gt-1", head)
-		var scopeErr *MergeScopeError
+		var scopeErr *mergescope.Error
 		if !errors.As(err, &scopeErr) {
-			t.Fatalf("enforceSubmitMergeScope(sha) = %v, want *MergeScopeError", err)
+			t.Fatalf("enforceSubmitMergeScope(sha) = %v, want *mergescope.Error", err)
 		}
 		err = enforceSubmitMergeScope(rig, g, "main", "main", "polecat/nux/gt-1", "")
 		if !errors.As(err, &scopeErr) {
-			t.Fatalf("enforceSubmitMergeScope(branch fallback) = %v, want *MergeScopeError", err)
+			t.Fatalf("enforceSubmitMergeScope(branch fallback) = %v, want *mergescope.Error", err)
 		}
 	})
 
@@ -365,17 +217,6 @@ func TestEnforceMergeScope(t *testing.T) {
 			t.Fatalf("enforceSubmitMergeScope() = %v, want nil", err)
 		}
 	})
-}
-
-// Regression (PR #38 review, HIGH): a rig without allowed_paths whose
-// settings carry an unrelated invalid field must not block gt done / submit.
-func TestLoadMergeScopeIgnoresUnrelatedInvalidSettings(t *testing.T) {
-	rig := t.TempDir()
-	writeMQScopeRigSettings(t, rig, map[string]any{"poll_interval": "bogus"})
-	got, err := loadMergeScope(rig)
-	if err != nil || got != nil {
-		t.Fatalf("loadMergeScope() = %q, %v; want nil, nil (unrestricted)", got, err)
-	}
 }
 
 func TestRunMQCheckScopeRange(t *testing.T) {
@@ -409,7 +250,7 @@ func TestRunMQCheckScopeRange(t *testing.T) {
 	t.Run("out-of-scope push is rejected with two-dot range", func(t *testing.T) {
 		repo, rig, old, head := setup(t, ".brief-reviews/kp-4az-r1/mobile-consumer.md")
 		_, err := runMQCheckScopeRange(rig, gitpkg.NewGit(repo), old, head)
-		var scopeErr *MergeScopeError
+		var scopeErr *mergescope.Error
 		if !errors.As(err, &scopeErr) || !reflect.DeepEqual(scopeErr.Paths, []string{".brief-reviews/kp-4az-r1/mobile-consumer.md"}) {
 			t.Fatalf("runMQCheckScopeRange() = %v, want violation", err)
 		}

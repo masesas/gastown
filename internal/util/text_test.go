@@ -30,3 +30,36 @@ func TestHasControlChars(t *testing.T) {
 		}
 	}
 }
+
+func TestOneLineDropsControlCharacters(t *testing.T) {
+	for in, want := range map[string]string{
+		"ok\x1b[31mred\x1b[0m":   "ok[31mred[0m",
+		"nul\x00byte":            "nulbyte",
+		"bell\x07 and\r\nbreak":  "bell and break",
+		"del\x7fchar":            "delchar",
+		"c1\u0085next\u009bline": "c1 nextline",
+	} {
+		if got := OneLine(in, 0); got != want || HasControlChars(got) {
+			t.Errorf("OneLine(%q) = %q, want %q (no control characters)", in, got, want)
+		}
+	}
+}
+
+func TestTruncateUTF8(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"short", 10, "short"},
+		{"exactly", 7, "exactly"},
+		{"abcdef", 3, "abc…"},
+		{"ééé", 3, "é…"}, // é is 2 bytes: never cut inside a rune
+		{"日本語", 4, "日…"},
+		{"anything", 0, "anything"},
+	} {
+		if got := TruncateUTF8(tc.in, tc.max); got != tc.want {
+			t.Errorf("TruncateUTF8(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+		}
+	}
+}

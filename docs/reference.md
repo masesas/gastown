@@ -149,7 +149,35 @@ Town-level role defaults live in `mayor/config.json` under:
 | `integration_branch_refinery_enabled` | `*bool` | `true` | `gt done` / `gt mq submit` auto-target integration branches |
 | `integration_branch_template` | `string` | `"integration/{title}"` | Branch name template (`{title}`, `{epic}`, `{prefix}`, `{user}`) |
 | `integration_branch_auto_land` | `*bool` | `false` | Refinery patrol auto-lands when all children closed |
-| `allowed_paths` | `[]string` | unset (unrestricted) | Repo paths an MR may change, as slash-separated globs (`*`, `?`, `[...]` per segment; `**` = zero or more segments), e.g. `["apps/**", "contracts/openapi.yaml"]`. `[]` or an absent key = unrestricted. Every path in the MR diff (merge-base of target..head, renames count on both sides) must match one entry. **Hard enforcement:** at submit time `gt done` / `gt mq submit` refuse the branch; at push time the Gas Town managed pre-push hook (`gt hooks pre-push`, see `docs/HOOKS.md` "Rig pre-push guard") refuses an agent push to the default branch or `integration/*` whose range `remote_sha..local_sha` leaves the scope, which also stops a refinery that bypasses the formula (pilot: `git push origin temp-mr:<target>` plus a raw `bd close`). Local hooks can be skipped by the pusher (`--no-verify`); remote branch protection is the hard boundary. The merge-time check is a formula instruction: the refinery patrol is told to run `gt mq check-scope` before merge-push, merge exactly the printed `Checked-SHA`, and send FIX_NEEDED on a violation. The gate reads only this key, so an unrelated invalid setting does not block submission; unparseable JSON or an invalid pattern fails closed. An invalid pattern also makes the whole settings load fail for every other caller (most of them then behave as if the rig had no settings). Paths are judged by their tree path: a symlink inside an allowed directory that points outside it is allowed (design limit). |
+| `allowed_paths` | `[]string` | unset (unrestricted) | Repo paths an MR may change, as slash-separated globs (`*`, `?`, `[...]` per segment; `**` = zero or more segments), e.g. `["apps/**", "contracts/openapi.yaml"]`. `[]` or an absent key = unrestricted. Every path in the MR diff (merge-base of target..head, renames count on both sides) must match one entry. **Hard enforcement:** at submit time `gt done` / `gt mq submit` refuse the branch; at push time the Gas Town managed pre-push hook (`gt hooks pre-push`, see `docs/HOOKS.md` "Rig pre-push guard") refuses an agent push to the default branch or `integration/*` whose range `remote_sha..local_sha` leaves the scope, which also stops a refinery that bypasses the formula (pilot: `git push origin temp-mr:<target>` plus a raw `bd close`). Local hooks can be skipped by the pusher (`--no-verify`); remote branch protection is the hard boundary. At merge time `gt mq merge` (the refinery merge engine) checks the pinned `commit_sha` against the target tip before it merges anything (submodule commits included) and never merges or pushes a violation (`scope_violation`, FIX_NEEDED to the polecat); an unreadable scope fails closed. A refinery that still merges by formula is told to run `gt mq check-scope` before merge-push, merge exactly the printed `Checked-SHA`, and send FIX_NEEDED on a violation. The gate reads only this key, so an unrelated invalid setting does not block submission; unparseable JSON or an invalid pattern fails closed. An invalid pattern also makes the whole settings load fail for every other caller (most of them then behave as if the rig had no settings). Paths are judged by their tree path: a symlink inside an allowed directory that points outside it is allowed (design limit). |
+
+**Refinery merge engine (`gt mq merge`):** the engine reads `merge_queue` from
+`<rig>/config.json` first and then layers this file (`<rig>/settings/config.json`)
+on top: here `merge_strategy`, `vcs_provider`, `require_review`,
+`delete_merged_branches` and `run_tests` win over `config.json`. The
+`setup_command`, `typecheck_command`, `lint_command`, `build_command` and
+`test_command` become the engine's gates, run on the merged tree before push:
+`setup` first (pre-merge group), then `typecheck`, `lint`, `build`, `test` in
+that order (post-squash group, sequential); blank commands are skipped. An
+explicit `merge_queue.gates` map in `<rig>/config.json` wins over the
+generated gates (the engine logs it); its gates may set `"order"` (default 0;
+gates run by order, then name). `run_tests: false` is the explicit opt-out: it
+disables every gate, an explicit `gates` map included, and the merge reports a
+warning. With `run_tests` on and no gate at all, `gt mq merge` refuses
+(`precondition`). A failed gate always blocks the merge. Gates are
+branch-controlled code: they run without Gas Town identity or credentials in
+their environment (`GT_*`, `BD_*`, `BEADS_*`, `GIT_*`, `GH_*`/`GITHUB_*`, cloud
+and model API keys, `SSH_AUTH_SOCK`, and any variable whose name contains
+`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `CREDENTIAL`, ...), and a gate that
+moves HEAD (commit, amend, reset) fails the merge (`gates_failed`). The scrub
+only removes environment variables: gates still run as the refinery's OS user,
+with its filesystem access and whatever its git credential helper, `~/.ssh`
+keys or other on-disk credentials allow, so a gate can still push to a remote
+or edit `.git` itself. The engine only guarantees what *it* pushes (the
+verified merge, by SHA); the real boundary is the stage 4 pre-receive hook.
+Gates that need `NPM_TOKEN`, a private-registry token, `SSH_AUTH_SOCK` or
+similar variables fail, because those are scrubbed. An unreadable settings
+file stops the merge (fail closed).
 
 See [Integration Branches](concepts/integration-branches.md) for integration branch details.
 
@@ -767,10 +795,84 @@ gt mq retry <id>             # Retry a failed merge request
 gt mq reject <id>            # Reject a merge request
 gt mq reject <rig> <mr> --confirm-not-landed  # Overseer verdict: closed MR did not land (releases an unverified hold)
 gt mq post-merge <rig> <mr> --confirm-landed  # Overseer verdict: closed MR landed (closes its issue)
+gt mq merge <rig> <mr-id> [--json]  # Refinery: merge one MR end to end (merge, gates, push, close, clean up, MERGED)
 gt mq check-scope <rig> <mr-id>  # Verify the MR only changes merge_queue.allowed_paths
 gt mq check-scope --range <old-sha> <new-sha> [--rig <rig>]  # Same check on the two-dot diff old..new
 gt hooks pre-push <remote> [<url>]  # Git pre-push guard (stdin = git pre-push lines); run by the managed rig hook
 ```
+
+`gt mq merge <rig> <mr-id>` is the refinery's single Go merge path
+(gt-pd1c.78 tahap 3). One run at a time per rig: it takes the exclusive lock
+`<rig>/.runtime/locks/refinery-merge.lock` (created mode 0600) without
+waiting; a second run is refused (`precondition`), and the engine's batch path
+takes the same lock. It refuses an MR that is not an open
+`gt:merge-request` of the rig, is blocked, is claimed by anyone but the rig's
+refinery (exactly `<rig>/refinery`, or one of its runs
+`<rig>/refinery/merge-<pid>-<n>`), records a `close_reason`, has
+a `source_issue` that is not a plain bead id, a branch that is not a plain
+branch name, no full `commit_sha`, or a target that is not the rig default
+branch or `integration/*`. It claims the MR for this run
+(`<rig>/refinery/merge-<pid>-<n>`) and reads the claim back: if another writer
+won, it stops and leaves that claim alone. It then refuses a
+refinery worktree with an unfinished merge/rebase/cherry-pick/revert, any
+uncommitted or untracked file, or a local target with commits missing on
+`origin/<target>` (they are never pushed; a local target that is only behind
+is fast-forwarded). A branch missing locally but on origin at exactly
+`commit_sha` is created there. It then rechecks eligibility (an MR whose bead
+says `close_reason: merged` is closed only when git proves its `commit_sha` is
+on the trusted target; otherwise nothing is closed), runs the merge-scope
+gate, merges `commit_sha` with a merge commit, runs every gate on the merged
+tree, verifies that HEAD is still that merge (first parent the pre-merge
+target tip, second parent `commit_sha`, the same tree) and pushes exactly that
+commit by SHA (`<sha>:refs/heads/<target>`); after the push it proves from git that the target
+contains `commit_sha` (the trusted default branch is `default_branch` in
+`<rig>/config.json`, else the remote's own HEAD, never the local `origin/HEAD`),
+closes the MR `merged` and the source issue `Merged in <mr>` (the reason that
+unblocks `merge-blocks` dependents; any other reason is refused on this path),
+deletes the branch on origin and locally at `commit_sha` (polecat branches;
+others only locally and only with `delete_merged_branches`; a branch name that
+is not plain is never handed to git; the default branch and `integration/*`
+are never deleted), mails `MERGED` to `<rig>/witness` and
+nudges the mayor. On a conflict it files a conflict-resolution task that blocks
+the MR; on a failed gate or scope violation it mails `FIX_NEEDED` to
+`<rig>/polecats/<worker>` (`<rig>/witness` when the worker is not a plain
+name), once per submitted `commit_sha` and failure type (the MR records
+`fix_needed_for: <commit_sha>:<type>` after the send; a retry with the same
+failure mails nothing, a different failure on the same commit mails again).
+`fix_needed_for` is an ordinary bead field any agent can write: it only
+suppresses repeat mail and gates nothing. The error text is one
+line without control characters, at most 500 bytes, and labeled
+`[untrusted branch output]`. Every outcome that leaves the MR open releases
+the claim. `merge_queue.auto_push: false` is refused. Only the refinery or
+crew of `<rig>`, or a human, may run it: other agent roles, and a refinery or
+crew whose `GT_RIG`/`GT_ROLE`/`BD_ACTOR` names another rig (or no rig), are
+refused. This role gate reads the caller's environment, so it stops agents
+taking the wrong exit by mistake; it is **not an authentication boundary**
+(stage 4 binds the pushing process through the pre-receive hook). Rig names
+compare case-insensitively, as everywhere in the merge engine. Exit status
+is 0 only for `merged`. With `--json` stdout is always one JSON object (engine
+progress goes to stderr):
+
+```json
+{"kind": "merged", "mr_id": "gt-mr-abc", "branch": "polecat/nux/gt-1", "target": "main",
+ "source_issue": "gt-1", "commit_sha": "<sha>", "merge_commit": "<sha>", "gates_ran": 2,
+ "branch_cleanup": {"branch": "polecat/nux/gt-1", "remote_deleted": true, "local_deleted": true}}
+```
+
+`kind` is one of `merged`, `conflict` (`conflict_task` names the task),
+`gates_failed`, `scope_violation`, `not_eligible`, `needs_approval`,
+`slot_timeout`, `branch_missing`, `cleanup_failed`, `precondition`, `error`;
+`message` explains a failure and `warnings` lists non-fatal problems (e.g.
+the MERGED mail could not be sent, or `run_tests=false` merged without gates);
+`gates_ran` counts the gate commands that ran. `cleanup_failed` means the merge
+is on origin but finalizing it failed: the proof, closing the MR, closing the
+source `Merged in <mr>`, or the branch cleanup. Fix the cause and run
+`gt mq post-merge <rig> <mr-id>`. The source counts as finalized when it was
+closed `Merged in <mr>`, was already closed with a `Merged in ...` reason, or
+is not closed by a merge by design: the MR has no source bead, or the source
+is `no_merge`, `review_only` or `merge_strategy=local`. Anything else (the
+source cannot be read or closed, is not a concrete work bead, or is already
+closed with another reason) is `cleanup_failed`.
 
 The two `--confirm-*` flags are the only manual exit for an issue held as
 *unverified* by the merge queue: its MR is closed but git cannot decide whether

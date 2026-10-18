@@ -83,12 +83,16 @@ func reviewOnlyClearActor() (string, error) {
 // credentials masked, util.OneLine) and refuses an empty reason, control
 // characters and more than maxClearReasonLen bytes.
 func normalizeClearReason(raw string) (string, error) {
+	// Refuse (not strip) control characters other than line breaks and tabs:
+	// a recorded human reason is not silently altered. util.OneLine would
+	// drop them, so check the whitespace-folded input first.
+	if util.HasControlChars(strings.Join(strings.Fields(raw), " ")) {
+		return "", fmt.Errorf("--reason must not contain control characters")
+	}
 	reason := util.OneLine(raw, 0)
 	switch {
 	case reason == "":
 		return "", fmt.Errorf("--reason is required: clearing review_only is recorded with who, when and why")
-	case util.HasControlChars(reason):
-		return "", fmt.Errorf("--reason must not contain control characters")
 	case len(reason) > maxClearReasonLen:
 		return "", fmt.Errorf("--reason is %d bytes; at most %d are allowed", len(reason), maxClearReasonLen)
 	}

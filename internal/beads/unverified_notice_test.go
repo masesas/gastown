@@ -153,3 +153,12 @@ func TestSupersedeMR_RecordsVerdictAndCloses(t *testing.T) {
 		t.Fatalf("the closed MR must be unchanged: %q", again.Description)
 	}
 }
+
+func TestMRFields_FixNeededForRoundTrip(t *testing.T) {
+	in := &MRFields{Branch: "b", SourceIssue: "gt-1", FixNeededFor: strings.Repeat("c", 40) + ":tests"}
+	desc := SetMRFields(&Issue{Description: "notes\nfix_needed_for: old"}, in)
+	out := ParseMRFields(&Issue{Description: desc})
+	if out == nil || out.FixNeededFor != in.FixNeededFor || strings.Count(desc, "fix_needed_for:") != 1 || !strings.Contains(desc, "notes") {
+		t.Fatalf("round trip = %+v, desc %q", out, desc)
+	}
+}

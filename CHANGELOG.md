@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`gt mq merge <rig> <mr-id> [--json]`** — one Go command lands an MR end to
+  end: eligibility and worktree checks, merge-scope gate on the pinned
+  `commit_sha`, merge, gates, push, git proof, MR closed `merged` and source
+  closed `Merged in <mr>` (so `merge-blocks` dependents unblock), branch
+  cleanup and `MERGED` mail to the witness; failures file a conflict task or
+  mail `FIX_NEEDED` and release the claim (gt-pd1c.78). The refinery engine
+  now layers `<rig>/settings/config.json` over `<rig>/config.json` and turns
+  its setup/typecheck/lint/build/test commands into ordered gates. Gates run
+  without agent identity or credentials, the merge they ran on is verified and
+  pushed by SHA, one merge runs per rig (lock + compare-and-set claim), a merge
+  with no gate needs an explicit `run_tests: false`, and FIX_NEEDED is sent once
+  per submitted commit.
+
 ## [1.2.1] - 2026-06-06
 
 ### Fixed

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	gitpkg "github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/testutil"
 )
@@ -192,7 +193,7 @@ esac
 		beads:  beads.NewWithBeadsDir(mayorRig, rigBeadsDir),
 		output: io.Discard,
 	}
-	if err := e.closeMRWithReason(&MRInfo{ID: "gt-wisp-mr", AgentBead: "gt-gastown-polecat-rust"}, "rejected: test"); err != nil {
+	if _, err := e.closeMRWithReason(&MRInfo{ID: "gt-wisp-mr", AgentBead: "gt-gastown-polecat-rust"}, "rejected: test"); err != nil {
 		t.Fatalf("closeMRWithReason: %v", err)
 	}
 
@@ -214,7 +215,7 @@ esac
 func TestEngineerCloseMRWithReasonRecordsMergeCommitAndClearsActiveMR(t *testing.T) {
 	e, b, mrIssue, agentIssue, _ := setupEngineerTerminalCloseTest(t, "gt-wisp-old")
 
-	if err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, string(CloseReasonMerged), "abc123"); err != nil {
+	if _, err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, string(CloseReasonMerged), "abc123"); err != nil {
 		t.Fatalf("closeMRWithReason: %v", err)
 	}
 
@@ -236,7 +237,7 @@ func TestEngineerCloseMRWithReasonRejectsAndClearsMatchingActiveMR(t *testing.T)
 	// A rejected MR whose work git proves not landed reopens its source.
 	useIsolatedMergeQueueNotLanded(t, b)
 
-	if err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "rejected: policy failed"); err != nil {
+	if _, err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "rejected: policy failed"); err != nil {
 		t.Fatalf("closeMRWithReason: %v", err)
 	}
 
@@ -262,7 +263,7 @@ func TestEngineerCloseMRWithReasonAlreadyTerminalRetriesActiveMRCleanup(t *testi
 		t.Fatalf("close MR issue: %v", err)
 	}
 
-	if err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "rejected: policy failed"); err != nil {
+	if _, err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "rejected: policy failed"); err != nil {
 		t.Fatalf("closeMRWithReason retry: %v", err)
 	}
 
@@ -272,7 +273,7 @@ func TestEngineerCloseMRWithReasonAlreadyTerminalRetriesActiveMRCleanup(t *testi
 func TestEngineerCloseMRWithReasonDoesNotClearNewerActiveMR(t *testing.T) {
 	e, b, mrIssue, agentIssue, _ := setupEngineerTerminalCloseTest(t, "gt-wisp-newer")
 
-	if err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "rejected: policy failed"); err != nil {
+	if _, err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "rejected: policy failed"); err != nil {
 		t.Fatalf("closeMRWithReason: %v", err)
 	}
 
@@ -282,7 +283,7 @@ func TestEngineerCloseMRWithReasonDoesNotClearNewerActiveMR(t *testing.T) {
 func TestEngineerCloseMRWithReasonNormalizesSuperseded(t *testing.T) {
 	e, b, mrIssue, agentIssue, _ := setupEngineerTerminalCloseTest(t, "gt-wisp-old")
 
-	if err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "superseded by gt-wisp-new"); err != nil {
+	if _, err := e.closeMRWithReason(&MRInfo{ID: mrIssue.ID, AgentBead: agentIssue.ID}, "superseded by gt-wisp-new"); err != nil {
 		t.Fatalf("closeMRWithReason: %v", err)
 	}
 
@@ -873,7 +874,7 @@ func TestRunGate_Timeout(t *testing.T) {
 func TestRunGates_Sequential_AllPass(t *testing.T) {
 	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
 	e := NewEngineer(r)
-	e.workDir = t.TempDir()
+	useGateTestRepo(t, e) // gates run in a git worktree (HEAD guard)
 	e.output = io.Discard
 	e.config.Gates = map[string]*GateConfig{
 		"a": {Cmd: "true"},
@@ -894,7 +895,7 @@ func TestRunGates_Sequential_StopsOnFirstFailure(t *testing.T) {
 	}
 	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
 	e := NewEngineer(r)
-	e.workDir = t.TempDir()
+	useGateTestRepo(t, e) // gates run in a git worktree (HEAD guard)
 	e.output = io.Discard
 
 	// Create a marker file to track which gates ran
@@ -924,7 +925,7 @@ func TestRunGates_Sequential_StopsOnFirstFailure(t *testing.T) {
 func TestRunGates_Parallel_AllPass(t *testing.T) {
 	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
 	e := NewEngineer(r)
-	e.workDir = t.TempDir()
+	useGateTestRepo(t, e) // gates run in a git worktree (HEAD guard)
 	e.output = io.Discard
 	e.config.Gates = map[string]*GateConfig{
 		"a": {Cmd: "true"},
@@ -942,7 +943,7 @@ func TestRunGates_Parallel_AllPass(t *testing.T) {
 func TestRunGates_Parallel_AnyFailure(t *testing.T) {
 	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
 	e := NewEngineer(r)
-	e.workDir = t.TempDir()
+	useGateTestRepo(t, e) // gates run in a git worktree (HEAD guard)
 	e.output = io.Discard
 	e.config.Gates = map[string]*GateConfig{
 		"pass1": {Cmd: "true"},
@@ -1137,8 +1138,8 @@ func TestDoMergeDirectPreservesSubmittedHeadForPostMergeProof(t *testing.T) {
 		t.Fatalf("submitted head not reachable after direct merge: %v", err)
 	}
 	run(t, workDir, "git", "remote", "add", "upstream", "https://github.com/example/repo.git")
-	if !e.HandleMRInfoSuccess(mr, result) {
-		t.Fatal("HandleMRInfoSuccess failed after verified direct merge")
+	if report := e.HandleMRInfoSuccess(mr, result); !report.OK() {
+		t.Fatalf("HandleMRInfoSuccess failed after verified direct merge: %v", report.Err())
 	}
 	if out := run(t, workDir, "git", "ls-remote", "--heads", "origin", branch); strings.TrimSpace(out) != "" {
 		t.Fatalf("remote branch still exists after native verified cleanup: %q", out)
@@ -1196,13 +1197,19 @@ func TestHandleMRInfoSuccess_RemoteLeaseFailurePreservesLocalBranch(t *testing.T
 	run(t, workDir, "git", "checkout", "main")
 
 	e := newTestEngineer(t, workDir, g)
-	if !e.HandleMRInfoSuccess(&MRInfo{
+	report := e.HandleMRInfoSuccess(&MRInfo{
 		ID:        "mr-lease-advanced",
 		Branch:    branch,
 		Target:    "main",
 		CommitSHA: commit,
-	}, ProcessResult{Success: true, MergeCommit: mergeCommit}) {
-		t.Fatal("HandleMRInfoSuccess returned false")
+	}, ProcessResult{Success: true, MergeCommit: mergeCommit})
+	if !report.MRClosed() {
+		t.Fatalf("HandleMRInfoSuccess did not close the merged MR: %v", report.Err())
+	}
+	// The advanced branch is kept on purpose; that is a cleanup failure for
+	// a human (gt mq post-merge reports the same), not a silent success.
+	if report.BranchCleanup.Err == nil || report.BranchCleanup.RemoteDeleted || report.BranchCleanup.LocalDeleted {
+		t.Fatalf("BranchCleanup = %+v (err %v), want a refused remote delete and the local branch kept", report.BranchCleanup, report.BranchCleanup.Err)
 	}
 	if out := run(t, workDir, "git", "ls-remote", "--heads", "origin", branch); !strings.Contains(out, advanced) {
 		t.Fatalf("remote advanced branch was not preserved; ls-remote=%q want %s", out, advanced)
@@ -1645,4 +1652,15 @@ func TestIsClaimStale(t *testing.T) {
 			}
 		})
 	}
+}
+
+// useGateTestRepo gives e a git worktree with one commit: runMergeGates
+// refuses to run gates where it cannot read HEAD.
+func useGateTestRepo(t *testing.T, e *Engineer) {
+	t.Helper()
+	dir := t.TempDir()
+	run(t, dir, "git", "init", "-q")
+	run(t, dir, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base")
+	e.workDir = dir
+	e.git = gitpkg.NewGit(dir)
 }
