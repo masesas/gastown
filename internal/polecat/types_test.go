@@ -124,23 +124,3 @@ func TestCleanupStatus_RequiresRecovery(t *testing.T) {
 		})
 	}
 }
-
-func TestCleanupStatus_CanForceRemove(t *testing.T) {
-	tests := []struct {
-		status CleanupStatus
-		expect bool
-	}{
-		{CleanupClean, true},
-		{CleanupUncommitted, true},
-		{CleanupStash, false},
-		{CleanupUnpushed, true},
-		{CleanupUnknown, false},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.status), func(t *testing.T) {
-			if got := tt.status.CanForceRemove(); got != tt.expect {
-				t.Errorf("CleanupStatus(%q).CanForceRemove() = %v, want %v", tt.status, got, tt.expect)
-			}
-		})
-	}
-}

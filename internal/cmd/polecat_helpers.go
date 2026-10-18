@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -110,7 +111,19 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 	// Get polecat info for branch name
 	polecatInfo, infoErr := target.mgr.Get(target.polecatName)
 
-	// Check 1: Unpushed commits via cleanup_status or git state
+	// Check 1: work at risk in the worktree, from the git state gt computes
+	// now. The agent bead's cleanup_status never replaces it (gt-pd1c.96):
+	// below it can only add a blocker.
+	if !errors.Is(infoErr, polecat.ErrPolecatNotFound) {
+		clonePath := target.mgr.ClonePath(target.polecatName)
+		if infoErr == nil && polecatInfo != nil {
+			clonePath = polecatInfo.ClonePath
+		}
+		gitState, gitErr := getGitState(clonePath)
+		result.GitState = gitState
+		result.Reasons = append(result.Reasons, gitStateSafetyReasons(gitState, gitErr)...)
+	}
+
 	bd := beads.New(target.r.Path)
 	agentBeadID := polecatBeadIDForRig(target.r, target.rigName, target.polecatName)
 	agentIssue, fields, err := bd.GetAgentBead(agentBeadID)
@@ -119,43 +132,15 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 		result.AgentBeadUnreadable = true
 	}
 
-	if err != nil || fields == nil {
-		// No agent bead (or unreadable, blocked above) - fall back to git check
-		if infoErr == nil && polecatInfo != nil {
-			gitState, gitErr := getGitState(polecatInfo.ClonePath)
-			result.GitState = gitState
-			if gitErr != nil {
-				result.Reasons = append(result.Reasons, fmt.Sprintf("cannot check git state: %v", gitErr))
-			} else if !gitState.Clean {
-				if gitState.UnpushedCommits > 0 {
-					result.Reasons = append(result.Reasons, fmt.Sprintf("has %d unpushed commit(s)", gitState.UnpushedCommits))
-				} else if len(gitState.UncommittedFiles) > 0 {
-					result.Reasons = append(result.Reasons, fmt.Sprintf("has %d uncommitted file(s)", len(gitState.UncommittedFiles)))
-				} else if gitState.StashCount > 0 {
-					result.Reasons = append(result.Reasons, fmt.Sprintf("has %d stash(es)", gitState.StashCount))
-				}
-			}
-		}
-	} else {
+	if err == nil && fields != nil {
 		currentIssue := ""
 		if infoErr == nil && polecatInfo != nil {
 			currentIssue = polecatInfo.Issue
 		}
 		sourceHint := agentSourceIssueHint(currentIssue, fields)
 		hookBead := agentHookBead(agentIssue, fields)
-		var gitState *GitState
-		gitStateLoaded := false
-		loadGitState := func() {
-			if gitStateLoaded || infoErr != nil || polecatInfo == nil {
-				return
-			}
-			gitState, _ = getGitState(polecatInfo.ClonePath)
-			result.GitState = gitState
-			gitStateLoaded = true
-		}
 		activeMRAssessment := polecat.ActiveMRAssessment{}
 		if fields.ActiveMR != "" {
-			loadGitState()
 			gitSafe := false
 			if polecatInfo != nil {
 				gitSafe = activeMRGitSafeForWorktree(polecatInfo.ClonePath)
@@ -167,15 +152,14 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 			beadTerminal = true
 		}
 
-		// Check cleanup_status from agent bead
+		// cleanup_status from the agent bead: a hint. "clean" adds nothing
+		// (Check 1 already decided from git); a dirty value blocks unless it
+		// is provably stale.
 		result.CleanupStatus = polecat.CleanupStatus(fields.CleanupStatus)
 		switch result.CleanupStatus {
 		case polecat.CleanupClean:
-			// OK
+			// No extra blocker.
 		default:
-			if result.CleanupStatus == polecat.CleanupUnpushed {
-				loadGitState()
-			}
 			gitSafe := false
 			if polecatInfo != nil {
 				gitSafe = activeMRGitSafeForWorktree(polecatInfo.ClonePath)
@@ -238,6 +222,26 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 	return result
 }
 
+// gitStateSafetyReasons turns the worktree git state into nuke blockers. An
+// unreadable state blocks (fail closed, gt-pd1c.95).
+func gitStateSafetyReasons(state *GitState, err error) []string {
+	if err != nil {
+		return []string{fmt.Sprintf("cannot check git state: %v", err)}
+	}
+	if state == nil || state.Clean {
+		return nil
+	}
+	switch {
+	case state.UnpushedCommits > 0:
+		return []string{fmt.Sprintf("has %d unpushed commit(s)", state.UnpushedCommits)}
+	case len(state.UncommittedFiles) > 0:
+		return []string{fmt.Sprintf("has %d uncommitted file(s)", len(state.UncommittedFiles))}
+	case state.StashCount > 0:
+		return []string{fmt.Sprintf("has %d stash(es)", state.StashCount)}
+	}
+	return []string{"git state is not clean"}
+}
+
 func rigPrefix(r *rig.Rig) string {
 	townRoot := filepath.Dir(r.Path)
 	return beads.GetPrefixForRig(townRoot, r.Name)
@@ -290,33 +294,34 @@ func displayDryRunSafetyCheck(target polecatTarget) bool {
 	agentBeadID := polecatBeadIDForRig(target.r, target.rigName, target.polecatName)
 	agentIssue, fields, err := bd.GetAgentBead(agentBeadID)
 
-	// Check 1: cleanup status or fallback git state
-	if err != nil || fields == nil {
-		if infoErr == nil && polecatInfo != nil {
-			gitState, gitErr := getGitState(polecatInfo.ClonePath)
-			if gitErr != nil {
-				fmt.Printf("    - Git state: %s\n", style.Warning.Render("cannot check"))
-			} else if gitState.Clean {
-				fmt.Printf("    - Git state: %s\n", style.Success.Render("clean"))
-			} else {
-				fmt.Printf("    - Git state: %s\n", style.Error.Render("dirty"))
-			}
+	// Check 1: the git state decides (gt-pd1c.96); the bead's cleanup_status
+	// below is only the agent-reported hint.
+	if infoErr == nil && polecatInfo != nil {
+		gitState, gitErr := getGitState(polecatInfo.ClonePath)
+		if gitErr != nil {
+			fmt.Printf("    - Git state: %s\n", style.Warning.Render("cannot check"))
+		} else if gitState.Clean {
+			fmt.Printf("    - Git state: %s\n", style.Success.Render("clean"))
 		} else {
-			fmt.Printf("    - Git state: %s\n", style.Dim.Render("unknown (no polecat info)"))
+			fmt.Printf("    - Git state: %s\n", style.Error.Render("dirty"))
 		}
+	} else {
+		fmt.Printf("    - Git state: %s\n", style.Dim.Render("unknown (no polecat info)"))
+	}
+	if err != nil || fields == nil {
 		fmt.Printf("    - Hook: %s\n", style.Dim.Render("unknown (no agent bead)"))
 	} else {
 		cleanupStatus := polecat.CleanupStatus(fields.CleanupStatus)
 		if cleanupStatus.IsSafe() {
-			fmt.Printf("    - Cleanup status: %s\n", style.Success.Render(string(cleanupStatus)))
+			fmt.Printf("    - Cleanup status (hint): %s\n", style.Success.Render(string(cleanupStatus)))
 		} else if cleanupStatus.RequiresRecovery() {
-			fmt.Printf("    - Cleanup status: %s\n", style.Error.Render(string(cleanupStatus)))
+			fmt.Printf("    - Cleanup status (hint): %s\n", style.Error.Render(string(cleanupStatus)))
 		} else {
 			statusText := string(cleanupStatus)
 			if statusText == "" {
 				statusText = "<missing>"
 			}
-			fmt.Printf("    - Cleanup status: %s\n", style.Warning.Render(statusText))
+			fmt.Printf("    - Cleanup status (hint): %s\n", style.Warning.Render(statusText))
 		}
 
 		hookBead := agentIssue.HookBead

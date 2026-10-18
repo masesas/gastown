@@ -42,7 +42,7 @@ type AgentFields struct {
 	Rig               string // Rig name (empty for global agents like mayor/deacon)
 	AgentState        string // spawning, working, done, stuck, escalated, idle, running, nuked
 	HookBead          string // Currently pinned work bead ID
-	CleanupStatus     string // ZFC: polecat self-reports git state (clean, has_uncommitted, has_stash, has_unpushed)
+	CleanupStatus     string // git state gt done recorded (clean, has_uncommitted, has_stash, has_unpushed, unknown); a hint, never removal proof (gt-pd1c.96)
 	ActiveMR          string // Currently active merge request bead ID (for traceability)
 	NotificationLevel string // DND mode: verbose, normal, muted (default: normal)
 	Mode              string // Execution mode: "" (normal) or "ralph" (Ralph Wiggum loop)

@@ -380,8 +380,8 @@ If your task produced no code changes, verify your findings are persisted to the
 ```bash
 bd show {{issue}}    # Check notes/design fields have your findings
 ```
-If findings are persisted, proceed to cleanup. `gt done --cleanup-status clean`
-handles the no-commit case for report-only tasks.
+If findings are persisted, proceed to cleanup. Plain `gt done` on a clean
+working tree handles the no-commit case for report-only tasks.
 
 **Exit criteria:** Working tree clean AND either (a) at least 1 commit ahead of origin/{{base_branch}}, or (b) report-only task with findings persisted to bead."""
 

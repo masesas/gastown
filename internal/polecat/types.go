@@ -126,8 +126,13 @@ func (p *Polecat) Summary() Summary {
 	}
 }
 
-// CleanupStatus represents the git state of a polecat for cleanup decisions.
-// The Witness uses this to determine whether it's safe to nuke a polecat worktree.
+// CleanupStatus is the git state recorded on a polecat's agent bead
+// (cleanup_status). gt done computes it from git when the polecat finishes,
+// but it is a hint: the agent can rewrite its own bead and the tree can
+// change afterwards. Destructive decisions (nuke, remove, repair, reuse) use
+// the git state gt computes at decision time; the bead value may only add a
+// blocker or a report, never make a dirty or unproven tree count as clean
+// (gt-pd1c.96).
 type CleanupStatus string
 
 const (
@@ -163,11 +168,4 @@ func (s CleanupStatus) RequiresRecovery() bool {
 	default:
 		return false
 	}
-}
-
-// CanForceRemove returns true if the status allows forced removal.
-// Force removal bypasses all git safety checks including unpushed commits.
-// Stashes are excluded since they represent intentional work-in-progress.
-func (s CleanupStatus) CanForceRemove() bool {
-	return s == CleanupClean || s == CleanupUncommitted || s == CleanupUnpushed
 }

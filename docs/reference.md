@@ -296,6 +296,16 @@ with = "macro-formula"
 5. Witness/refinery cleanup handles any retired sandbox state
 ```
 
+`gt done` records the worktree's git state on the polecat's agent bead as
+`cleanup_status` (`clean`, `has_uncommitted`, `has_stash`, `has_unpushed`,
+`unknown`). gt computes it from git; there is no flag to supply it. The value is
+a hint for reports only: `gt polecat nuke`, `gt polecat remove`, worktree repair
+and slot reuse check the worktree's git state themselves when they decide
+(commits must be proven on the remote), and refuse without `--force` when that
+state cannot be read or the directory is not the root of its own checkout
+(a worktree whose `.git` is gone is never judged by an enclosing repository).
+`gt polecat stale --cleanup` applies the same checks as `gt polecat nuke`.
+
 ### Session Cycling
 
 ```

@@ -136,7 +136,7 @@ Polecat calls gt done
          ▼
 Witness receives POLECAT_DONE
     │
-    ├── Checks cleanup_status (ZFC: trust polecat self-report)
+    ├── Checks cleanup_status (a hint; nuke/reuse re-check git, gt-pd1c.96)
     ├── If clean → sends MERGE_READY to refinery
     ├── If dirty → creates cleanup wisp (cannot auto-nuke)
     └── Nudges refinery session

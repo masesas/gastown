@@ -90,8 +90,9 @@ func TestRemoveRefusedWhenOriginRemovedWithUnpushedCommit(t *testing.T) {
 		}
 	}
 
-	// No self-reported cleanup_status (the agent bead cannot be read): the
-	// removal falls back to git (a trusted bead status is H3, out of scope).
+	// No self-reported cleanup_status (the agent bead cannot be read). Removal
+	// decides from git either way (gt-pd1c.96: removal_proof_test.go covers a
+	// bead that claims clean).
 	testutil.InstallBDShowStubWithHooked(t, nil, nil, true)
 	beads.ResetBdAllowStaleCacheForTest()
 	t.Cleanup(beads.ResetBdAllowStaleCacheForTest)

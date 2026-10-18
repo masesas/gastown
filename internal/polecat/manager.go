@@ -457,7 +457,8 @@ func (m *Manager) agentBeadID(name string) string {
 
 // getCleanupStatusFromBead reads the cleanup_status from the polecat's agent bead.
 // Returns CleanupUnknown if the bead doesn't exist or has no cleanup_status.
-// ZFC #10: This is the ZFC-compliant way to check if removal is safe.
+// It is a hint for state display only, never proof that removal or reuse is
+// safe (gt-pd1c.96): those decisions use worktreeDiscardBlocker / git state.
 func (m *Manager) getCleanupStatusFromBead(name string) CleanupStatus {
 	agentID := m.agentBeadID(name)
 	_, fields, err := m.beads.GetAgentBead(agentID)
@@ -468,47 +469,6 @@ func (m *Manager) getCleanupStatusFromBead(name string) CleanupStatus {
 		return CleanupUnknown
 	}
 	return CleanupStatus(fields.CleanupStatus)
-}
-
-// checkCleanupStatus validates the cleanup status against removal safety rules.
-// Returns an error if removal should be blocked based on the status.
-// force=true: allow has_uncommitted and has_unpushed, block has_stash
-// force=false: block all non-clean statuses
-func (m *Manager) checkCleanupStatus(name string, status CleanupStatus, force bool) error {
-	// Clean status is always safe
-	if status.IsSafe() {
-		return nil
-	}
-
-	// With force, uncommitted changes can be bypassed
-	if force && status.CanForceRemove() {
-		return nil
-	}
-
-	// Map status to appropriate error
-	switch status {
-	case CleanupUncommitted:
-		return &UncommittedWorkError{
-			PolecatName: name,
-			Status:      &git.UncommittedWorkStatus{HasUncommittedChanges: true},
-		}
-	case CleanupStash:
-		return &UncommittedWorkError{
-			PolecatName: name,
-			Status:      &git.UncommittedWorkStatus{StashCount: 1},
-		}
-	case CleanupUnpushed:
-		return &UncommittedWorkError{
-			PolecatName: name,
-			Status:      &git.UncommittedWorkStatus{UnpushedCommits: 1},
-		}
-	default:
-		// Unknown status - be conservative and block
-		return &UncommittedWorkError{
-			PolecatName: name,
-			Status:      &git.UncommittedWorkStatus{HasUncommittedChanges: true},
-		}
-	}
 }
 
 // repoBase returns the git directory and Git object to use for worktree operations.
@@ -1181,8 +1141,9 @@ func (m *Manager) Remove(name string, force bool) error {
 // nuclear=true: bypass ALL safety checks including stashes
 // selfNuke=true: bypass cwd-in-worktree check (for polecat deleting its own worktree)
 //
-// ZFC #10: Uses cleanup_status from agent bead if available (polecat self-report),
-// falls back to git check for backward compatibility.
+// Removal safety is decided from the git state gt computes at removal time
+// (worktreeDiscardBlocker); the agent bead's cleanup_status is not consulted
+// (gt-pd1c.96). A git state that cannot be read refuses unless force is set.
 func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) (retErr error) {
 	defer func() { telemetry.RecordPolecatRemove(context.Background(), name, retErr) }()
 	// Acquire per-polecat file lock to prevent concurrent Remove races
@@ -1249,32 +1210,13 @@ func (m *Manager) removeWithOptionsLocked(name string, force, nuclear, selfNuke 
 	// Polecat dir is the parent directory (polecats/<name>/)
 	polecatDir := m.polecatDir(name)
 
-	// Check for uncommitted work unless bypassed
+	// Check for work at risk unless bypassed. The decision is made from the
+	// git state gt computes now, never from the agent bead's cleanup_status
+	// (gt-pd1c.96); an unreadable git state refuses without --force
+	// (gt-pd1c.95).
 	if !nuclear {
-		// ZFC #10: First try to read cleanup_status from agent bead
-		// This is the ZFC-compliant path - trust what the polecat reported
-		cleanupStatus := m.getCleanupStatusFromBead(name)
-
-		if cleanupStatus != CleanupUnknown {
-			// ZFC path: Use polecat's self-reported status
-			if err := m.checkCleanupStatus(name, cleanupStatus, force); err != nil {
-				return err
-			}
-		} else {
-			// Fallback path: Check git directly (for polecats that haven't reported yet)
-			polecatGit := git.NewGit(clonePath)
-			status, err := polecatGit.CheckUncommittedWork()
-			if err == nil && !status.Clean() {
-				if force {
-					// Force mode: bypass uncommitted changes and unpushed commits.
-					// Only block on stashes, which represent intentional work-in-progress.
-					if status.StashCount > 0 {
-						return &UncommittedWorkError{PolecatName: name, Status: status}
-					}
-				} else {
-					return &UncommittedWorkError{PolecatName: name, Status: status}
-				}
-			}
+		if err := worktreeDiscardBlocker(name, clonePath, force); err != nil {
+			return err
 		}
 	}
 
@@ -1434,7 +1376,11 @@ func activeMRRemovalBlocker(reader IssueReader, fields *beads.AgentFields) strin
 }
 
 // ReclaimBrokenIdlePolecat removes a structurally broken idle sandbox before any
-// new hook is attached. It deliberately uses the normal non-force removal path.
+// new hook is attached. It deliberately uses the normal non-force removal path,
+// so the removal still needs git proof that nothing is at risk (gt-pd1c.96):
+// a worktree git cannot read has no such proof and is refused with
+// ErrWorkUnproven whatever its agent bead claims. Discarding it then takes an
+// explicit gt polecat nuke --force (with its own force-discard gate).
 func (m *Manager) ReclaimBrokenIdlePolecat(name string) (retErr error) {
 	defer func() { telemetry.RecordPolecatRemove(context.Background(), name, retErr) }()
 
@@ -1647,7 +1593,6 @@ func (m *Manager) RepairWorktreeWithOptions(name string, force bool, opts AddOpt
 
 	// Get the old clone path (may be old or new structure)
 	oldClonePath := m.clonePath(name)
-	polecatGit := git.NewGit(oldClonePath)
 
 	// New clone path uses new structure
 	polecatDir := m.polecatDir(name)
@@ -1661,9 +1606,8 @@ func (m *Manager) RepairWorktreeWithOptions(name string, force bool, opts AddOpt
 
 	// Check for uncommitted work unless forced
 	if !force {
-		status, err := polecatGit.CheckUncommittedWork()
-		if err == nil && !status.Clean() {
-			return nil, &UncommittedWorkError{PolecatName: name, Status: status}
+		if err := worktreeDiscardBlocker(name, oldClonePath, false); err != nil {
+			return nil, err
 		}
 	}
 
@@ -2453,7 +2397,7 @@ func (m *Manager) workstateInputForPolecat(name string, state State, issue strin
 	if targetRefLookupFailed {
 		input.MQLookupFailed = true
 	}
-	if status, err := g.CheckUncommittedWork(); err == nil {
+	if status, err := g.CheckWorktreeWork(); err == nil {
 		input.GitDirty = !status.CleanExcludingRuntime()
 		input.StashCount = status.StashCount
 		input.UnpushedCommits = status.UnpushedCommits
@@ -3146,6 +3090,7 @@ type StalenessInfo struct {
 	CommitsBehind      int    // How many commits behind origin/main
 	HasActiveSession   bool   // Whether tmux session is running
 	HasUncommittedWork bool   // Whether there's uncommitted or unpushed work
+	GitCheckError      string `json:",omitempty"` // Why the worktree's git state could not be read ("" = read); never stale then
 	AgentState         string // From agent bead (empty if no bead)
 	IsStale            bool   // Overall assessment: safe to clean up
 	Reason             string // Why it's considered stale (or not)
@@ -3190,8 +3135,12 @@ func (m *Manager) DetectStalePolecats(threshold int) ([]*StalenessInfo, error) {
 		info.CommitsBehind = countCommitsBehind(polecatGit, defaultBranch)
 
 		// Check for uncommitted work (excluding .beads/ files which are synced across worktrees)
-		status, err := polecatGit.CheckUncommittedWork()
-		if err == nil && !status.CleanExcludingBeads() {
+		// A git state that cannot be read (or that an enclosing repository
+		// would answer for) is not "no uncommitted work" (gt-pd1c.96 M2).
+		status, err := polecatGit.CheckWorktreeWork()
+		if err != nil {
+			info.GitCheckError = err.Error()
+		} else if !status.CleanExcludingBeads() {
 			info.HasUncommittedWork = true
 		}
 
@@ -3233,6 +3182,11 @@ func countCommitsBehind(g *git.Git, defaultBranch string) int {
 // Per gt-zecmc: uses tmux state (HasActiveSession) rather than agent_state
 // since observable states (running, done, idle) are no longer recorded in beads.
 func assessStaleness(info *StalenessInfo, threshold int) (bool, string) {
+	// Never clean up without proof of the worktree's git state (fail closed).
+	if info.GitCheckError != "" {
+		return false, "cannot check git state"
+	}
+
 	// Never clean up if there's uncommitted work
 	if info.HasUncommittedWork {
 		return false, "has uncommitted work"
