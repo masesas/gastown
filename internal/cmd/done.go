@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
+	"github.com/steveyegge/gastown/internal/mergescope"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
@@ -1307,7 +1308,11 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// that changes paths outside merge_queue.allowed_paths. contaminationBase
 		// was fetched above and is the clean base of the landing target.
 		if landingStrategy != convoyMergeLocal {
-			if err := enforceMergeScope(filepath.Join(townRoot, rigName), g, contaminationBase, "HEAD"); err != nil {
+			allowed, err := mergescope.Load(filepath.Join(townRoot, rigName))
+			if err != nil {
+				return err
+			}
+			if _, err := mergescope.Check(allowed, contaminationBase, mergescope.MergeBase, "HEAD", g.DiffNameOnly); err != nil {
 				return err
 			}
 		}

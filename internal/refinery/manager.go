@@ -450,7 +450,7 @@ func (m *Manager) Queue() ([]QueueItem, error) {
 
 		// Filter by rig — wisps are shared across all rigs (GH#2718).
 		fields := beads.ParseMRFields(issue)
-		if fields != nil && fields.Rig != "" && !strings.EqualFold(fields.Rig, m.rig.Name) {
+		if fields != nil && fields.Rig != "" && !rig.SameName(fields.Rig, m.rig.Name) {
 			continue
 		}
 

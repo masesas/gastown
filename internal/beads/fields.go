@@ -725,6 +725,12 @@ type MRFields struct {
 	// times the reminder.
 	UnverifiedNotifiedAt string
 
+	// FixNeededFor is "<commit_sha>:<failure type>" of the last FIX_NEEDED the
+	// refinery sent (gt-pd1c.78): a failing MR is reported once per commit
+	// and failure type, not on every merge attempt. Written only after the
+	// mail was sent. Agent-writable: it only suppresses repeat mail.
+	FixNeededFor string
+
 	// Conflict resolution fields (for priority scoring)
 	RetryCount      int    // Number of conflict-resolution cycles
 	LastConflictSHA string // SHA of main when conflict occurred
@@ -816,6 +822,9 @@ func ParseMRFields(issue *Issue) *MRFields {
 			hasFields = true
 		case "unverified_notified_at", "unverified-notified-at", "unverifiednotifiedat":
 			fields.UnverifiedNotifiedAt = value
+			hasFields = true
+		case "fix_needed_for", "fix-needed-for", "fixneededfor":
+			fields.FixNeededFor = value
 			hasFields = true
 		case "agent_bead", "agent-bead", "agentbead":
 			fields.AgentBead = value
@@ -912,6 +921,9 @@ func FormatMRFields(fields *MRFields) string {
 	}
 	if fields.UnverifiedNotifiedAt != "" {
 		lines = append(lines, "unverified_notified_at: "+fields.UnverifiedNotifiedAt)
+	}
+	if fields.FixNeededFor != "" {
+		lines = append(lines, "fix_needed_for: "+fields.FixNeededFor)
 	}
 	if fields.AgentBead != "" {
 		lines = append(lines, "agent_bead: "+fields.AgentBead)
@@ -1015,6 +1027,10 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 		"unverified_notified_at": true,
 		"unverified-notified-at": true,
 		"unverifiednotifiedat":   true,
+
+		"fix_needed_for": true,
+		"fix-needed-for": true,
+		"fixneededfor":   true,
 	}
 
 	// Collect non-MR lines from existing description

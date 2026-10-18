@@ -402,6 +402,10 @@ func init() {
 	mqCmd.AddCommand(mqStatusCmd)
 	mqCmd.AddCommand(mqPostMergeCmd)
 
+	// Merge flags
+	mqMergeCmd.Flags().BoolVar(&mqMergeJSON, "json", false, "Print the outcome as one JSON object on stdout (progress goes to stderr)")
+	mqCmd.AddCommand(mqMergeCmd)
+
 	// Integration branch subcommands
 	mqIntegrationCreateCmd.Flags().StringVar(&mqIntegrationCreateBranch, "branch", "", "Override branch name template (supports {title}, {epic}, {prefix}, {user})")
 	mqIntegrationCreateCmd.Flags().StringVar(&mqIntegrationCreateBaseBranch, "base-branch", "", "Create integration branch from this branch instead of main")
@@ -619,6 +623,12 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 	return nil
 }
 
+// runVerifiedMQPostMerge duplicates the refinery engine's finalize step
+// (refinery.Engineer.HandleMRInfoSuccess: proof, merged close, branch
+// cleanup). Until gt-pd1c.78 PR-C folds this command into the engine, the
+// engine is the stricter of the two: it deletes remote branches only for
+// polecat/*, never deletes the default branch or integration/*, and reports a
+// source not closed "Merged in <mr>" as a failure.
 func runVerifiedMQPostMerge(mgr mqPostMergeManager, rigPath string, rigGit mqPostMergeGit, mrID string, skipBranchDelete bool) (*refinery.PostMergeResult, mqPostMergeBranchCleanup, error) {
 	mr, err := mgr.FindMRForPostMerge(mrID)
 	if err != nil {

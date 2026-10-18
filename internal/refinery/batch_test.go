@@ -94,6 +94,7 @@ func newTestEngineer(t *testing.T, workDir string, g *gitpkg.Git) *Engineer {
 	e.git = g
 	e.workDir = workDir
 	e.output = &bytes.Buffer{}
+	e.router = &fakeMailSender{} // never deliver real protocol mail from tests
 	e.testAllowSyntheticMRs = true
 	// No-op merge slot functions for tests
 	e.mergeSlotEnsureExists = func() (string, error) { return "test-slot", nil }
@@ -141,11 +142,14 @@ func TestFastForwardBatch_BlocksForkBackedDefaultPush(t *testing.T) {
 	e := newTestEngineer(t, workDir, g)
 	before := run(t, workDir, "git", "rev-parse", "origin/main")
 
-	writeFile(t, workDir, "batched.txt", "batched\n")
-	run(t, workDir, "git", "add", ".")
-	run(t, workDir, "git", "commit", "-m", "batch result")
+	// A real one-MR stack, so the push reaches the fork guard (a bare commit
+	// is refused earlier by the stack verification).
+	createFeatureBranch(t, workDir, "polecat/fork/x", "batched.txt", "batched\n")
+	head := run(t, workDir, "git", "rev-parse", "polecat/fork/x")
+	run(t, workDir, "git", "merge", "--no-ff", "-m", "batch result", "polecat/fork/x")
+	stacked := []*MRInfo{{ID: "mr-fork", Branch: "polecat/fork/x", Target: "main", CommitSHA: head}}
 
-	result := e.fastForwardBatch(context.Background(), nil, "main", &BatchResult{})
+	result := e.fastForwardBatch(context.Background(), stacked, "main", &BatchResult{})
 	if result.Error == nil || !strings.Contains(result.Error.Error(), "refusing direct push") {
 		t.Fatalf("expected fork-backed default push refusal, got: %+v", result)
 	}
@@ -919,4 +923,22 @@ func stackedIDs(mrs []*MRInfo) []string {
 		ids[i] = mr.ID
 	}
 	return ids
+}
+
+// H1/L4d: a bare commit on the local target (not a merge of the batch) is
+// never pushed.
+func TestFastForwardBatch_RefusesTipThatIsNotTheStack(t *testing.T) {
+	workDir, g, cleanup := testGitRepo(t)
+	defer cleanup()
+	e := newTestEngineer(t, workDir, g)
+	before := run(t, workDir, "git", "rev-parse", "origin/main")
+	writeFile(t, workDir, "stray.txt", "stray\n")
+	run(t, workDir, "git", "add", ".")
+	run(t, workDir, "git", "commit", "-m", "stray")
+
+	result := e.fastForwardBatch(context.Background(), nil, "main", &BatchResult{})
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "wrong shape") {
+		t.Fatalf("expected a stack-shape refusal, got: %+v", result)
+	}
+	assertOriginMainUnchangedAndReset(t, workDir, before)
 }

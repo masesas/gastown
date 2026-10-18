@@ -91,6 +91,8 @@ func (e *Engineer) AssembleBatch(readyMRs []*MRInfo, config *BatchConfig) []*MRI
 // Each MR is merged sequentially: target ← MR1 ← MR2 ← MR3.
 // Returns the list of MRs that were successfully stacked, and any that
 // conflicted (which are removed from the stack and the stack is rebuilt).
+// An MR that fails the merge-scope gate is in neither list: it is reported
+// with HandleMRInfoFailure and never stacked.
 //
 // On return, the git working directory is on the target branch with all
 // successful MR merges applied (but not pushed).
@@ -129,6 +131,19 @@ func (e *Engineer) BuildRebaseStack(ctx context.Context, batch []*MRInfo, target
 		mergeRef, shaErr := e.submittedBranchHead(mr)
 		if shaErr != nil {
 			return nil, nil, shaErr
+		}
+
+		// Merge-scope gate per MR (gt-pd1c.68): its pinned head against the
+		// batch base. A violation leaves the MR out of both lists, reported
+		// through HandleMRInfoFailure (FIX_NEEDED); an unknown scope stops
+		// the batch (fail closed).
+		if scope := e.checkMergeScope(baseSHA, mergeRef); !scope.Success {
+			if !scope.ScopeViolation {
+				return nil, nil, fmt.Errorf("MR %s: %s", mr.ID, scope.Error)
+			}
+			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s: merge scope violation, removing from batch\n", mr.ID)
+			e.HandleMRInfoFailure(mr, scope)
+			continue
 		}
 
 		// Check for conflicts before merging
@@ -218,6 +233,12 @@ func (e *Engineer) ProcessBatch(ctx context.Context, batch []*MRInfo, target str
 	if len(batch) == 0 {
 		return result
 	}
+	unlock, err := e.lockMergeWorktree()
+	if err != nil {
+		result.Error = err
+		return result
+	}
+	defer unlock()
 
 	// Single MR: use existing doMerge path (no batch overhead)
 	if len(batch) == 1 {
@@ -328,11 +349,13 @@ func (e *Engineer) processSingleMR(ctx context.Context, mr *MRInfo, target strin
 	}
 	if processResult.Success {
 		result.MergeCommit = processResult.MergeCommit
-		// GH#2321: Run post-merge cleanup (close beads, delete branch, nudge mayor)
-		if e.HandleMRInfoSuccess(mr, processResult) {
+		// GH#2321: Run post-merge cleanup (close beads, delete branch, MERGED mail)
+		report := e.HandleMRInfoSuccess(mr, processResult)
+		if report.MRClosed() {
 			result.Merged = []*MRInfo{mr}
-		} else {
-			result.Error = fmt.Errorf("post-merge cleanup proof failed for %s", mr.ID)
+		}
+		if err := report.Err(); err != nil {
+			result.Error = fmt.Errorf("post-merge finalize failed for %s: %w", mr.ID, err)
 		}
 	} else if processResult.Conflict {
 		result.Conflicts = []*MRInfo{mr}
@@ -385,7 +408,7 @@ func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, targ
 
 	// Acquire merge slot for default branch pushes
 	var pushHolder string
-	if target == e.rig.DefaultBranch() {
+	if target == e.defaultBranch() {
 		var slotErr error
 		pushHolder, slotErr = e.acquireMainPushSlot(ctx)
 		if slotErr != nil {
@@ -419,9 +442,17 @@ func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, targ
 		}
 	}
 
-	// Push to origin
+	// The tip must be exactly the stack of the submitted heads on origin/<target>
+	// (gates run branch code); push that verified commit by SHA.
+	if err := e.verifyStackTip(tipSHA, target, stacked); err != nil {
+		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+			_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after stack verification failure: %v\n", target, resetErr)
+		}
+		result.Error = err
+		return result
+	}
 	_, _ = fmt.Fprintf(e.output, "[Batch] Pushing %d merged MRs to origin/%s...\n", len(stacked), target)
-	if pushErr := e.git.Push("origin", target, false); pushErr != nil {
+	if pushErr := e.git.Push("origin", strings.TrimSpace(tipSHA)+":refs/heads/"+target, false); pushErr != nil {
 		if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
 			_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after push failure: %v\n", target, resetErr)
 		}
@@ -451,10 +482,12 @@ func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, targ
 	cleaned := make([]*MRInfo, 0, len(stacked))
 	for _, mr := range stacked {
 		mergeResult := ProcessResult{Success: true, MergeCommit: tipSHA}
-		if e.HandleMRInfoSuccess(mr, mergeResult) {
+		report := e.HandleMRInfoSuccess(mr, mergeResult)
+		if report.MRClosed() {
 			cleaned = append(cleaned, mr)
-		} else if result.Error == nil {
-			result.Error = fmt.Errorf("post-merge cleanup proof failed for %s", mr.ID)
+		}
+		if err := report.Err(); err != nil && result.Error == nil {
+			result.Error = fmt.Errorf("post-merge finalize failed for %s: %w", mr.ID, err)
 		}
 	}
 	result.Merged = cleaned
@@ -605,6 +638,27 @@ func (e *Engineer) resetAndRebuildStack(mrs []*MRInfo, target string) error {
 		if err := e.git.MergeNoFF(mergeRef, msg); err != nil {
 			return fmt.Errorf("merge %s: %w", mr.ID, err)
 		}
+	}
+	return nil
+}
+
+// verifyStackTip checks that tip is still HEAD and is the merge stack of the
+// MRs' submitted heads on origin/<target> (verifyMergeShape).
+func (e *Engineer) verifyStackTip(tip, target string, stacked []*MRInfo) error {
+	head, err := e.git.Rev("HEAD")
+	if err != nil || strings.TrimSpace(head) != strings.TrimSpace(tip) {
+		return fmt.Errorf("batch tip changed before push (HEAD %s, tip %s); nothing pushed", shortSHA(strings.TrimSpace(head)), shortSHA(strings.TrimSpace(tip)))
+	}
+	base, err := e.git.Rev("refs/remotes/origin/" + target)
+	if err != nil {
+		return fmt.Errorf("read origin/%s before push: %w", target, err)
+	}
+	heads := make([]string, 0, len(stacked))
+	for _, mr := range stacked {
+		heads = append(heads, mr.CommitSHA)
+	}
+	if err := e.verifyMergeShape(tip, strings.TrimSpace(base), heads); err != nil {
+		return fmt.Errorf("batch tip has the wrong shape: %w; nothing pushed", err)
 	}
 	return nil
 }
