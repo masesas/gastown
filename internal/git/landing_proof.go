@@ -28,14 +28,53 @@ const (
 	proofMaxOutput = 16 << 20
 )
 
+// proofHistoryEnv makes every proof command read the commit graph as the
+// objects themselves record it (gt-pd1c.86 H1). The remote's tips are honest
+// (ls-remote), but ancestry is computed locally, and anyone who can write the
+// repository can rewrite history views without touching an object:
+// refs/replace/* (git replace), info/grafts and a forged commit-graph file
+// can make a remote tip "contain" a commit that was never pushed. Replace
+// refs and grafts are switched off and the commit-graph file is not read
+// (command-scope config, which outranks the repository's own). This is the
+// one place: proofLocalEnv, proofRemoteOptions and so WithProofLimits (the
+// merge-queue provers, the witness reconciler) and PreservedOn all use it.
+//
+// GIT_CONFIG_PARAMETERS is emptied: an inherited one (git -c … running a hook
+// that calls gt) outranks GIT_CONFIG_COUNT and could turn commit-graph back on.
+var proofHistoryEnv = []string{
+	"GIT_NO_REPLACE_OBJECTS=1",
+	"GIT_CONFIG_PARAMETERS=",
+	"GIT_GRAFT_FILE=" + os.DevNull,
+	"GIT_CONFIG_COUNT=1",
+	"GIT_CONFIG_KEY_0=core.commitGraph",
+	"GIT_CONFIG_VALUE_0=false",
+}
+
 // proofLocalEnv keeps local proof commands from reaching the network: in a
 // partial clone a missing object is an unknown answer, never a lazy fetch.
-var proofLocalEnv = []string{"GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0"}
+var proofLocalEnv = append([]string{"GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0"}, proofHistoryEnv...)
+
+// proofLocalOptions bound a local git command of a proof (timeout, output
+// limit, no lazy fetch, honest history).
+func proofLocalOptions() runOptions {
+	return runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: proofLocalEnv}
+}
+
+// withLocalProofLimits returns a copy of g whose every command runs as a
+// local proof command (proofLocalOptions): PreservedOn's ancestry, merge-tree
+// and cherry checks.
+func (g *Git) withLocalProofLimits() *Git {
+	c := *g
+	c.limits = proofLocalOptions()
+	return &c
+}
 
 // proofRaw runs a local git command of the landing proof (timeout, output
 // limit, no lazy fetch) with optional stdin and returns stdout byte-exact.
 func (g *Git) proofRaw(stdin *string, args ...string) (string, error) {
-	return g.runCmd(runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: proofLocalEnv, stdin: stdin}, args...)
+	opts := proofLocalOptions()
+	opts.stdin = stdin
+	return g.runCmd(opts, args...)
 }
 
 // proofRun is proofRaw without stdin, with whitespace trimmed.
@@ -47,7 +86,7 @@ func (g *Git) proofRun(args ...string) (string, error) {
 // proofRemoteOptions bound a git command of the landing proof that may use
 // the network (ls-remote, fetch, and every command of a WithProofLimits Git).
 func proofRemoteOptions() runOptions {
-	return runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: []string{"GIT_TERMINAL_PROMPT=0"}}
+	return runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: append([]string{"GIT_TERMINAL_PROMPT=0"}, proofHistoryEnv...)}
 }
 
 // proofRemote runs a network git command of the landing proof (ls-remote,
@@ -239,4 +278,27 @@ func (g *Git) requireProofObjects(objs ...string) error {
 		}
 	}
 	return nil
+}
+
+// CommitParents returns the parents of commit as the commit object records
+// them (proofLocalOptions: replace refs, grafts and the commit-graph file are
+// ignored, bounded, no lazy fetch), in order; an empty slice for a root
+// commit. It is the one reader of parents for merge-shape decisions ("is M a
+// two-parent merge of X?", gt-pd1c.86 R2-1); never read them with Rev("M^2").
+// Any git failure (unknown object, not a commit, timeout) is an error, never
+// "no such parent".
+func (g *Git) CommitParents(commit string) ([]string, error) {
+	commit = strings.TrimSpace(commit)
+	if commit == "" || strings.HasPrefix(commit, "-") {
+		return nil, fmt.Errorf("invalid commit %q", commit)
+	}
+	out, err := g.proofRun("rev-list", "--parents", "-n", "1", "--end-of-options", commit+"^{commit}")
+	if err != nil {
+		return nil, fmt.Errorf("reading parents of %s: %w", shortSHA(commit), err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("reading parents of %s: no commit", shortSHA(commit))
+	}
+	return fields[1:], nil
 }

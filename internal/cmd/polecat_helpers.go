@@ -125,7 +125,7 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 			gitState, gitErr := getGitState(polecatInfo.ClonePath)
 			result.GitState = gitState
 			if gitErr != nil {
-				result.Reasons = append(result.Reasons, "cannot check git state")
+				result.Reasons = append(result.Reasons, fmt.Sprintf("cannot check git state: %v", gitErr))
 			} else if !gitState.Clean {
 				if gitState.UnpushedCommits > 0 {
 					result.Reasons = append(result.Reasons, fmt.Sprintf("has %d unpushed commit(s)", gitState.UnpushedCommits))

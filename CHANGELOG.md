@@ -44,6 +44,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cleanup_failed` outcome now names the command to run in `next`
   (gt-pd1c.93). The MergeOne test store enforces bd's ownership guards, which
   the in-process store does not, so this class of bug fails tests.
+- **Nuke/stop "unpushed commits" gate needs remote proof, not local refs** —
+  `git.BranchPreservationStatus` / `BranchTargetStatus` (and through them
+  `UnpushedCommits`, `CheckUncommittedWork`, `BranchPushedToRemote`) compared
+  HEAD with local `origin/<default>`, `origin/main`, `origin/master`, the local
+  upstream tracking ref and local target branches. An agent could
+  `git update-ref refs/remotes/origin/zzz HEAD` plus
+  `git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/zzz` (or
+  forge `origin/main`, `branch -f main`, `--set-upstream-to`) without pushing,
+  read as 0 unpushed commits and let nuke/stop discard real work. Every tip is
+  now read from the push target with one bounded `ls-remote` (the same source
+  `mergeproof.RemoteTips` reads) and compared with `PreservedOn` (the
+  `mergeproof.CoveredByTargets` rule); the default branch is the one the
+  remote's HEAD names, then `main`, `master`. Without proof the answer is
+  "not preserved" (fail closed): an unreachable remote or unfetched remote tips
+  give `git.ErrRemoteProofUnavailable`, `CheckUncommittedWork` reports the new
+  `UnpushedUnverified` (never `Clean`) instead of an error, `gt polecat
+  git-state`/nuke/check-recovery refuse with "cannot prove the commits of <branch> are
+  on the remote … push them (git push origin <branch>) or fetch, then retry;
+  --force discards them", the polecat stop hook
+  runs its `gt done` safety net, and removal pushes ordinary (non review-only)
+  work it cannot prove preserved. A remote with none of the comparison branches
+  counts every commit as unpushed; a missing (or removed) `origin` remote is
+  "unverified", not 0 — only a repository without any commit is clean without
+  a remote, so `gt handoff` in a local-only repository now warns. Targets
+  naming the `upstream/` remote are no longer used: proof comes from the push
+  remote only. Ancestry that decides preservation or landing ignores local
+  history rewrites: `IsAncestor`, `PreservedOn` (now bounded, no lazy fetch),
+  the landing-proof commands and every command of a `WithProofLimits` Git run
+  with replace refs, grafts and the commit-graph file switched off (one env set,
+  `proofHistoryEnv`), so `git replace <remote-tip> <fake-with-HEAD-as-parent>`
+  no longer proves unpushed work, in `mergeproof.CoveredByTargets` and the
+  merge-queue provers too; an inherited `GIT_CONFIG_PARAMETERS` cannot turn
+  the commit-graph back on. Merge-shape decisions (`gt mq merge`'s recorded
+  merge proof and its pre-push merge-shape check) read parents with the new
+  `Git.CommitParents` under the same env instead of `Rev("M^2")`, so a replace
+  ref cannot make a pushed commit pass as the two-parent merge of commit_sha.
+  New `UncommittedWorkStatus.CommitsAtRisk()` is the
+  one "commits at risk" predicate; `CleanExcludingRuntime` stays file-only by
+  design (gt-pd1c.86).
 - **Role worktrees stay clean: gt no longer edits a tracked `.gitignore`** —
   starting the refinery or witness and `gt crew add` appended a
   `# Gas Town (added by gt)` block to the worktree's tracked `.gitignore`, so

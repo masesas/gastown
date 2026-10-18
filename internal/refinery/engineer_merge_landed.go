@@ -111,12 +111,16 @@ func (e *Engineer) provenRecordedMerge(mr *MRInfo, fields *beads.MRFields) (stri
 		e.git.VerifyPushedCommitReachableFromPushTarget("origin", mr.Target, recorded) != nil {
 		return "", fmt.Sprintf("its recorded merge_commit %s is not proven on origin/%s", shown, mr.Target)
 	}
-	second, err := e.git.Rev(recorded + "^2")
-	if err != nil || strings.TrimSpace(second) != strings.TrimSpace(mr.CommitSHA) {
-		return "", fmt.Sprintf("its recorded merge_commit %s does not have commit_sha as its second parent", shown)
+	// Parents as the commit records them, not through replace refs (gt-pd1c.86).
+	parents, err := e.git.CommitParents(recorded)
+	if err != nil {
+		return "", fmt.Sprintf("the parents of its recorded merge_commit %s cannot be read", shown)
 	}
-	if _, err := e.git.Rev(recorded + "^3"); err == nil {
+	if len(parents) > 2 {
 		return "", fmt.Sprintf("its recorded merge_commit %s has more than two parents", shown)
+	}
+	if len(parents) != 2 || parents[1] != strings.TrimSpace(mr.CommitSHA) {
+		return "", fmt.Sprintf("its recorded merge_commit %s does not have commit_sha as its second parent", shown)
 	}
 	return recorded, ""
 }

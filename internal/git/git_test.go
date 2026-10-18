@@ -3683,19 +3683,6 @@ func TestUnpushedCommitsPrefersExactRemoteBranchOverUpstream(t *testing.T) {
 	}
 }
 
-func TestComparisonRefCandidatesPreferRemoteTrackingRef(t *testing.T) {
-	got := comparisonRefCandidates("main", "origin")
-	want := []string{"upstream/main", "origin/main", "main"}
-	if len(got) != len(want) {
-		t.Fatalf("comparisonRefCandidates length = %d, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("comparisonRefCandidates()[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
 func TestBranchTargetStatusPreservesSquashMergedAdvancedTarget(t *testing.T) {
 	localDir, _, mainBranch := initTestRepoWithRemote(t)
 	if err := exec.Command("git", "-C", localDir, "merge-tree", "--write-tree", "HEAD", "HEAD").Run(); err != nil {

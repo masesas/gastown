@@ -17,8 +17,6 @@ import (
 	"github.com/steveyegge/gastown/internal/util"
 )
 
-var errNoComparisonRefs = errors.New("no comparison refs resolved")
-
 // GitError contains raw output from a git command for agent observation.
 // ZFC: Callers observe the raw output and decide what to do.
 // The error interface methods provide human-readable messages, but agents
@@ -2378,9 +2376,12 @@ func (g *Git) Rev(ref string) (string, error) {
 	return g.run("rev-parse", ref)
 }
 
-// IsAncestor checks if ancestor is an ancestor of descendant.
+// IsAncestor checks if ancestor is an ancestor of descendant. Ancestry is
+// read from the objects themselves (proofHistoryEnv: no replace refs, grafts
+// or commit-graph file), because its answers decide whether work landed or is
+// preserved, refinery and gt mq included (gt-pd1c.86 H1).
 func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
-	_, err := g.run("merge-base", "--is-ancestor", ancestor, descendant)
+	_, err := g.runCmd(runOptions{env: proofHistoryEnv}, "merge-base", "--is-ancestor", ancestor, descendant)
 	if err != nil {
 		// Exit code 1 means not an ancestor, not an error. Any other code
 		// (128: unknown commit, broken repo) is an error.
@@ -2916,10 +2917,13 @@ func (g *Git) StashPop(ref string) error {
 	return nil
 }
 
-// UnpushedCommits returns the number of commits that are not pushed to the remote.
-// It prefers the exact remote branch when one exists, because polecat branches may
-// track origin/main while pushing work to origin/<current-branch>.
-// Returns 0 if there is no upstream or exact remote branch configured.
+// UnpushedCommits returns the number of commits on HEAD that the remote does
+// not prove preserved (BranchPreservationStatus with no targets). It returns 0
+// only on remote proof, or when the repository has no commit at all. When the
+// proof cannot be made (no "origin" remote, remote unreachable, remote tips
+// not fetched) the error wraps ErrRemoteProofUnavailable and the count is 0:
+// callers must read the error, never the count alone (CheckUncommittedWork
+// maps it to UnpushedUnverified).
 func (g *Git) UnpushedCommits() (int, error) {
 	branch, branchErr := g.CurrentBranch()
 	if branchErr != nil || branch == "" || branch == "HEAD" {
@@ -2928,188 +2932,17 @@ func (g *Git) UnpushedCommits() (int, error) {
 
 	status, err := g.BranchPreservationStatus(branch, "origin", nil)
 	if err != nil {
-		if errors.Is(err, errNoComparisonRefs) {
-			return 0, nil
-		}
 		return 0, err
 	}
 	return status.UnpreservedPatchCount, nil
 }
 
-func (g *Git) countCommitsAhead(base string) (int, error) {
-	out, err := g.run("rev-list", "--count", base+"..HEAD")
-	if err != nil {
-		return 0, err
-	}
-
-	var count int
-	_, err = fmt.Sscanf(out, "%d", &count)
-	if err != nil {
-		return 0, fmt.Errorf("parsing unpushed count: %w", err)
-	}
-
-	return count, nil
-}
-
-func (g *Git) unpushedFromExactRemoteBranch(localBranch, remote string) (int, bool, error) {
-	remoteSHA, err := g.PushRemoteBranchTip(remote, localBranch)
-	if err != nil || remoteSHA == "" {
-		return 0, false, err
-	}
-
-	count, err := g.countCommitsAhead(remoteSHA)
-	return count, true, err
-}
-
-// BranchPreservationStatus describes whether HEAD is already preserved on a
-// durable branch, and how many patch-unique commits remain if it is not.
-type BranchPreservationStatus struct {
-	Preserved             bool
-	ComparisonBase        string
-	UnpreservedPatchCount int
-	Evidence              string
-}
-
-// BranchPreservationStatus checks whether HEAD is safe relative to the actual
-// custody target for the branch. It prefers proof from the exact pushed source
-// branch, then explicit target branches, then upstream. It only falls back to the
-// remote default branch when no target/custody/upstream evidence exists.
-func (g *Git) BranchPreservationStatus(localBranch, remote string, targets []string) (BranchPreservationStatus, error) {
-	return g.branchPreservationStatus(localBranch, remote, targets, true)
-}
-
-// BranchTargetStatus checks whether HEAD is already represented on the branch's
-// target/custody refs. Unlike BranchPreservationStatus, the exact pushed source
-// branch is not enough evidence because pushed-but-unsubmitted work still needs
-// merge-queue recovery.
-func (g *Git) BranchTargetStatus(localBranch, remote string, targets []string) (BranchPreservationStatus, error) {
-	return g.branchPreservationStatus(localBranch, remote, targets, false)
-}
-
-func (g *Git) branchPreservationStatus(localBranch, remote string, targets []string, includeExactBranch bool) (BranchPreservationStatus, error) {
-	if remote == "" {
-		remote = "origin"
-	}
-	var result BranchPreservationStatus
-	var candidates []string
-	hasEvidence := len(nonEmptyUnique(targets)) > 0
-
-	if includeExactBranch && localBranch != "" && localBranch != "HEAD" {
-		if remoteSHA, err := g.PushRemoteBranchTip(remote, localBranch); err == nil && remoteSHA != "" {
-			hasEvidence = true
-			result.ComparisonBase = remote + "/" + localBranch
-			if contains, containsErr := g.refContainsHead(remoteSHA); containsErr == nil && contains {
-				result.Preserved = true
-				result.UnpreservedPatchCount = 0
-				result.Evidence = "exact_remote_branch"
-				return result, nil
-			}
-			candidates = append(candidates, remoteSHA)
-		}
-	}
-
-	for _, target := range nonEmptyUnique(targets) {
-		if ref, ok := g.resolveComparisonRef(target, remote); ok {
-			candidates = append(candidates, ref)
-		}
-	}
-
-	if upstream, err := g.run("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err == nil && strings.TrimSpace(upstream) != "" {
-		upstream = strings.TrimSpace(upstream)
-		if includeExactBranch || !isPolecatSelfUpstream(localBranch, remote, upstream) {
-			hasEvidence = true
-			candidates = append(candidates, upstream)
-		}
-	}
-
-	if !hasEvidence {
-		for _, ref := range []string{remote + "/" + g.RemoteDefaultBranch(), remote + "/main", remote + "/master"} {
-			if resolved, ok := g.resolveComparisonRef(ref, remote); ok {
-				candidates = append(candidates, resolved)
-			}
-		}
-	}
-
-	candidates = nonEmptyUnique(candidates)
-	if len(candidates) == 0 {
-		if hasEvidence {
-			return result, fmt.Errorf("no target/custody refs resolved")
-		}
-		return result, errNoComparisonRefs
-	}
-
-	var lastErr error
-	for _, ref := range candidates {
-		candidate, err := g.preservationAgainstRef(ref)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if candidate.Evidence == "" {
-			candidate.Evidence = "comparison_ref"
-		}
-		if candidate.Preserved {
-			return candidate, nil
-		}
-		if result.ComparisonBase == "" {
-			result = candidate
-		}
-	}
-	if result.ComparisonBase != "" {
-		return result, nil
-	}
-	if lastErr != nil {
-		return result, lastErr
-	}
-	return result, fmt.Errorf("no usable comparison refs")
-}
-
-func isPolecatSelfUpstream(localBranch, remote, upstream string) bool {
-	return strings.HasPrefix(localBranch, "polecat/") && upstream == remote+"/"+localBranch
-}
-
-func (g *Git) refContainsHead(ref string) (bool, error) {
-	head, err := g.Rev("HEAD")
-	if err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(ref) == strings.TrimSpace(head) {
-		return true, nil
-	}
-	return g.IsAncestor("HEAD", ref)
-}
-
-func (g *Git) resolveComparisonRef(ref, remote string) (string, bool) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "", false
-	}
-	for _, candidate := range comparisonRefCandidates(ref, remote) {
-		if ok, err := g.RefExists(candidate); err == nil && ok {
-			return candidate, true
-		}
-	}
-	return "", false
-}
-
-func comparisonRefCandidates(ref, remote string) []string {
-	if strings.HasPrefix(ref, "refs/") || strings.HasPrefix(ref, remote+"/") {
-		return []string{ref}
-	}
-	if strings.HasPrefix(ref, "upstream/") {
-		return []string{ref}
-	}
-	if !strings.Contains(ref, "/") && remote != "upstream" {
-		return []string{"upstream/" + ref, remote + "/" + ref, ref}
-	}
-	return []string{remote + "/" + ref, ref}
-}
-
-func (g *Git) preservationAgainstRef(ref string) (BranchPreservationStatus, error) {
-	return g.preservationOfRefAgainstRef("HEAD", ref)
-}
-
+// preservationOfRefAgainstRef is PreservedOn's rule. Every command runs as a
+// local proof command (withLocalProofLimits: bounded, no lazy fetch, replace
+// refs, grafts and commit-graph ignored), so local history rewrites cannot
+// make ref "contain" head (gt-pd1c.86).
 func (g *Git) preservationOfRefAgainstRef(head, ref string) (BranchPreservationStatus, error) {
+	g = g.withLocalProofLimits()
 	status := BranchPreservationStatus{ComparisonBase: ref}
 	if contains, err := g.IsAncestor(head, ref); err == nil && contains {
 		status.Preserved = true
@@ -3220,23 +3053,36 @@ type UncommittedWorkStatus struct {
 	HasUncommittedChanges bool
 	StashCount            int
 	UnpushedCommits       int
+	// UnpushedUnverified: the remote could not prove HEAD preserved
+	// (ErrRemoteProofUnavailable: remote unreachable or its tips not
+	// fetched), so unpushed commits cannot be ruled out. UnpushedCommits is
+	// then 0 (unknown); Clean and CleanExcludingBeads report false.
+	UnpushedUnverified bool
 	// Details for error messages
 	ModifiedFiles  []string
 	UntrackedFiles []string
 	UnmergedFiles  []string
 }
 
+// CommitsAtRisk reports committed work the remote does not prove preserved:
+// unpushed commits, or a preservation check that could not be made
+// (UnpushedUnverified). It is the one predicate for "commits at risk"; use it
+// instead of reading UnpushedCommits alone.
+func (s *UncommittedWorkStatus) CommitsAtRisk() bool {
+	return s.UnpushedCommits > 0 || s.UnpushedUnverified
+}
+
 // Clean returns true if there is no uncommitted work.
 func (s *UncommittedWorkStatus) Clean() bool {
-	return !s.HasUncommittedChanges && s.StashCount == 0 && s.UnpushedCommits == 0 && len(s.UnmergedFiles) == 0
+	return !s.HasUncommittedChanges && s.StashCount == 0 && !s.CommitsAtRisk() && len(s.UnmergedFiles) == 0
 }
 
 // CleanExcludingBeads returns true if the only uncommitted changes are .beads/ files.
 // This is useful for polecat stale detection where beads database files are synced
 // across worktrees and shouldn't block cleanup.
 func (s *UncommittedWorkStatus) CleanExcludingBeads() bool {
-	// Stashes and unpushed commits always count as uncommitted work
-	if s.StashCount > 0 || s.UnpushedCommits > 0 || len(s.UnmergedFiles) > 0 {
+	// Stashes and unpushed (or unverified) commits always count as uncommitted work
+	if s.StashCount > 0 || s.CommitsAtRisk() || len(s.UnmergedFiles) > 0 {
 		return false
 	}
 
@@ -3340,11 +3186,14 @@ func (s *UncommittedWorkStatus) NonRuntimePaths() []string {
 // runtime artifacts covered by the centralized exclusion policy.
 // Used by gt done to avoid blocking completion on toolchain-managed files.
 //
-// Note: UnpushedCommits and StashCount are intentionally NOT checked here. This
-// function only evaluates whether uncommitted *file* changes are runtime artifacts.
-// Unpushed commits represent committed (but not yet pushed) work, and stashes
-// survive worktree deletion — both are handled separately and shouldn't block
-// completion on runtime-only dirt (gas-7vg).
+// Note: UnpushedCommits, UnpushedUnverified and StashCount are intentionally
+// NOT checked here. This function only evaluates whether uncommitted *file*
+// changes are runtime artifacts. Unpushed (or unverified) commits represent
+// committed work, and stashes survive worktree deletion — both are handled
+// separately and shouldn't block completion on runtime-only dirt (gas-7vg).
+// gt done relies on that split (dirty files are auto-committed, commits are
+// pushed). Callers that gate on "nothing at risk" combine it with
+// CommitsAtRisk (the one commit predicate) and StashCount, or use Clean.
 func (s *UncommittedWorkStatus) CleanExcludingRuntime() bool {
 	if len(s.UnmergedFiles) > 0 {
 		return false
@@ -3380,6 +3229,9 @@ func (s *UncommittedWorkStatus) String() string {
 	if s.UnpushedCommits > 0 {
 		issues = append(issues, fmt.Sprintf("%d unpushed commit(s)", s.UnpushedCommits))
 	}
+	if s.UnpushedUnverified {
+		issues = append(issues, "unpushed commits unverified (the remote could not be read or is not fetched)")
+	}
 	if len(issues) == 0 {
 		return "clean"
 	}
@@ -3408,10 +3260,12 @@ func (g *Git) CheckUncommittedWork() (*UncommittedWorkStatus, error) {
 	}
 	status.StashCount = stashCount
 
-	// Check unpushed commits
+	// Check unpushed commits. Failing to prove them pushed is reported in
+	// the status, not as an error: callers that treat an error as "skip the
+	// check" must still see the work as at risk (gt-pd1c.86, fail closed).
 	unpushed, err := g.UnpushedCommits()
 	if err != nil {
-		return nil, fmt.Errorf("checking unpushed commits: %w", err)
+		status.UnpushedUnverified = true
 	}
 	status.UnpushedCommits = unpushed
 
