@@ -76,6 +76,17 @@ import (
 //     GT_INTEGRATION_LAND=1 passes; the variable is a policy marker set by
 //     gt mq integration land, not proof of origin (any agent could set it).
 //     Humans keep the previous rule: landing needs GT_INTEGRATION_LAND=1.
+//   - Refinery merge shape (rule 2(c), gt-pd1c.78 tahap 3): an update of a
+//     target by the refinery of a detected rig must be exactly what gt mq
+//     merge pushes: a merge commit C with exactly two parents, C^1 the current
+//     remote tip, C^2 the commit_sha of an OPEN gt:merge-request of this rig
+//     for that target, and C's tree the clean `git merge-tree` of C^1 and
+//     C^2. The one other shape is gt mq integration land (auto-land on,
+//     GT_INTEGRATION_LAND=1, C^2 the tip of an integration/* branch on the
+//     push remote). A fast-forward, a stack of commits, an octopus, a merge
+//     of anything else, or a tree that differs from the clean merge is
+//     refused. This is a shape proof only: it does not prove which process
+//     pushed (stage 4 binds that).
 //   - Scope guard (agents only): the pushed range remote_sha..local_sha (for a
 //     new branch: merge-base of the remote default branch tip, read with
 //     ls-remote, and local_sha) must stay inside merge_queue.allowed_paths
@@ -124,6 +135,11 @@ Rules (agent = GT_ROLE, BD_ACTOR, GT_POLECAT or GT_CREW is set):
     set by gt mq integration land). Humans need GT_INTEGRATION_LAND=1.
   - Agent push to the default branch or integration/*: every changed path in
     the pushed range must match merge_queue.allowed_paths (when set).
+  - Refinery push to the default branch or integration/* of its rig: only a
+    two-parent merge commit onto the current tip whose second parent is the
+    commit_sha of an open MR for that branch and whose tree is the clean
+    merge of its parents (what gt mq merge pushes), or gt mq integration
+    land's merge of an integration branch. Everything else is refused.
 Anything that cannot be verified is refused.
 
 The hook is installed by gt rig add, gt up, polecat/crew creation and
@@ -311,6 +327,9 @@ type prePushGit interface {
 	MergeBase(a, b string) (string, error)
 	DiffNameOnlyRange(from, to string) ([]string, error)
 	RemoteHeadBranch(remote string) (string, error)
+	CommitParents(commit string) ([]string, error) // rule 2(c): the merge shape
+	MergeTreeWrite(a, b string) (string, error)    // rule 2(c): the clean merge tree
+	CommitTree(commit string) (string, error)      // rule 2(c): the pushed tree, replace refs ignored
 }
 
 // prePushGuard evaluates one push.
@@ -412,7 +431,10 @@ func (g *prePushGuard) checkUpdate(u prePushUpdate) error {
 	if agentVar == "" {
 		return nil
 	}
-	return g.checkScope(u, branch, defaults[0], r)
+	if err := g.checkScope(u, branch, defaults[0], r); err != nil {
+		return err
+	}
+	return g.checkRefineryMerge(u, branch, r)
 }
 
 // managedRepo reports whether the pushing repository runs the Gas Town

@@ -95,12 +95,51 @@ func (g *Git) LookupPullRequest(ref PullRequestRef) (*PullRequestInfo, error) {
 
 // HasOpenPullRequest checks whether the ref resolves to an open PR. Errors and
 // ambiguity are treated as protected so callers do not delete a branch blindly.
+// The one exception (gt-pd1c.64): an origin whose fetch AND push URLs are a
+// local repository (a file:// URL or a filesystem path, e.g. a mirror) hosts
+// no pull requests, so no PR can have its branch as head and nothing is looked
+// up. The push URL decides because branch deletion and the landing proofs go
+// to the push target. An MR that records a PR (URL or number) is always looked
+// up. Any other remote, whatever its host, is looked up and fails closed.
 func (g *Git) HasOpenPullRequest(ref PullRequestRef) bool {
+	if strings.TrimSpace(ref.URL) == "" && ref.Number == 0 && g.originIsLocalRepository() {
+		return false
+	}
 	pr, err := g.LookupPullRequest(ref)
 	if err != nil {
 		return !errors.Is(err, ErrPullRequestNotFound)
 	}
 	return pr.Open()
+}
+
+// originIsLocalRepository reports whether origin's fetch and push URLs both
+// name a local repository. Unreadable URLs count as hosted (fail closed).
+func (g *Git) originIsLocalRepository() bool {
+	fetch, err := g.RemoteURL("origin")
+	if err != nil || !isLocalRemoteURL(fetch) {
+		return false
+	}
+	push, err := g.GetPushURL("origin")
+	return err == nil && isLocalRemoteURL(push)
+}
+
+// isLocalRemoteURL reports whether a remote URL names a repository on the
+// local filesystem: a file:// URL, an absolute or ./ ../ relative path, or a
+// Windows drive path. scp-like "host:path" and every URL scheme are hosted.
+func isLocalRemoteURL(raw string) bool {
+	url := strings.TrimSpace(raw)
+	switch {
+	case url == "":
+		return false
+	case strings.HasPrefix(url, "file://"):
+		return true
+	case strings.HasPrefix(url, "/"), strings.HasPrefix(url, "./"), strings.HasPrefix(url, "../"):
+		return true
+	case len(url) >= 3 && url[1] == ':' && (url[2] == '\\' || url[2] == '/') &&
+		((url[0] >= 'A' && url[0] <= 'Z') || (url[0] >= 'a' && url[0] <= 'z')):
+		return true
+	}
+	return false
 }
 
 func (g *Git) pullRequestTargetRepo(explicit string) (string, error) {

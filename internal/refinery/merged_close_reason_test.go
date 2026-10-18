@@ -63,6 +63,7 @@ func TestCloseMergedWorkBead_RefusesInvalidMRIDBeforeClosing(t *testing.T) {
 func TestCloseMergedWorkBead_ClosesWithMergedInReason(t *testing.T) {
 	work := newFakeWorkBeadStore()
 	work.add(workIssue("gt-source", string(beads.StatusOpen)))
+	work.link("gt-source", "gt-mr")
 	result := closeMergedWorkBead(work, nil, nil, mergedWorkBeadCloseRequest{MRID: "gt-mr", SourceIssue: "gt-source", Target: "main", MergeCommit: "abc123"})
 	if !result.Closed || result.CloseErr != nil {
 		t.Fatalf("result = %+v, want closed", result)

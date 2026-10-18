@@ -42,6 +42,7 @@ func TestCloseMergedWorkBead_ClassifiesTheSourceOutcome(t *testing.T) {
 			work := newFakeWorkBeadStore()
 			if tc.issue != nil {
 				work.add(tc.issue)
+				work.link(tc.issue.ID, "gt-mr")
 			}
 			work.closeErr = tc.closeErr
 			r := closeMergedWorkBead(work, nil, nil, mergedWorkBeadCloseRequest{MRID: "gt-mr", SourceIssue: tc.source, Target: "main"})

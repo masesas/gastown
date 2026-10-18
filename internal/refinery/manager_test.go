@@ -531,8 +531,8 @@ func TestCompareScoredIssues_UsesDeterministicIDTieBreaker(t *testing.T) {
 	}
 }
 
-func TestManager_PostMerge_ClosesMRAndSourceIssue(t *testing.T) {
-	mgr, rigPath := setupTestManager(t)
+func TestMergedClose_ClosesMRAndBoundSourceIssue(t *testing.T) {
+	_, rigPath := setupTestManager(t)
 	testutil.RequireDoltContainer(t)
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
@@ -563,23 +563,18 @@ func TestManager_PostMerge_ClosesMRAndSourceIssue(t *testing.T) {
 	}
 
 	// Run PostMerge
-	result, err := mgr.PostMerge(mrIssue.ID)
-	if err != nil {
-		t.Fatalf("PostMerge() error: %v", err)
-	}
+	linkSourceToMR(t, b, srcIssue.ID, mrIssue.ID)
+	result := closeMergedForTest(t, b, mrIssue.ID)
 
 	// Verify result
-	if !result.MRClosed {
-		t.Error("PostMerge() MRClosed = false, want true")
+	if !result.mrClosed() {
+		t.Error("merged close: MRClosed = false, want true")
 	}
-	if !result.SourceIssueClosed {
-		t.Error("PostMerge() SourceIssueClosed = false, want true")
+	if !result.SourceClose.Closed {
+		t.Error("merged close: SourceIssueClosed = false, want true")
 	}
-	if result.SourceIssueID != srcIssue.ID {
-		t.Errorf("PostMerge() SourceIssueID = %s, want %s", result.SourceIssueID, srcIssue.ID)
-	}
-	if result.MR.Branch != "polecat/test/gt-xyz" {
-		t.Errorf("PostMerge() MR.Branch = %s, want polecat/test/gt-xyz", result.MR.Branch)
+	if result.SourceClose.WorkBeadID != srcIssue.ID {
+		t.Errorf("merged close: SourceIssueID = %s, want %s", result.SourceClose.WorkBeadID, srcIssue.ID)
 	}
 }
 
@@ -631,8 +626,8 @@ func TestManager_RejectMR_ClearsMatchingActiveMR(t *testing.T) {
 	assertMRCloseReason(t, b, mrIssue.ID, string(CloseReasonRejected))
 }
 
-func TestManager_PostMerge_ClearsMatchingActiveMRAndClosesSource(t *testing.T) {
-	mgr, rigPath := setupTestManager(t)
+func TestMergedClose_ClearsMatchingActiveMRAndClosesSource(t *testing.T) {
+	_, rigPath := setupTestManager(t)
 	testutil.RequireDoltContainer(t)
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
@@ -666,12 +661,10 @@ func TestManager_PostMerge_ClearsMatchingActiveMRAndClosesSource(t *testing.T) {
 		t.Fatalf("set active_mr: %v", err)
 	}
 
-	result, err := mgr.PostMerge(mrIssue.ID)
-	if err != nil {
-		t.Fatalf("PostMerge() error: %v", err)
-	}
-	if !result.MRClosed || !result.SourceIssueClosed {
-		t.Fatalf("PostMerge() result = %+v, want MR/source closed", result)
+	linkSourceToMR(t, b, srcIssue.ID, mrIssue.ID)
+	result := closeMergedForTest(t, b, mrIssue.ID)
+	if !result.mrClosed() || !result.SourceClose.Closed {
+		t.Fatalf("merged close: result = %+v, want MR/source closed", result)
 	}
 
 	assertAgentActiveMR(t, b, agentIssue.ID, "")
@@ -679,8 +672,8 @@ func TestManager_PostMerge_ClearsMatchingActiveMRAndClosesSource(t *testing.T) {
 	assertMRCloseReason(t, b, mrIssue.ID, string(CloseReasonMerged))
 }
 
-func TestManager_PostMerge_ClosesWorkBeadFromAgentFallbackBeforeActiveMRClear(t *testing.T) {
-	mgr, rigPath := setupTestManager(t)
+func TestMergedClose_ClosesWorkBeadFromAgentFallbackBeforeActiveMRClear(t *testing.T) {
+	_, rigPath := setupTestManager(t)
 	testutil.RequireDoltContainer(t)
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
@@ -719,15 +712,13 @@ func TestManager_PostMerge_ClosesWorkBeadFromAgentFallbackBeforeActiveMRClear(t 
 		t.Fatalf("set active_mr: %v", err)
 	}
 
-	result, err := mgr.PostMerge(mrIssue.ID)
-	if err != nil {
-		t.Fatalf("PostMerge() error: %v", err)
+	linkSourceToMR(t, b, srcIssue.ID, mrIssue.ID)
+	result := closeMergedForTest(t, b, mrIssue.ID)
+	if !result.mrClosed() || !result.SourceClose.Closed {
+		t.Fatalf("merged close: result = %+v, want MR/source closed", result)
 	}
-	if !result.MRClosed || !result.SourceIssueClosed {
-		t.Fatalf("PostMerge() result = %+v, want MR/source closed", result)
-	}
-	if result.SourceIssueID != srcIssue.ID {
-		t.Fatalf("SourceIssueID = %q, want %q", result.SourceIssueID, srcIssue.ID)
+	if result.SourceClose.WorkBeadID != srcIssue.ID {
+		t.Fatalf("SourceIssueID = %q, want %q", result.SourceClose.WorkBeadID, srcIssue.ID)
 	}
 
 	assertAgentActiveMR(t, b, agentIssue.ID, "")
@@ -735,8 +726,8 @@ func TestManager_PostMerge_ClosesWorkBeadFromAgentFallbackBeforeActiveMRClear(t 
 	assertMRCloseReason(t, b, mrIssue.ID, string(CloseReasonMerged))
 }
 
-func TestManager_PostMerge_AlreadyClosedMRRetriesActiveMRCleanup(t *testing.T) {
-	mgr, rigPath := setupTestManager(t)
+func TestMergedClose_AlreadyClosedMRRetriesActiveMRCleanup(t *testing.T) {
+	_, rigPath := setupTestManager(t)
 	testutil.RequireDoltContainer(t)
 	port, _ := strconv.Atoi(testutil.DoltContainerPort())
 	testutil.ResetDoltDatabases(t, "gt")
@@ -773,12 +764,10 @@ func TestManager_PostMerge_AlreadyClosedMRRetriesActiveMRCleanup(t *testing.T) {
 		t.Fatalf("close MR issue: %v", err)
 	}
 
-	result, err := mgr.PostMerge(mrIssue.ID)
-	if err != nil {
-		t.Fatalf("PostMerge() error: %v", err)
-	}
-	if !result.MRClosed || !result.SourceIssueClosed {
-		t.Fatalf("PostMerge() result = %+v, want MR/source closed", result)
+	linkSourceToMR(t, b, srcIssue.ID, mrIssue.ID)
+	result := closeMergedForTest(t, b, mrIssue.ID)
+	if !result.mrClosed() || !result.SourceClose.Closed {
+		t.Fatalf("merged close: result = %+v, want MR/source closed", result)
 	}
 
 	assertAgentActiveMR(t, b, agentIssue.ID, "")
@@ -825,45 +814,27 @@ func TestManager_TerminalCloseDoesNotClearNewerActiveMR(t *testing.T) {
 	assertIssueStatus(t, b, srcIssue.ID, string(beads.StatusOpen))
 }
 
-func TestManager_PostMerge_AlreadyClosedMR(t *testing.T) {
-	mgr, rigPath := setupTestManager(t)
-	testutil.RequireDoltContainer(t)
-	port, _ := strconv.Atoi(testutil.DoltContainerPort())
-	testutil.ResetDoltDatabases(t, "gt")
-	b := beads.NewIsolatedWithPort(rigPath, port)
-	useIsolatedMergeQueue(t, b)
-	if err := b.Init("gt"); err != nil {
-		t.Skipf("bd init unavailable: %v", err)
+// linkSourceToMR adds the back-link gt done writes when it creates the MR:
+// the merged close only closes a source bound to its MR (gt-pd1c.89).
+func linkSourceToMR(t *testing.T, b *beads.Beads, sourceID, mrID string) {
+	t.Helper()
+	if err := b.AddComment(sourceID, beads.MRBackLinkComment(mrID)); err != nil {
+		t.Fatalf("back-link %s -> %s: %v", sourceID, mrID, err)
 	}
+}
 
-	// Create and close an MR bead
-	mrIssue, err := b.Create(beads.CreateOptions{
-		Title:       "Already merged MR",
-		Labels:      []string{"gt:merge-request"},
-		Description: "branch: polecat/old/gt-old\ntarget: main",
-	})
+// closeMergedForTest closes MR mrID as merged through the one merged-close
+// rule (closeTerminalMR) every finalize path uses.
+func closeMergedForTest(t *testing.T, b *beads.Beads, mrID string) *terminalMRCloseResult {
+	t.Helper()
+	res, err := closeTerminalMR(b, mrID, terminalMRCloseOptions{Reason: string(CloseReasonMerged), Target: "main"})
 	if err != nil {
-		t.Fatalf("create MR issue: %v", err)
+		t.Fatalf("merged close of %s: %v", mrID, err)
 	}
-	if err := b.Close(mrIssue.ID); err != nil {
-		t.Fatalf("close MR issue: %v", err)
-	}
-
-	// Already-closed MRs without a merged close_reason are not safe to post-merge.
-	_, err = mgr.PostMerge(mrIssue.ID)
-	if err == nil {
-		t.Error("PostMerge() expected error for already-closed MR without merged close_reason")
-	}
+	return res
 }
 
-func TestManager_PostMerge_NotFound(t *testing.T) {
-	mgr, _ := setupTestManager(t)
-
-	_, err := mgr.PostMerge("nonexistent-mr-id")
-	if err == nil {
-		t.Error("PostMerge() expected error for nonexistent MR")
-	}
-}
+func (r *terminalMRCloseResult) mrClosed() bool { return r != nil && (r.Closed || r.AlreadyTerminal) }
 
 func assertAgentActiveMR(t *testing.T, b *beads.Beads, agentID string, want string) {
 	t.Helper()

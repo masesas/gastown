@@ -21,8 +21,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pushed by SHA, one merge runs per rig (lock + compare-and-set claim), a merge
   with no gate needs an explicit `run_tests: false`, and FIX_NEEDED is sent once
   per submitted commit.
+- **Pre-push rule 2(c): the refinery pushes only `gt mq merge`'s merge** — a
+  refinery push to the default branch or `integration/*` of its rig must be a
+  two-parent merge commit onto the current remote tip whose second parent is
+  the `commit_sha` of an open MR for that branch and whose tree is the clean
+  `git merge-tree` of its parents (or `gt mq integration land`'s merge with
+  auto-land on). Fast-forwards, stacks, octopus merges, merges of anything
+  else and merges with extra changes are refused with a pointer to
+  `gt mq merge` (gt-pd1c.78 tahap 3). The pushed tree and parents are read
+  with replace refs ignored. A shape proof, not process binding: a hand-made
+  merge of the same shape still passes until stage 4.
+
+### Changed
+
+- **The refinery formula and role template land every MR with one command**
+  (`mol-refinery-patrol` v17, `refinery.md.tmpl`): `gt mq merge <rig> <mr-id>
+  --json`, then act on `kind` (merged, conflict, gates_failed,
+  scope_violation, not_eligible, needs_approval, slot_timeout,
+  branch_missing, cleanup_failed via `next`, precondition, error). The manual
+  checkout/rebase/merge/test/push/`bd close` instructions, the `run-tests`,
+  `quality-review`, `handle-failures` and `merge-push` steps and the
+  `gt mq check-scope` step are gone, with an explicit FORBIDDEN list (no git
+  merge/rebase/push to a target, no `bd close`/`bd update --status` of an MR
+  or source, no deleting polecat branches, no `--force`). The formula vars
+  `run_tests`, `*_command`, `delete_merged_branches` and `require_review` are
+  removed and no longer injected by `gt patrol new`: `gt mq merge` reads them
+  from the rig config (quality review stays, as an optional measurement in
+  process-branch).
+- **`gt mq post-merge` is a thin wrapper over the engine's one finalize** —
+  it finishes an MR `gt mq merge` closed as merged (after `cleanup_failed`),
+  under the rig merge lock, and refuses an open MR (use `gt mq merge`), an MR
+  not closed as merged, and a landing proof not bound to the MR: a recorded
+  `merge_commit` proven on the target with exactly two parents and
+  `commit_sha` second; `commit_sha` reachable from the target is no longer
+  enough (gt-pd1c.89). Branch cleanup follows the engine (polecat branches on
+  origin and locally; others locally with `delete_merged_branches`). Only the
+  refinery or crew of the rig, or a human, may run it. The command's own
+  proof/close/cleanup code and `refinery.Manager.PostMerge`/`PostMergeMR` are
+  removed.
 
 ### Fixed
+
+- **A merged close binds the source to its MR** (gt-pd1c.89) — the source is
+  force-closed `Merged in <mr>` only when it carries the back-link
+  `MR created: <mr>` that `gt done` / `gt mq submit` write when they create the
+  MR (`gt mq submit` now writes it before nudging the refinery). Stale or
+  mistaken MR data no longer closes a bead it was not created for; this is
+  defense in depth, not a guard against a bd writer (who can add the comment).
+- **Merged branches are deleted on a remote without PRs** (gt-pd1c.64, F12) —
+  on an origin whose fetch and push URLs are `file://` or a path (e.g. a
+  mirror), and whose MR records no PR, no PR lookup runs, so the
+  branch is no longer kept as "open PR exists or PR state unknown (gas-fk4)".
+- **`gt callbacks process` no longer closes beads from a mail** (F10) — the
+  unused "Merge Request Completed:" callback closed its `Source:` bead with
+  `Merged in <commit sha>` on any sender's word; it is removed and such a mail
+  is left unprocessed.
 
 - **`gt mq merge` can close the MR it claimed** — bd 1.3.0 refuses `bd close`
   when the bead's assignee is not the actor, and the engine claimed the MR as

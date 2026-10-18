@@ -85,11 +85,11 @@ func (m *Manager) ConfirmLanding(idOrBranch string, landed bool, actor, via stri
 		TownRoot:      filepath.Dir(m.rig.Path),
 	})
 	if err != nil {
-		retry := "gt mq reject <rig> " + mr.ID + " --reason \"retry not-landed release\""
-		if landed {
-			retry = "gt mq post-merge <rig> " + mr.ID
+		recover := "let the witness orphan scan or `gt doctor --fix` settle the source (the recorded verdict now decides it)"
+		if !landed {
+			recover = "rerun `gt mq reject <rig> " + mr.ID + " --reason \"retry not-landed release\"`, or " + recover
 		}
-		return nil, fmt.Errorf("verdict %s is recorded on MR %s, but applying it failed: %w\nRecover: rerun `%s` (the recorded verdict is now proof), or let the witness orphan scan / `gt doctor --fix` settle the source", verdict, mr.ID, err, retry)
+		return nil, fmt.Errorf("verdict %s is recorded on MR %s, but applying it failed: %w\nRecover: %s", verdict, mr.ID, err, recover)
 	}
 	reportSourceRelease(m.output, "", closeResult)
 	res := &LandingVerdictResult{

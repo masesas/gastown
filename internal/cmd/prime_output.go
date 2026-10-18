@@ -417,6 +417,7 @@ func outputCommandQuickReference(ctx RoleContext) {
 		fmt.Println("| Want to... | Correct command | Common mistake |")
 		fmt.Println("|------------|----------------|----------------|")
 		fmt.Printf("| Check merge queue | `%s mq list %s` | ~~git branch -r \\| grep polecat~~ (misses MRs) |\n", c, ctx.Rig)
+		fmt.Printf("| Merge an MR | `%s mq merge %s <mr-id> --json` | ~~git merge + git push + bd close~~ (FORBIDDEN: skips gates, scope and finalize) |\n", c, ctx.Rig)
 		fmt.Printf("| Message a polecat | `%s nudge %s/<name> \"msg\"` | ~~tmux send-keys~~ (unreliable) |\n", c, ctx.Rig)
 		fmt.Println("| Create issues | `bd create \"title\"` | ~~gt issue create~~ (not a command) |")
 

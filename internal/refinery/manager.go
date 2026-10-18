@@ -678,9 +678,9 @@ func (m *Manager) findMRForTerminalCleanup(idOrBranch string, b *beads.Beads) (*
 	return m.issueToMR(issue), nil
 }
 
-// FindMRForPostMerge resolves an MR using the same open/terminal lookup rules
-// as PostMerge, so callers can prove the merge before closing beads.
-func (m *Manager) FindMRForPostMerge(idOrBranch string) (*MergeRequest, error) {
+// FindMRAnyStatus resolves an MR by ID or branch: the open queue first, then
+// the bead itself (open or closed). gt mq check-scope uses it.
+func (m *Manager) FindMRAnyStatus(idOrBranch string) (*MergeRequest, error) {
 	b := beads.New(m.rig.BeadsPath())
 	return m.findMRForTerminalCleanup(idOrBranch, b)
 }
@@ -748,100 +748,6 @@ func (m *Manager) RejectMR(idOrBranch string, reason string, notify bool) (*Merg
 	}
 
 	return mr, nil
-}
-
-// PostMergeResult holds the result of a post-merge cleanup operation.
-type PostMergeResult struct {
-	MR                  *MergeRequest
-	MRClosed            bool
-	SourceIssueClosed   bool
-	SourceIssueID       string
-	SourceIssueNotFound bool // true if source issue doesn't exist (already closed or invalid)
-}
-
-// PostMerge performs post-merge cleanup for a successfully merged MR.
-// It closes the MR bead and its source issue. Branch deletion is handled
-// by the caller since the Manager doesn't have git access.
-func (m *Manager) PostMerge(idOrBranch string) (*PostMergeResult, error) {
-	b := beads.New(m.rig.BeadsPath())
-	mr, err := m.findMRForTerminalCleanup(idOrBranch, b)
-	if err != nil {
-		return nil, err
-	}
-	return m.postMergeMR(b, mr)
-}
-
-// PostMergeMR performs post-merge cleanup for an MR snapshot that the caller has
-// already verified. This keeps proof and side effects on the same MR metadata.
-func (m *Manager) PostMergeMR(mr *MergeRequest) (*PostMergeResult, error) {
-	if mr == nil {
-		return nil, ErrMRNotFound
-	}
-	b := beads.New(m.rig.BeadsPath())
-	return m.postMergeMR(b, mr)
-}
-
-func (m *Manager) postMergeMR(b *beads.Beads, mr *MergeRequest) (*PostMergeResult, error) {
-	workBeadID := resolveMergedWorkBead(b.ForAgentBead(), mergedWorkBeadCloseRequest{
-		MRID:        mr.ID,
-		Branch:      mr.Branch,
-		SourceIssue: mr.IssueID,
-		AgentBead:   mr.AgentBead,
-	})
-
-	result := &PostMergeResult{
-		MR:            mr,
-		SourceIssueID: workBeadID,
-	}
-
-	// Close the MR bead
-	closeResult, err := closeTerminalMR(b, mr.ID, terminalMRCloseOptions{
-		Reason:        string(CloseReasonMerged),
-		MergeCommit:   mr.MergeCommit,
-		AgentBeadHint: mr.AgentBead,
-		ExpectedMR:    mr,
-		Target:        mr.TargetBranch,
-		Out:           m.output,
-		Prover:        mergeproof.ForRigPath(m.rig.Path),
-		TownRoot:      filepath.Dir(m.rig.Path),
-	})
-	if err != nil {
-		return result, fmt.Errorf("closing MR bead: %w", err)
-	}
-	if closeResult.AgentBead != "" {
-		mr.AgentBead = closeResult.AgentBead
-	}
-	if closeResult.AgentActiveMRClearErr != nil {
-		_, _ = fmt.Fprintf(m.output, "Warning: failed to clear agent bead %s active_mr: %v\n", closeResult.AgentBead, closeResult.AgentActiveMRClearErr)
-	}
-	if closeResult.AlreadyTerminal {
-		_, _ = fmt.Fprintf(m.output, "  %s MR already closed\n", style.Dim.Render("—"))
-		result.MRClosed = true
-		// A hand-closed MR (bare bd close) whose commit is on the target is
-		// proven merged by git; closeTerminalMR already closed its source.
-		if mr.CloseReason != CloseReasonMerged && !closeResult.SourceCloseAttempted {
-			if mr.CloseReason == "" {
-				return result, fmt.Errorf("post-merge retry for already-closed MR %s requires close_reason=%s", mr.ID, CloseReasonMerged)
-			}
-			return result, fmt.Errorf("post-merge retry for already-closed MR %s has close_reason=%s", mr.ID, mr.CloseReason)
-		}
-	} else if closeResult.Closed {
-		if closeErr := mr.Close(CloseReasonMerged); closeErr != nil {
-			_, _ = fmt.Fprintf(m.output, "Warning: failed to update MR state: %v\n", closeErr)
-		}
-		result.MRClosed = true
-	} else {
-		return result, fmt.Errorf("closing MR bead: MR %s status is not open or terminal", mr.ID)
-	}
-
-	// closeTerminalMR already closed the source issue with --force (an attached
-	// molecule's open steps would block a normal close) as part of the single
-	// merged-MR rule.
-	result.SourceIssueID = firstNonEmpty(closeResult.SourceClose.WorkBeadID, workBeadID)
-	result.SourceIssueClosed = closeResult.SourceClose.Closed
-	result.SourceIssueNotFound = closeResult.SourceClose.NotFound
-
-	return result, nil
 }
 
 // notifyWorkerRejected sends a rejection notification to a polecat.

@@ -1801,11 +1801,13 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				}
 			}
 
-			// GH#2599: Back-link source issue to MR bead for discoverability.
+			// GH#2599: Back-link source issue to MR bead. The refinery closes the
+			// source "Merged in <mr>" only when it carries this back-link
+			// (gt-pd1c.89), so it is load-bearing, not just for discoverability.
 			if issueID != "" {
-				comment := fmt.Sprintf("MR created: %s", mrID)
-				if err := sourceBD.AddComment(issueID, comment); err != nil {
-					style.PrintWarning("could not back-link source issue %s to MR %s: %v", issueID, mrID, err)
+				if err := sourceBD.AddComment(issueID, beads.MRBackLinkComment(mrID)); err != nil {
+					style.PrintWarning("could not back-link source issue %s to MR %s: %v\nThe refinery will merge the MR but will not close %s until it carries the comment %q (add it with bd comments add).",
+						issueID, mrID, err, issueID, beads.MRBackLinkComment(mrID))
 				}
 			}
 

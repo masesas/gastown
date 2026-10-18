@@ -81,7 +81,7 @@ type fakeMQScopeManager struct {
 	err error
 }
 
-func (f fakeMQScopeManager) FindMRForPostMerge(string) (*refinery.MergeRequest, error) {
+func (f fakeMQScopeManager) FindMRAnyStatus(string) (*refinery.MergeRequest, error) {
 	return f.mr, f.err
 }
 
