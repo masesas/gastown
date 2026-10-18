@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no gate needs an explicit `run_tests: false`, and FIX_NEEDED is sent once
   per submitted commit.
 
+### Fixed
+
+- **Role worktrees stay clean: gt no longer edits a tracked `.gitignore`** —
+  starting the refinery or witness and `gt crew add` appended a
+  `# Gas Town (added by gt)` block to the worktree's tracked `.gitignore`, so
+  the refinery worktree was always ` M .gitignore` and `gt mq merge` refused
+  the dirty tree, and crew workers could commit the edit. All roles now use the
+  polecats' local excludes: root-anchored patterns in the `info/exclude` git
+  actually reads (the shared `.repo.git` for refinery/witness worktrees, the
+  clone's own `.git` for crew). `rig.EnsureGitignorePatterns` is removed, and
+  `rig.EnsureLocalExcludePatterns` now fails closed with
+  `rig.ErrNotWorktreeRoot` instead of writing into an enclosing repo's exclude
+  file when the path is not a checkout root (gt-pd1c.90).
+
 ## [1.2.1] - 2026-06-06
 
 ### Fixed

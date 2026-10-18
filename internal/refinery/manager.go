@@ -197,31 +197,7 @@ func (m *Manager) start(foreground bool, agentOverride string, allowForkRig bool
 	// Background mode: spawn a Claude agent in a tmux session
 	// The Claude agent handles MR processing using git commands and beads
 
-	// Working directory is the refinery worktree (shares .git with mayor/polecats).
-	// If the worktree is missing (pruned, deleted, or corrupted), auto-repair it
-	// from the shared bare repo (.repo.git) instead of falling back to mayor/rig.
-	// Falling back to mayor/rig causes the refinery to operate in the mayor's
-	// clone, which can interfere with mayor operations and confuse agents.
-	//
-	// Rigs using a standard .git clone (e.g. beads) never have a .repo.git bare
-	// repo, so the repair path is not applicable for them. Fall back to mayor/rig
-	// silently in that case — the fallback is correct and the warning would be noise.
-	refineryRigDir := filepath.Join(m.rig.Path, "refinery", "rig")
-	if _, err := os.Stat(refineryRigDir); os.IsNotExist(err) {
-		bareRepoPath := filepath.Join(m.rig.Path, ".repo.git")
-		_, bareErr := os.Stat(bareRepoPath)
-		standardGitPath := filepath.Join(m.rig.Path, ".git")
-		_, standardGitErr := os.Stat(standardGitPath)
-		if os.IsNotExist(bareErr) && standardGitErr == nil {
-			// Rig uses standard .git layout — worktree repair is not applicable.
-			// Fall back to mayor/rig silently; the fallback works correctly here.
-			refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
-		} else if repairErr := m.repairRefineryWorktree(refineryRigDir); repairErr != nil {
-			// Repair failed — fall back to mayor/rig as last resort.
-			_, _ = fmt.Fprintf(m.output, "⚠ Could not repair refinery worktree: %v (falling back to mayor/rig)\n", repairErr)
-			refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
-		}
-	}
+	refineryRigDir := m.prepareWorkDir()
 
 	// Ensure runtime settings exist in the shared refinery parent directory.
 	// Settings are passed to Claude Code via --settings flag.
@@ -238,11 +214,6 @@ func (m *Manager) start(foreground bool, agentOverride string, allowForkRig bool
 	refinerySettingsDir := config.RoleSettingsDir("refinery", m.rig.Path)
 	if err := runtime.EnsureSettingsForRole(refinerySettingsDir, refineryRigDir, "refinery", runtimeConfig); err != nil {
 		return fmt.Errorf("ensuring runtime settings: %w", err)
-	}
-
-	// Ensure .gitignore has required Gas Town patterns
-	if err := rig.EnsureGitignorePatterns(refineryRigDir); err != nil {
-		style.PrintWarning("could not update refinery .gitignore: %v", err)
 	}
 
 	initialPrompt := session.BuildStartupPrompt(session.BeaconConfig{
@@ -367,6 +338,45 @@ func (m *Manager) blockForkRigStart(t *tmux.Tmux) error {
 		}
 	}
 	return err
+}
+
+// prepareWorkDir returns the directory the refinery session runs in (repairing
+// a missing refinery/rig worktree, or falling back to mayor/rig) and keeps its
+// git status clean of Gas Town runtime artifacts.
+func (m *Manager) prepareWorkDir() string {
+	// Working directory is the refinery worktree (shares .git with mayor/polecats).
+	// If the worktree is missing (pruned, deleted, or corrupted), auto-repair it
+	// from the shared bare repo (.repo.git) instead of falling back to mayor/rig.
+	// Falling back to mayor/rig causes the refinery to operate in the mayor's
+	// clone, which can interfere with mayor operations and confuse agents.
+	//
+	// Rigs using a standard .git clone (e.g. beads) never have a .repo.git bare
+	// repo, so the repair path is not applicable for them. Fall back to mayor/rig
+	// silently in that case — the fallback is correct and the warning would be noise.
+	refineryRigDir := filepath.Join(m.rig.Path, "refinery", "rig")
+	if _, err := os.Stat(refineryRigDir); os.IsNotExist(err) {
+		bareRepoPath := filepath.Join(m.rig.Path, ".repo.git")
+		_, bareErr := os.Stat(bareRepoPath)
+		standardGitPath := filepath.Join(m.rig.Path, ".git")
+		_, standardGitErr := os.Stat(standardGitPath)
+		if os.IsNotExist(bareErr) && standardGitErr == nil {
+			// Rig uses standard .git layout — worktree repair is not applicable.
+			// Fall back to mayor/rig silently; the fallback works correctly here.
+			refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
+		} else if repairErr := m.repairRefineryWorktree(refineryRigDir); repairErr != nil {
+			// Repair failed — fall back to mayor/rig as last resort.
+			_, _ = fmt.Fprintf(m.output, "⚠ Could not repair refinery worktree: %v (falling back to mayor/rig)\n", repairErr)
+			refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
+		}
+	}
+
+	// Keep the worktree clean via the repo's info/exclude, never the tracked
+	// .gitignore: an edited .gitignore leaves the tree dirty, and the merge
+	// engine (Engineer.CheckWorktreeReady) refuses to merge in a dirty tree.
+	if err := rig.EnsureLocalExcludePatterns(refineryRigDir); err != nil {
+		style.PrintWarning("could not update refinery local git excludes: %v", err)
+	}
+	return refineryRigDir
 }
 
 // repairRefineryWorktree recreates a missing refinery/rig worktree from the
