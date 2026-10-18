@@ -3543,7 +3543,7 @@ func activeMRGitSafe(workDir, rigName, polecatName string) bool {
 	if err != nil {
 		return false
 	}
-	if !status.CleanExcludingRuntime() || status.StashCount > 0 || status.UnpushedCommits > 0 {
+	if !status.CleanExcludingRuntime() || status.StashCount > 0 || status.CommitsAtRisk() {
 		return false
 	}
 	pushed, unpushed, err := g.BranchPushedToRemote(branch, "origin")

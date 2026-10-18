@@ -153,7 +153,8 @@ func TestWithProofLimits(t *testing.T) {
 		t.Fatalf("unexpected limits %+v", b.limits)
 	}
 	got := b.limits.under(runOptions{timeout: time.Second, env: []string{"A=1"}})
-	if got.timeout != time.Second || got.maxOutput != proofMaxOutput || len(got.env) != 2 || got.env[1] != "A=1" {
+	base := proofRemoteOptions().env
+	if got.timeout != time.Second || got.maxOutput != proofMaxOutput || len(got.env) != len(base)+1 || got.env[len(got.env)-1] != "A=1" {
 		t.Fatalf("explicit options must win, defaults fill the rest: %+v", got)
 	}
 	if (runOptions{}).under(runOptions{}).timeout != 0 {

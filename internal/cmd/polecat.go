@@ -1008,7 +1008,13 @@ func getGitStateWithTargets(worktreePath string, targets []string) (*GitState, e
 	}
 
 	branch, _ := worktreeGit.CurrentBranch()
-	if preservation, preserveErr := worktreeGit.BranchPreservationStatus(branch, "origin", targets); preserveErr == nil {
+	preservation, preserveErr := worktreeGit.BranchPreservationStatus(branch, "origin", targets)
+	if preserveErr != nil && (errors.Is(preserveErr, git.ErrRemoteProofUnavailable) || workStatus.UnpushedUnverified) {
+		// No remote proof is not "preserved" (gt-pd1c.86): callers treat the
+		// error as git_state=unknown and refuse to nuke or reuse.
+		return nil, unprovenPreservationError(branch, preserveErr)
+	}
+	if preserveErr == nil {
 		state.ComparisonBase = preservation.ComparisonBase
 		state.UnpreservedPatchCount = preservation.UnpreservedPatchCount
 		if preservation.UnpreservedPatchCount > 0 {
@@ -1025,6 +1031,16 @@ func getGitStateWithTargets(worktreePath string, targets []string) (*GitState, e
 	}
 
 	return state, nil
+}
+
+// unprovenPreservationError tells the human why a branch is not known to be
+// preserved and what to do about it.
+func unprovenPreservationError(branch string, err error) error {
+	if branch == "" || branch == "HEAD" {
+		branch = "<branch>"
+	}
+	return fmt.Errorf("cannot prove the commits of %s are on the remote: %w; "+
+		"push them (git push origin %s) or fetch, then retry; --force discards them", branch, err, branch)
 }
 
 // RecoveryStatus represents whether a polecat needs recovery or is safe to nuke.
@@ -1352,7 +1368,7 @@ func activeMRGitSafeForWorktree(worktreePath string) bool {
 		return false
 	}
 	status, err := g.CheckUncommittedWork()
-	if err != nil || !status.CleanExcludingRuntime() || status.StashCount > 0 || status.UnpushedCommits > 0 {
+	if err != nil || !status.CleanExcludingRuntime() || status.StashCount > 0 || status.CommitsAtRisk() {
 		return false
 	}
 	pushed, unpushed, err := g.BranchPushedToRemote(branch, "origin")

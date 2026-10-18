@@ -1220,18 +1220,22 @@ func (m *Manager) pushBranchBeforeRemoval(clonePath string, decision ReviewOnlyD
 		return
 	}
 	pushed, unpushedCount, checkErr := polecatGit.BranchPushedToRemote(branch, "origin")
-	if checkErr != nil || pushed || unpushedCount == 0 {
+	if checkErr == nil && (pushed || unpushedCount == 0) {
 		return
+	}
+	// checkErr: the remote could not prove the branch preserved (gt-pd1c.86).
+	// That is not "nothing to push": push like unpushed work.
+	atRisk := fmt.Sprintf("%d unpushed commit(s)", unpushedCount)
+	if checkErr != nil {
+		atRisk = "commits not proven on the remote"
 	}
 	if !decision.PreserveAllowed() {
 		style.PrintWarning("not pushing before removal: %s", decision.Reason)
 		return
 	}
 	if pushErr := polecatGit.Push("origin", branch, false); pushErr != nil {
-		style.PrintWarning("could not push branch %s before removal (%d unpushed commit(s)): %v",
-			branch, unpushedCount, pushErr)
-		style.PrintWarning("WORK AT RISK: branch %s has %d unpushed commit(s) in worktree %s",
-			branch, unpushedCount, clonePath)
+		style.PrintWarning("could not push branch %s before removal (%s): %v", branch, atRisk, pushErr)
+		style.PrintWarning("WORK AT RISK: branch %s has %s in worktree %s", branch, atRisk, clonePath)
 	}
 }
 

@@ -28,14 +28,49 @@ const (
 	proofMaxOutput = 16 << 20
 )
 
+// proofHistoryEnv makes every proof command read the commit graph as the
+// objects themselves record it (gt-pd1c.86 H1). The remote's tips are honest
+// (ls-remote), but ancestry is computed locally, and anyone who can write the
+// repository can rewrite history views without touching an object:
+// refs/replace/* (git replace), info/grafts and a forged commit-graph file
+// can make a remote tip "contain" a commit that was never pushed. Replace
+// refs and grafts are switched off and the commit-graph file is not read
+// (command-scope config, which outranks the repository's own). This is the
+// one place: proofLocalEnv, proofRemoteOptions and so WithProofLimits (the
+// merge-queue provers, the witness reconciler) and PreservedOn all use it.
+var proofHistoryEnv = []string{
+	"GIT_NO_REPLACE_OBJECTS=1",
+	"GIT_GRAFT_FILE=" + os.DevNull,
+	"GIT_CONFIG_COUNT=1",
+	"GIT_CONFIG_KEY_0=core.commitGraph",
+	"GIT_CONFIG_VALUE_0=false",
+}
+
 // proofLocalEnv keeps local proof commands from reaching the network: in a
 // partial clone a missing object is an unknown answer, never a lazy fetch.
-var proofLocalEnv = []string{"GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0"}
+var proofLocalEnv = append([]string{"GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0"}, proofHistoryEnv...)
+
+// proofLocalOptions bound a local git command of a proof (timeout, output
+// limit, no lazy fetch, honest history).
+func proofLocalOptions() runOptions {
+	return runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: proofLocalEnv}
+}
+
+// withLocalProofLimits returns a copy of g whose every command runs as a
+// local proof command (proofLocalOptions): PreservedOn's ancestry, merge-tree
+// and cherry checks.
+func (g *Git) withLocalProofLimits() *Git {
+	c := *g
+	c.limits = proofLocalOptions()
+	return &c
+}
 
 // proofRaw runs a local git command of the landing proof (timeout, output
 // limit, no lazy fetch) with optional stdin and returns stdout byte-exact.
 func (g *Git) proofRaw(stdin *string, args ...string) (string, error) {
-	return g.runCmd(runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: proofLocalEnv, stdin: stdin}, args...)
+	opts := proofLocalOptions()
+	opts.stdin = stdin
+	return g.runCmd(opts, args...)
 }
 
 // proofRun is proofRaw without stdin, with whitespace trimmed.
@@ -47,7 +82,7 @@ func (g *Git) proofRun(args ...string) (string, error) {
 // proofRemoteOptions bound a git command of the landing proof that may use
 // the network (ls-remote, fetch, and every command of a WithProofLimits Git).
 func proofRemoteOptions() runOptions {
-	return runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: []string{"GIT_TERMINAL_PROMPT=0"}}
+	return runOptions{timeout: proofTimeout, maxOutput: proofMaxOutput, env: append([]string{"GIT_TERMINAL_PROMPT=0"}, proofHistoryEnv...)}
 }
 
 // proofRemote runs a network git command of the landing proof (ls-remote,

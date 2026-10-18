@@ -567,6 +567,18 @@ func makeTestGitRepo(t *testing.T) string {
 			t.Fatalf("git setup %v: %v", args, err)
 		}
 	}
+	// The commits are proven on a remote (gt-pd1c.86): without one they are
+	// "unpushed commits unverified".
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	for _, args := range [][]string{
+		{"git", "init", "--bare", origin},
+		{"git", "-C", dir, "remote", "add", "origin", origin},
+		{"git", "-C", dir, "push", "origin", "HEAD:refs/heads/main"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("git setup %v: %v\n%s", args, err, out)
+		}
+	}
 	return dir
 }
 
@@ -712,6 +724,21 @@ func TestWarnHandoffGitStatus(t *testing.T) {
 		})
 		if output != "" {
 			t.Errorf("expected no output for clean repo, got: %q", output)
+		}
+	})
+
+	t.Run("warns when no remote proves the commits", func(t *testing.T) {
+		dir := makeTestGitRepo(t)
+		if err := exec.Command("git", "-C", dir, "remote", "remove", "origin").Run(); err != nil {
+			t.Fatalf("remote remove: %v", err)
+		}
+		os.Chdir(dir)
+		t.Cleanup(func() { os.Chdir(origCwd) })
+		output := captureStderr(t, func() {
+			warnHandoffGitStatus()
+		})
+		if !strings.Contains(output, "unverified") {
+			t.Errorf("expected an unverified-commits warning, got: %q", output)
 		}
 	})
 

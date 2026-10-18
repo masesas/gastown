@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -145,6 +146,11 @@ func polecatStopPendingWork(cloneDir, branch string) (bool, string, error) {
 	}
 
 	targetStatus, err := g.BranchTargetStatus(branch, "origin", nil)
+	if errors.Is(err, git.ErrRemoteProofUnavailable) {
+		// Without remote proof the commits may be unsubmitted: run the
+		// gt done safety net rather than assume they are safe (gt-pd1c.86).
+		return true, "commits not proven on the remote (remote unreachable or not fetched)", nil
+	}
 	if err != nil {
 		return false, "", err
 	}
