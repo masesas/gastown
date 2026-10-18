@@ -404,7 +404,7 @@ func TestPreservationRefusesForgedAncestry(t *testing.T) {
 func TestProofHardeningEnv(t *testing.T) {
 	for _, env := range [][]string{proofLocalEnv, proofRemoteOptions().env} {
 		joined := strings.Join(env, " ")
-		for _, want := range []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=", "core.commitGraph", "GIT_CONFIG_VALUE_0=false"} {
+		for _, want := range []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=", "core.commitGraph", "GIT_CONFIG_VALUE_0=false", "GIT_CONFIG_PARAMETERS= "} {
 			if !strings.Contains(joined, want) {
 				t.Errorf("proof env %q lacks %q", joined, want)
 			}
@@ -456,5 +456,49 @@ func TestIsAncestorIgnoresReplaceRefs(t *testing.T) {
 	out, err := g.run("rev-list", mainTip)
 	if err != nil || !strings.Contains(out, head) {
 		t.Fatalf("plain rev-list should follow the replace ref: %v", err)
+	}
+}
+
+func TestCommitParentsIgnoresReplaceRefs(t *testing.T) {
+	g, localDir, _, mainBranch, _ := newUnpushedPolecat(t)
+	head, _ := g.Rev("HEAD")
+	mainTip, _ := g.Rev("refs/remotes/origin/" + mainBranch)
+	if p, err := g.CommitParents(head); err != nil || len(p) != 1 || p[0] != mainTip {
+		t.Fatalf("CommitParents(HEAD) = %v, %v; want [%s]", p, err, mainTip)
+	}
+	if p, err := g.CommitParents(mainTip); err != nil || len(p) != 0 {
+		t.Fatalf("CommitParents(root) = %v, %v; want none", p, err)
+	}
+	fake, err := g.run("commit-tree", head+"^{tree}", "-p", mainTip, "-p", head, "-m", "forged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, localDir, "replace", head, fake)
+	if p, err := g.CommitParents(head); err != nil || len(p) != 1 {
+		t.Fatalf("CommitParents through a replace ref = %v, %v; want the recorded single parent", p, err)
+	}
+	for _, bad := range []string{"", "-x", strings.Repeat("1", 40)} {
+		if _, err := g.CommitParents(bad); err == nil {
+			t.Errorf("CommitParents(%q) succeeded, want an error", bad)
+		}
+	}
+}
+
+// R2-2: an inherited GIT_CONFIG_PARAMETERS (git -c … running a hook) must not
+// turn the commit-graph back on for proof commands.
+func TestProofHistoryEnvBeatsInheritedConfigParameters(t *testing.T) {
+	dir := initTestRepo(t)
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'core.commitgraph'='true'")
+	g := NewGit(dir)
+	if out, err := g.run("config", "--get", "core.commitGraph"); err != nil || out != "true" {
+		t.Fatalf("inherited parameter not in effect for plain git: %q, %v", out, err)
+	}
+	out, err := g.proofRun("config", "--get", "core.commitGraph")
+	if err != nil || out != "false" {
+		t.Fatalf("proof env core.commitGraph = %q, %v; want false", out, err)
+	}
+	out, err = g.WithProofLimits().run("config", "--get", "core.commitGraph")
+	if err != nil || out != "false" {
+		t.Fatalf("WithProofLimits core.commitGraph = %q, %v; want false", out, err)
 	}
 }

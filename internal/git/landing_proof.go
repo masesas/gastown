@@ -38,8 +38,12 @@ const (
 // (command-scope config, which outranks the repository's own). This is the
 // one place: proofLocalEnv, proofRemoteOptions and so WithProofLimits (the
 // merge-queue provers, the witness reconciler) and PreservedOn all use it.
+//
+// GIT_CONFIG_PARAMETERS is emptied: an inherited one (git -c … running a hook
+// that calls gt) outranks GIT_CONFIG_COUNT and could turn commit-graph back on.
 var proofHistoryEnv = []string{
 	"GIT_NO_REPLACE_OBJECTS=1",
+	"GIT_CONFIG_PARAMETERS=",
 	"GIT_GRAFT_FILE=" + os.DevNull,
 	"GIT_CONFIG_COUNT=1",
 	"GIT_CONFIG_KEY_0=core.commitGraph",
@@ -274,4 +278,27 @@ func (g *Git) requireProofObjects(objs ...string) error {
 		}
 	}
 	return nil
+}
+
+// CommitParents returns the parents of commit as the commit object records
+// them (proofLocalOptions: replace refs, grafts and the commit-graph file are
+// ignored, bounded, no lazy fetch), in order; an empty slice for a root
+// commit. It is the one reader of parents for merge-shape decisions ("is M a
+// two-parent merge of X?", gt-pd1c.86 R2-1); never read them with Rev("M^2").
+// Any git failure (unknown object, not a commit, timeout) is an error, never
+// "no such parent".
+func (g *Git) CommitParents(commit string) ([]string, error) {
+	commit = strings.TrimSpace(commit)
+	if commit == "" || strings.HasPrefix(commit, "-") {
+		return nil, fmt.Errorf("invalid commit %q", commit)
+	}
+	out, err := g.proofRun("rev-list", "--parents", "-n", "1", "--end-of-options", commit+"^{commit}")
+	if err != nil {
+		return nil, fmt.Errorf("reading parents of %s: %w", shortSHA(commit), err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("reading parents of %s: no commit", shortSHA(commit))
+	}
+	return fields[1:], nil
 }

@@ -330,16 +330,17 @@ func (e *Engineer) verifyMergeShape(tip, base string, heads []string) error {
 	current := strings.TrimSpace(tip)
 	for i := len(heads) - 1; i >= 0; i-- {
 		head := strings.TrimSpace(heads[i])
-		second, err := e.git.Rev(current + "^2")
-		if err == nil && strings.TrimSpace(second) == head {
-			if _, err := e.git.Rev(current + "^3"); err == nil {
+		// Parents as the commit records them, not through replace refs
+		// (gt-pd1c.86); a read failure refuses.
+		parents, err := e.git.CommitParents(current)
+		if err != nil {
+			return fmt.Errorf("read parents of %s: %w", shortSHA(current), err)
+		}
+		if len(parents) >= 2 && parents[1] == head {
+			if len(parents) > 2 {
 				return fmt.Errorf("merge %s has more than two parents", shortSHA(current))
 			}
-			first, err := e.git.Rev(current + "^1")
-			if err != nil {
-				return fmt.Errorf("read first parent of %s: %w", shortSHA(current), err)
-			}
-			current = strings.TrimSpace(first)
+			current = parents[0]
 			continue
 		}
 		if contained, err := e.git.IsAncestor(head, current); err != nil || !contained {

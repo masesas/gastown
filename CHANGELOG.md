@@ -75,7 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with replace refs, grafts and the commit-graph file switched off (one env set,
   `proofHistoryEnv`), so `git replace <remote-tip> <fake-with-HEAD-as-parent>`
   no longer proves unpushed work, in `mergeproof.CoveredByTargets` and the
-  merge-queue provers too. New `UncommittedWorkStatus.CommitsAtRisk()` is the
+  merge-queue provers too; an inherited `GIT_CONFIG_PARAMETERS` cannot turn
+  the commit-graph back on. Merge-shape decisions (`gt mq merge`'s recorded
+  merge proof and its pre-push merge-shape check) read parents with the new
+  `Git.CommitParents` under the same env instead of `Rev("M^2")`, so a replace
+  ref cannot make a pushed commit pass as the two-parent merge of commit_sha.
+  New `UncommittedWorkStatus.CommitsAtRisk()` is the
   one "commits at risk" predicate; `CleanExcludingRuntime` stays file-only by
   design (gt-pd1c.86).
 - **Role worktrees stay clean: gt no longer edits a tracked `.gitignore`** —
