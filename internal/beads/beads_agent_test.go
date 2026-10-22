@@ -447,6 +447,16 @@ func TestLabelsForAgentBeadReusePreservesOnlySafetyStop(t *testing.T) {
 	}
 }
 
+// forbidDoltAutoStart keeps beadsdk.OpenFromConfig from spawning a detached
+// `dolt sql-server` in the test's temp .beads directory. That server outlives
+// store.Close() and the test process, so each run used to leak one server per
+// test. With auto-start off the store path fails fast and the mock bd CLI path
+// under test runs instead.
+func forbidDoltAutoStart(t *testing.T) {
+	t.Helper()
+	t.Setenv("BEADS_DOLT_AUTO_START", "0")
+}
+
 func installMockBDCreateRecorder(t *testing.T, logPath string) {
 	t.Helper()
 
@@ -494,6 +504,7 @@ func TestCreateAgentBead_UsesTownRootForCrossRigRoutes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("path assertions are Unix-oriented")
 	}
+	forbidDoltAutoStart(t)
 
 	// Resolve symlinks so path assertions match shell pwd output.
 	// On macOS, t.TempDir() returns /var/... but pwd resolves to /private/var/...
@@ -566,6 +577,7 @@ func TestCreateOrReopenAgentBeadExistingUsesTownBeadsDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses Unix shell script mock for bd")
 	}
+	forbidDoltAutoStart(t)
 
 	townRoot, _ := filepath.EvalSymlinks(t.TempDir())
 	townBeadsDir := filepath.Join(townRoot, ".beads")
