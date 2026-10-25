@@ -1,45 +1,50 @@
-# Baseline Metrik: Workflow Manual vs Gas Town + S1c
+# Baseline Metrik: Workflow Tanpa Orkestrasi vs Gas Town + S1c
 
 Bukti S0-AC9 (dipindah ke P-S1c Langkah 6). Definisi metrik: `../11` § 3. Sampel kecil: angka mentah, median dan rentang bila n > 1, tanpa persentase. Pembanding Gas Town tanpa S1c: `metrics-pilot-s0.md`.
 
+**Perubahan 25 Okt 2026 (hasil /debat):** pembanding B tidak lagi "manual penuh oleh user", melainkan **satu sesi Claude bersama user tanpa orkestrasi** (tanpa Mayor, crew, polecat, refinery). Alasannya: itulah alternatif nyata yang dibandingkan dengan Gas Town, dan metriknya (jam aktif user, intervensi, token Claude) bisa diukur dengan cara yang sama.
+
 ## Epic yang dibandingkan
 
-| | Epic manual (B) | Epic pilot S1c (A) |
-| --- | --- | --- |
-| Fitur | Rincian laporan per kategori: field `categories[]` di `ReportSummary` (`GET /api/v1/reports/summary`), bagian "Per Kategori" di layar Laporan | Laporan produk terlaris: `GET /api/v1/reports/products?from&to&limit`, bagian "Produk Terlaris" di layar Laporan |
-| Pengerja | Anda, manual (workflow k-posin biasa) | Gas Town: Mayor (brief), crew `contract_owner` (skeleton), polecat (konsumen) |
-| Tempat | `~/gt-pilot/manual/k-posin` (clone mirror, push dimatikan) | Rig `posin` di `~/gt-pilot/town`, remote = mirror |
-| Titik awal | mirror `main` `0d6368c` | mirror `main` `0d6368c` |
-| Kontrak | `contracts/openapi.yaml` + regenerate `internal/httpx/openapi/reports` dan `src/api/schema.d.ts` | sama |
-| Gate | `posin-gate test` (BE `make vet test`; mobile `pnpm typecheck` + `pnpm test --ci`) | sama (refinery) |
-| Kompleksitas | kontrak + 1 query BE + 1 bagian layar + test | kontrak + 1 query BE + handler + 1 bagian layar + test |
+| | Epic tanpa orkestrasi (B) | Epic pilot S1c 1 (A1) | Epic pilot S1c 2 (A2) |
+| --- | --- | --- | --- |
+| Fitur | Rincian laporan per kategori: field `categories[]` di `ReportSummary` (`GET /api/v1/reports/summary`), bagian "Per Kategori" di layar Laporan | Laporan produk terlaris: `GET /api/v1/reports/products?from&to&limit`, bagian "Produk Terlaris" di layar Laporan | Daftar pelanggan: `GET /api/v1/customers?from&to&q` (turunan `sales_orders`), layar Pelanggan dari tab Lainnya |
+| Pengerja | Anda + satu sesi Claude, tanpa orkestrasi (semula: manual penuh) | Gas Town: Mayor (brief), crew `contract_owner` (skeleton), polecat agy/Claude (konsumen) | Gas Town: Mayor (brief), crew `contract_owner` (skeleton + shared), polecat agy-pool (konsumen + rework) |
+| Tempat | `~/gt-pilot/manual/k-posin` (clone mirror, push dimatikan) | Rig `posin` di `~/gt-pilot/town`, remote = mirror | sama |
+| Titik awal | mirror `main` saat mulai (per 25 Okt: `9d2b4e9`) | mirror `main` `0d6368c` | mirror `main` `3340bbd` |
+| Kontrak | `contracts/openapi.yaml` + regenerate `internal/httpx/openapi/reports` dan `src/api/schema.d.ts` | sama | `contracts/openapi.yaml` + `api/oapi-codegen/customers.yaml` + regenerate `httpx/openapi/customers` dan `schema.d.ts` |
+| Gate | `posin-gate test` (BE `make vet test`; mobile `pnpm typecheck` + `pnpm test --ci`) | sama (refinery; tanpa tes pg saat itu) | sama (refinery; dengan tes pg) |
+| Kompleksitas | kontrak + 1 query BE + 1 bagian layar + test | kontrak + 1 query BE + handler + 1 bagian layar + test | kontrak + 1 query SQL + service + handler + 1 layar baru + test; 34 file, +2986/−105 |
 
-## Cara mencatat epic manual (untuk Anda)
+## Cara mencatat epic B (sesi Claude bersama Anda)
 
 Catat waktu dalam WIB, cukup sampai menit:
 
-1. **Mulai**: saat Anda mulai membaca kode untuk epic B.
+1. **Mulai**: saat sesi mulai membaca kode untuk epic B.
 2. **Kontrak siap**: openapi + kode hasil generate di-commit.
 3. **Setiap jalannya gate**: waktu, lulus/gagal, penyebab bila gagal. Jalankan `~/gt-pilot/tools/bin/posin-gate test` dari root clone (butuh `source ~/gt-pilot/env.sh` untuk cache).
 4. **Selesai**: commit terakhir di `main` lokal clone, gate lulus.
-5. Hitung juga: putaran perbaikan (gate gagal → perbaikan), konflik merge, pertanyaan bisnis yang muncul (dan apa yang Anda putuskan), serta waktu aktif kira-kira (tanpa jeda).
+5. Hitung juga: putaran perbaikan (gate gagal → perbaikan), konflik merge, pertanyaan bisnis yang muncul (dan apa yang Anda putuskan), serta waktu aktif Anda (tanpa jeda).
+6. **Token Claude** dari transkrip sesi (input + output, cache terpisah) dan **jumlah intervensi Anda** (koreksi arah, jawaban pertanyaan, perbaikan manual).
 
 ## Data
 
-| Metrik | Epic manual (B) | Epic pilot S1c (A) |
-| --- | --- | --- |
-| Lead time mulai → merged ke `main` | | 18 j 28 m wall-clock; ±2 j 55 m tanpa jeda semalam (±5 j menunggu keputusan user + ±9 j 20 m laptop tidur + ±1 j 10 m sebelum sesi dilanjutkan), termasuk ±45 m gangguan spawn |
-| Waktu sampai kontrak siap | | 64 m (brief 53 m + skeleton 10 m) |
-| Waktu tunggu konsumen terhadap skeleton | n/a | mobile 63 detik, BE 24 detik setelah blocker merged |
-| First-pass gate | | 6 MR merged, tidak teramati gate menolak; gate tidak menjalankan tes pg dan MR mobile lewat pre_verified, keduanya diverifikasi manual operator |
-| Rework loops (dan penyebab) | | 2 bead rework karena jawaban Q-1 berbeda dari asumsi; 0 karena gate |
-| Konflik merge | | 0 |
-| Intervensi manusia | n/a (semua manual) | ±30 intervensi operator + 9 keputusan user (rinci di `../pilot/epic-1-s1c.md` § 4) |
-| Pertanyaan krusial / berbeda dari asumsi | | 6 (1 block, 5 proceed) / 1 dari 5 proceed |
-| Biaya koordinasi (durasi brief; token bila terukur) | n/a | 53 m, 2 ronde review; token tidak terukur |
-| Waktu aktif manusia | | tidak terukur (operator = sesi Claude; user menjawab 9 keputusan) |
-| Escaped defects | | 0 diketahui |
+| Metrik | Epic B (tanpa orkestrasi) | Epic A1 `kp-rcu` | Epic A2 `kp-4az` |
+| --- | --- | --- | --- |
+| Lead time mulai → merged ke `main` | | 18 j 28 m wall-clock; ±2 j 55 m tanpa jeda semalam (±5 j menunggu keputusan user + ±9 j 20 m laptop tidur + ±1 j 10 m sebelum sesi dilanjutkan), termasuk ±45 m gangguan spawn | 2 j 27 m wall-clock, tanpa jeda (17:14:49 → 19:41:21) |
+| Waktu sampai kontrak siap | | 64 m (brief 53 m + skeleton 10 m) | 52 m (brief 47 m + skeleton 5 m; shared +10 m) |
+| Waktu tunggu konsumen terhadap skeleton | n/a | mobile 63 detik, BE 24 detik setelah blocker merged | BE 20 detik, mobile 1 m 45 d setelah blocker ditutup (dispatch convoy 18:20:17) |
+| First-pass gate | | 6 MR merged, tidak teramati gate menolak; gate tidak menjalankan tes pg dan MR mobile lewat pre_verified, keduanya diverifikasi manual operator | 7 MR merged lewat gate dengan tes pg, tidak teramati gate menolak; 1 MR leg review di luar scope ter-merge ke `main` (gate tanpa cek path), direvert |
+| Rework loops (dan penyebab) | | 2 bead rework karena jawaban Q-1 berbeda dari asumsi; 0 karena gate | 3 bead rework karena jawaban Q-1 (block) berbeda dari asumsi; 0 karena gate |
+| Konflik merge | | 0 | 0 |
+| Intervensi manusia | | ±30 intervensi operator + 9 keputusan user (rinci di `../pilot/epic-1-s1c.md` § 4) | 5 intervensi operator + 3 keputusan user (rinci di `../pilot/epic-2-s1c.md` § 4) |
+| Pertanyaan krusial / berbeda dari asumsi | | 6 (1 block, 5 proceed) / 1 dari 5 proceed | 3 (1 block, 2 proceed) / 1 dari 3 (yang block); block sempit: 0 task tertahan |
+| Biaya koordinasi (durasi brief; token bila terukur) | | 53 m, 2 ronde review; token tidak terukur | 47 m, 2 ronde review; token tidak terukur |
+| Waktu aktif manusia | | tidak terukur (operator = sesi Claude; user menjawab 9 keputusan) | tidak terukur (operator = sesi Claude; user menjawab 3 keputusan) |
+| Escaped defects | | 0 diketahui | 0 diketahui pada fitur |
 
 ## Catatan
 
-- Epic B dan A memakai pola, ukuran, dan gate yang sama, tetapi fiturnya berbeda. Perbandingan bersifat indikatif, bukan eksperimen terkontrol.
+- Epic B, A1, A2 memakai pola, ukuran, dan gate yang sama, tetapi fiturnya berbeda. Perbandingan bersifat indikatif, bukan eksperimen terkontrol.
+- Token agy tidak bisa diukur. Token Claude di pilot (Mayor, crew, refinery) belum dikumpulkan; epic pilot berikutnya harus mengumpulkannya dari transkrip agar sebanding dengan B.
+- Penurunan intervensi A1 → A2 sebagian besar hasil perbaikan infrastruktur (G1–G5, agy-pool) di antara dua epic, bukan perubahan proses.

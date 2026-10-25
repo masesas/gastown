@@ -2,7 +2,7 @@
 
 Spec: [`../spec/S1c-koordinasi-prosedural.md`](../spec/S1c-koordinasi-prosedural.md). Tanpa kode Go. Artefak: dua formula baru, directives, dan prosedur pilot. Prasyarat: Tahap 0 (crew `contract_owner` ada di setiap rig pilot).
 
-**Status (15 Okt 2026):** Langkah 1–9 selesai di pilot fase 1 (rig monorepo `posin`), epic pilot `kp-rcu`. Hasil dan temuan: [`../pilot/epic-1-s1c.md`](../pilot/epic-1-s1c.md). Tersisa baseline epic manual B (`../baseline/metrics-baseline.md`) sebelum keputusan gate Tahap 1.
+**Status (25 Okt 2026):** Langkah 1–9 selesai di pilot fase 1 (rig monorepo `posin`), epic pilot `kp-rcu` ([`../pilot/epic-1-s1c.md`](../pilot/epic-1-s1c.md)). Epic pilot kedua `kp-4az` (16 Okt) membuktikan aturan block sempit: [`../pilot/epic-2-s1c.md`](../pilot/epic-2-s1c.md). Tersisa pembanding B tanpa orkestrasi (satu sesi Claude bersama user; `../baseline/metrics-baseline.md`) sebelum keputusan gate Tahap 1.
 
 ## 0. Fakta mekanisme (dikonfirmasi dari kode)
 
