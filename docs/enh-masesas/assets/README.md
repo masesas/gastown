@@ -1,35 +1,29 @@
 # Aset S1c — Koordinasi Contract-First
 
-Sumber terversi untuk formula, directives, dan template S1c. Tidak ada kode Go. Spec: `../spec/S1c-koordinasi-prosedural.md`. Plan: `../plan/P-S1c-koordinasi-prosedural.md`.
+Formula, directives, dan template S1c ikut binary `gt`; tidak ada langkah salin manual. Spec: `../spec/S1c-koordinasi-prosedural.md`. Plan: `../plan/P-S1c-koordinasi-prosedural.md`.
 
-## Isi
+## Isi dan tujuan pemasangan
 
-| File | Dipasang ke |
-| --- | --- |
-| `formulas/mol-contract-brief.formula.toml` | `<town>/.beads/formulas/` |
-| `formulas/mol-contract-brief-review.formula.toml` | `<town>/.beads/formulas/` |
-| `formulas/mol-contract-work.formula.toml` | `<town>/.beads/formulas/` |
-| `directives/town/mayor.md` | `<town>/directives/mayor.md` |
-| `directives/rig/crew.md` | `<town>/<rig>/directives/crew.md` (setiap rig yang punya crew `contract_owner`) |
-| `directives/rig/polecat.md` | `<town>/<rig>/directives/polecat.md` |
-| `templates/*.md` | `<town>/templates/contract/` (dirujuk sebagai `$GT_ROOT/templates/contract/`; agent town tidak bisa membaca repo fork) |
-| `tools/posin-gate` | Contoh `test_command` rig dengan DB sekali pakai, spesifik monorepo k-posin dari pilot; salin dan sesuaikan per repo. Lihat `../runbook-real-project.md` § 3 |
+| Sumber di repo | Dipasang ke | Oleh |
+| --- | --- | --- |
+| `internal/formula/formulas/mol-contract-brief.formula.toml` | `<town>/.beads/formulas/` | `gt install` |
+| `internal/formula/formulas/mol-contract-brief-review.formula.toml` | `<town>/.beads/formulas/` | `gt install` |
+| `internal/formula/formulas/mol-contract-work.formula.toml` | `<town>/.beads/formulas/` | `gt install` |
+| `internal/directives/defaults/town/mayor.md` | `<town>/directives/mayor.md` | `gt install` |
+| `internal/directives/defaults/rig/crew.md` | `<town>/<rig>/directives/crew.md` | `gt rig add` (juga `--adopt`) |
+| `internal/directives/defaults/rig/polecat.md` | `<town>/<rig>/directives/polecat.md` | `gt rig add` (juga `--adopt`) |
+| `tools/posin-gate` (folder ini) | tidak dipasang | Contoh `test_command` rig dengan DB sekali pakai, spesifik monorepo k-posin dari pilot; salin dan sesuaikan per repo. Lihat `../runbook-real-project.md` § 3 |
 
-## Pemasangan (P-S1c Langkah 5)
+Template brief, cek mekanis, dan bead pertanyaan ada di deskripsi step `draft`, `check`, dan `decide` pada `mol-contract-brief`; tidak ada file template di town.
 
-```bash
-RIGS="posin"   # fase 1: satu rig monorepo; fase 2: "be pro"
-cp formulas/*.formula.toml "$TOWN/.beads/formulas/"
-mkdir -p "$TOWN/templates/contract" && cp templates/*.md "$TOWN/templates/contract/"
-mkdir -p "$TOWN/directives" && cp directives/town/mayor.md "$TOWN/directives/mayor.md"
-for rig in $RIGS; do
-  mkdir -p "$TOWN/$rig/directives"
-  cp directives/rig/crew.md "$TOWN/$rig/directives/crew.md"
-  cp directives/rig/polecat.md "$TOWN/$rig/directives/polecat.md"
-done
-```
+## Perilaku pemasangan
 
-Bila file directives sudah ada di town, gabungkan secara manual; jangan menimpa.
+Sama untuk formula dan directives (`internal/assetsync`):
+
+- File hanya ditulis bila belum ada. Hash file yang ditulis dicatat di `.installed.json` di folder tujuan (`.beads/formulas/`, `directives/`, `<rig>/directives/`).
+- `gt upgrade` dan `gt doctor --fix` memasang file baru atau yang terhapus, dan memperbarui file yang belum diubah sejak dipasang. File yang diubah lokal dilaporkan (`locally modified`) dan tidak ditimpa.
+- Khusus directives: file yang sudah ada tetapi tidak dipasang oleh gt (misalnya salinan manual dari pilot) dianggap milik user dan tidak ditimpa. Bila isinya sama dengan versi binary, file itu dicatat sehingga rilis berikutnya bisa memperbaruinya.
+- `gt doctor` cek `formulas` dan `directives` menampilkan status per file.
 
 Verifikasi: `gt formula run <nama> --dry-run --rig <rig>` untuk ketiga formula, lalu `gt prime --explain` untuk Mayor, crew, dan polecat.
 
@@ -37,4 +31,4 @@ Catatan bd 1.3.0: tidak ada tipe `question` dan tidak ada `bd gate close`. Bead 
 
 ## Rollback
 
-Hapus tiga file formula, folder `templates/contract`, dan file directives yang dipasang di atas. Tidak ada perubahan lain di town.
+Hapus file yang terpasang: tiga file `mol-contract-*.formula.toml` di `<town>/.beads/formulas/`, `<town>/directives/mayor.md`, dan `<town>/<rig>/directives/{crew,polecat}.md`. File yang dihapus tetap tercatat di `.installed.json`, sehingga `gt doctor` melaporkannya `missing` dan `gt doctor --fix` / `gt upgrade` memasangnya lagi. Untuk menonaktifkan directive secara permanen, kosongkan isinya (file kosong tidak dimuat `gt prime` dan dilaporkan sebagai modified, tidak ditimpa).

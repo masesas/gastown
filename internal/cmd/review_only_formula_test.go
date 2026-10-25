@@ -17,7 +17,7 @@ func TestConvoyReviewLegBeadsCarryReviewOnlyField(t *testing.T) {
 		path       string
 		reviewOnly bool
 	}{
-		{"../../docs/enh-masesas/assets/formulas/mol-contract-brief-review.formula.toml", true},
+		{"../formula/formulas/mol-contract-brief-review.formula.toml", true},
 		{"../formula/formulas/mol-plan-review.formula.toml", true},
 		{"../formula/formulas/mol-prd-review.formula.toml", true},
 		{"../formula/formulas/code-review.formula.toml", false},

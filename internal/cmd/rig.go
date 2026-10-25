@@ -652,6 +652,8 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: failed to sync hooks for new rig: %v\n", err)
 	}
 
+	provisionRigDirectives(townRoot, name)
+
 	// Commit town-level config changes (rigs.json, daemon.json, routes.jsonl)
 	// so they aren't reverted by git restore/checkout operations.
 	commitTownConfigChanges(townRoot, name)
@@ -1373,6 +1375,8 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 	if err := syncRigHooks(townRoot, name); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to sync hooks for adopted rig: %v\n", err)
 	}
+
+	provisionRigDirectives(townRoot, name)
 
 	// Print results
 	fmt.Printf("\n%s Rig %s adopted\n", style.Success.Render("✓"), name)

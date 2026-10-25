@@ -12,7 +12,7 @@ Syarat minimum sebelum Gas Town dipakai di repo sungguhan, diturunkan dari pilot
   done
   ```
   Salinan yang berbeda hanya karena versi lama boleh ditimpa. Salinan yang punya edit lokal (contoh di pilot: `mol-refinery-patrol` dengan edit hq-6md) harus digabung manual. Simpan backup sebelum menimpa.
-- Pasang aset S1c sesuai `assets/README.md` (directives, template, formula contract).
+- Aset S1c ikut binary, tidak ada langkah salin manual: `gt install` memasang tiga formula `mol-contract-*` dan `directives/mayor.md`, `gt rig add` memasang `<rig>/directives/{crew,polecat}.md`. Template brief, cek mekanis, dan pertanyaan ada di deskripsi step `mol-contract-brief`. Untuk town lama, `gt upgrade` (atau `gt doctor --fix`) memasang yang belum ada; file directives yang sudah ada dan tidak dipasang oleh gt tidak ditimpa. Detail: `assets/README.md`.
 
 ## 2. Remote: rig tidak pernah push ke origin asli
 

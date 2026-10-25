@@ -32,6 +32,7 @@ This is the user-facing entry point for upgrading Gas Town after installing
 a new binary. It orchestrates all migration steps in the right order:
 
   1. Structural checks   Run gt doctor --fix to repair workspace structure
+                         (also installs/refreshes default role directives)
   2. CLAUDE.md sync       Update town root CLAUDE.md from embedded template
   3. Daemon defaults      Ensure daemon.json has lifecycle defaults
   4. Hooks sync           Regenerate settings.json from hook registry
@@ -134,6 +135,7 @@ func upgradeDoctor(townRoot string) upgradeResult {
 	d.Register(doctor.NewCustomTypesCheck())
 	d.Register(doctor.NewCustomStatusesCheck())
 	d.Register(doctor.NewFormulaCheck())
+	d.Register(doctor.NewDirectiveCheck()) // installs new directives, refreshes unmodified ones
 	d.Register(doctor.NewPrefixConflictCheck())
 	d.Register(doctor.NewPrefixMismatchCheck())
 	d.Register(doctor.NewDatabasePrefixCheck())
