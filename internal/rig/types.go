@@ -75,8 +75,10 @@ func (r *Rig) Summary() RigSummary {
 
 // BeadsPath returns the path to use for beads operations.
 // Always returns the rig root path where .beads/ contains either:
-//   - A local beads database (when repo doesn't track .beads/)
-//   - A redirect file pointing to mayor/rig/.beads (when repo tracks .beads/)
+//   - A local beads database (when repo doesn't track .beads/, or always
+//     with beads.mode=rig in config.json)
+//   - A redirect file pointing to mayor/rig/.beads (when repo tracks .beads/
+//     and beads.mode is auto)
 //
 // The redirect is set up by initBeads() during rig creation and followed
 // automatically by the bd CLI and beads.ResolveBeadsDir().

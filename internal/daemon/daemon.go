@@ -1127,7 +1127,12 @@ func (d *Daemon) checkAllRigsDolt() error {
 
 	// Check each registered rig
 	for _, rigName := range d.getKnownRigs() {
-		rigBeadsDir := filepath.Join(d.config.TownRoot, rigName, "mayor", "rig", ".beads")
+		// Only tracked beads are inspected here; beads.mode=rig rigs never
+		// use the repo's tracked mayor/rig/.beads (its backend is the project's).
+		rigBeadsDir, tracked := beads.TrackedRigBeadsDir(filepath.Join(d.config.TownRoot, rigName))
+		if !tracked {
+			continue
+		}
 		if backend := readBeadsBackend(rigBeadsDir); backend != "" && backend != "dolt" {
 			rigPath := filepath.Join(d.config.TownRoot, rigName)
 			problems = append(problems, fmt.Sprintf(

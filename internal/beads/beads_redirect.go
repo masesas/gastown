@@ -331,8 +331,9 @@ func ComputeRedirectTarget(townRoot, worktreePath string) (string, error) {
 	}
 
 	if !rigBeadsExists || !rigHasDB {
-		// Rig .beads doesn't exist or has no database — check mayor/rig/.beads
-		if _, err := os.Stat(mayorBeadsPath); os.IsNotExist(err) {
+		// Rig .beads doesn't exist or has no database — check mayor/rig/.beads.
+		// In beads.mode=rig the tracked mayor/rig/.beads is never a target.
+		if _, tracked := TrackedRigBeadsDir(rigRoot); !tracked {
 			if !rigBeadsExists {
 				return "", fmt.Errorf("no beads found at %s, %s, or %s", townBeadsPath, rigBeadsPath, mayorBeadsPath)
 			}

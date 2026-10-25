@@ -331,9 +331,10 @@ func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
 		rigPath := filepath.Join(ctx.TownRoot, rigName)
 		configPath := filepath.Join(rigPath, "config.json")
 
-		prefix := ""
+		prefix, beadsMode := "", ""
 		if entry.BeadsConfig != nil {
 			prefix = entry.BeadsConfig.Prefix
+			beadsMode = entry.BeadsConfig.Mode
 		}
 
 		rigCfg := &rig.RigConfig{
@@ -343,8 +344,10 @@ func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
 			GitURL:    entry.GitURL,
 			CreatedAt: entry.AddedAt,
 		}
-		if prefix != "" {
-			rigCfg.Beads = &rig.BeadsConfig{Prefix: prefix}
+		if prefix != "" || beadsMode != "" {
+			// Carry beads.mode over so a recreated config.json keeps a
+			// beads.mode=rig rig away from the repo's tracked .beads/.
+			rigCfg.Beads = &rig.BeadsConfig{Prefix: prefix, Mode: beadsMode}
 		}
 
 		data, err := json.MarshalIndent(rigCfg, "", "  ")

@@ -918,12 +918,17 @@ func (c *BeadsRedirectCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	rigPath := ctx.RigPath()
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
 	rigBeadsDir := filepath.Join(rigPath, ".beads")
 	redirectPath := filepath.Join(rigBeadsDir, "redirect")
 
+	// beads.mode=rig: self-contained rig beads even though the repo may track
+	// .beads/. Never expect (or create) a redirect to mayor/rig/.beads.
+	if config.RigUsesOwnBeads(rigPath) {
+		return c.runRigMode(rigPath, rigBeadsDir, redirectPath, ctx.RigName)
+	}
+
 	// Check if this rig has tracked beads (mayor/rig/.beads exists)
-	if _, err := os.Stat(mayorRigBeads); os.IsNotExist(err) {
+	if _, tracked := beads.TrackedRigBeadsDir(rigPath); !tracked {
 		// No tracked beads - check if rig/.beads exists (local beads)
 		if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
 			return &CheckResult{
@@ -1008,21 +1013,74 @@ func (c *BeadsRedirectCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
+// runRigMode validates a rig in beads.mode=rig: <rig>/.beads must exist and
+// must not redirect anywhere, and when the repo tracks .beads/ the mayor clone
+// must redirect to the rig's own beads (beads.MayorCloneRedirectTarget).
+func (c *BeadsRedirectCheck) runRigMode(rigPath, rigBeadsDir, redirectPath, rigName string) *CheckResult {
+	if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusError,
+			Message: "No .beads directory found at rig root (beads.mode=rig)",
+			Details: []string{
+				"Rig is configured for self-contained beads (config.json beads.mode=rig)",
+				"Beads database not initialized for this rig",
+			},
+			FixHint: "Run 'gt doctor --fix --rig " + rigName + "' to initialize beads",
+		}
+	}
+	if _, err := os.Stat(redirectPath); err == nil {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusError,
+			Message: "Rig has beads.mode=rig but .beads/redirect exists",
+			Details: []string{
+				"beads.mode=rig requires self-contained beads at .beads/ (no redirect)",
+				"The redirect may send agents to the repository's own tracked beads",
+				"Not auto-fixed: inspect .beads/redirect, remove it, then run 'gt doctor --fix --rig " + rigName + "'",
+			},
+		}
+	}
+	if _, err := os.Stat(filepath.Join(rigPath, "mayor", "rig", ".beads")); err == nil && !beads.MayorCloneRedirectOK(rigPath) {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusError,
+			Message: "Missing mayor clone redirect to rig beads (beads.mode=rig)",
+			Details: []string{
+				"The repo tracks .beads/; mayor/rig/.beads/redirect must contain " + beads.MayorCloneRedirectTarget,
+				"Without it, gt and bd calls rooted in mayor/rig bind to the project's own beads",
+			},
+			FixHint: "Run 'gt doctor --fix --rig " + rigName + "' to create the redirect",
+		}
+	}
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "Rig uses self-contained beads (beads.mode=rig)",
+	}
+}
+
 // Fix creates or corrects the rig-level beads redirect, or initializes beads if missing.
-func (c *BeadsRedirectCheck) Fix(ctx *CheckContext) error {
+// In beads.mode=rig it only initializes missing rig beads and writes the mayor
+// clone redirect; it never removes <rig>/.beads.
+func (c *BeadsRedirectCheck) Fix(ctx *CheckContext) (retErr error) {
 	if ctx.RigName == "" {
 		return nil
 	}
 
 	rigPath := ctx.RigPath()
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
 	rigBeadsDir := filepath.Join(rigPath, ".beads")
 	redirectPath := filepath.Join(rigBeadsDir, "redirect")
 
-	// Check if tracked beads exist
-	hasTrackedBeads := true
-	if _, err := os.Stat(mayorRigBeads); os.IsNotExist(err) {
-		hasTrackedBeads = false
+	// Check if tracked beads exist. In beads.mode=rig they never count, so
+	// the rig's own .beads is initialized if missing and never removed.
+	_, hasTrackedBeads := beads.TrackedRigBeadsDir(rigPath)
+	if config.RigUsesOwnBeads(rigPath) {
+		defer func() {
+			if retErr == nil {
+				_, retErr = beads.EnsureMayorCloneRedirect(rigPath)
+			}
+		}()
 	}
 
 	// Check if local beads exist

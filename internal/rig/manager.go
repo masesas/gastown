@@ -117,6 +117,11 @@ type RigConfig struct {
 // BeadsConfig represents beads configuration for the rig.
 type BeadsConfig struct {
 	Prefix string `json:"prefix"` // issue prefix (e.g., "gt")
+	// Mode is the rig beads mode: config.RigBeadsModeAuto (default; use the
+	// repo's tracked .beads/ when present) or config.RigBeadsModeRig (always a
+	// self-contained <rig>/.beads/). Empty means auto (rigs created before the
+	// field existed).
+	Mode string `json:"mode,omitempty"`
 }
 
 // CurrentRigConfigVersion is the current schema version.
@@ -267,6 +272,7 @@ type AddRigOptions struct {
 	PushURL        string   // Optional push URL (fork for read-only upstreams)
 	UpstreamURL    string   // Optional upstream URL (for fork workflows)
 	BeadsPrefix    string   // Beads issue prefix (defaults to derived from name)
+	BeadsMode      string   // Beads mode: "auto" (default when empty) or "rig"; see config.ParseRigBeadsMode
 	LocalRepo      string   // Optional local repo for reference clones
 	DefaultBranch  string   // Default branch (defaults to auto-detected from remote)
 	SkipDoltCheck  bool     // Skip Dolt server availability check (for tests with mocked beads)
@@ -336,6 +342,11 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		if strings.EqualFold(opts.Name, reserved) {
 			return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", opts.Name)
 		}
+	}
+
+	beadsMode, err := config.ParseRigBeadsMode(opts.BeadsMode)
+	if err != nil {
+		return nil, err
 	}
 
 	// Dolt server is required — refuse to proceed without it.
@@ -412,6 +423,7 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		CreatedAt:   time.Now(),
 		Beads: &BeadsConfig{
 			Prefix: opts.BeadsPrefix,
+			Mode:   beadsMode,
 		},
 	}
 	if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
@@ -577,8 +589,19 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 
 	// Check if source repo has tracked .beads/ directory.
 	// If so, we need to initialize the database (it doesn't exist after clone since DB files are gitignored).
+	//
+	// In beads.mode=rig the tracked .beads/ belongs to the project (its own
+	// issue tracker) and is left untouched: no redirect removal, no prefix
+	// adoption, no bd init inside the clone. The rig gets a self-contained
+	// <rig>/.beads/ from InitBeads below.
 	sourceBeadsDir := filepath.Join(mayorRigPath, ".beads")
-	if _, err := os.Stat(sourceBeadsDir); err == nil {
+	_, sourceBeadsErr := os.Stat(sourceBeadsDir)
+	sourceTracksBeads := sourceBeadsErr == nil
+	for _, line := range beadsModeNotice(beadsMode, sourceTracksBeads,
+		sourceTracksBeads && beadsConfigHasSyncRemote(filepath.Join(sourceBeadsDir, "config.yaml"))) {
+		fmt.Println(line)
+	}
+	if sourceTracksBeads && beadsMode != config.RigBeadsModeRig {
 		// Remove any redirect file that might have been accidentally tracked.
 		// Redirect files are runtime/local config and should not be in git.
 		// If not removed, they can cause circular redirect warnings during rig setup.
@@ -847,8 +870,7 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	// Without this, agent bead creation logs "no route found" warnings (#1424).
 	if opts.BeadsPrefix != "" {
 		routePath := opts.Name
-		mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
-		if _, err := os.Stat(mayorRigBeads); err == nil {
+		if _, tracked := beads.TrackedRigBeadsDir(rigPath); tracked {
 			routePath = opts.Name + "/mayor/rig"
 		}
 		route := beads.Route{
@@ -910,6 +932,7 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 		AddedAt:     time.Now(),
 		BeadsConfig: &config.BeadsConfig{
 			Prefix: opts.BeadsPrefix,
+			Mode:   beadsMode,
 		},
 	}
 
@@ -1147,11 +1170,12 @@ func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
 	}
 
 	beadsDir := filepath.Join(rigPath, ".beads")
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
 
 	// Check if source repo has tracked .beads/ (cloned into mayor/rig).
-	// If so, create a redirect file instead of a new database.
-	if _, err := os.Stat(mayorRigBeads); err == nil {
+	// If so, create a redirect file instead of a new database — unless the
+	// rig is in beads.mode=rig (<rig>/config.json), which always takes the
+	// self-contained path below.
+	if _, tracked := beads.TrackedRigBeadsDir(rigPath); tracked {
 		// Tracked beads exist - create redirect to mayor/rig/.beads
 		if err := os.MkdirAll(beadsDir, 0755); err != nil {
 			return err
@@ -1259,6 +1283,13 @@ func (m *Manager) InitBeads(rigPath, prefix, rigName string) error {
 	migrateCmd.Env = filteredEnv
 	// Ignore errors - fingerprint is optional for functionality
 	_, _ = migrateCmd.CombinedOutput()
+
+	// beads.mode=rig with a repo that tracks .beads/: point the mayor clone at
+	// the rig's own beads with an extra (gitignored) redirect file, so gt and
+	// bd calls rooted in mayor/rig never bind to the project's tracked beads.
+	if _, err := beads.EnsureMayorCloneRedirect(rigPath); err != nil {
+		return fmt.Errorf("pointing mayor clone at rig beads: %w", err)
+	}
 
 	// NOTE: We intentionally do NOT create routes.jsonl in rig beads.
 	// bd's routing walks up to find town root (via mayor/town.json) and uses
@@ -1625,7 +1656,11 @@ type RegisterRigOptions struct {
 	PushURL     string // Override push URL (auto-detected from existing config/remotes if empty)
 	UpstreamURL string // Upstream repository URL (for fork workflows)
 	BeadsPrefix string // Beads issue prefix (defaults to derived from name or existing config)
-	Force       bool   // Register even if directory structure looks incomplete
+	// BeadsMode is "auto" or "rig" (see config.ParseRigBeadsMode). Empty keeps
+	// the mode already recorded in config.json (auto when none). A non-empty
+	// value is persisted to config.json, creating it if missing.
+	BeadsMode string
+	Force     bool // Register even if directory structure looks incomplete
 }
 
 // RegisterRigResult contains the result of registering a rig.
@@ -1633,6 +1668,7 @@ type RegisterRigResult struct {
 	Name          string // Rig name
 	GitURL        string // Detected or provided git URL
 	BeadsPrefix   string // Detected or derived beads prefix
+	BeadsMode     string // Effective beads mode ("auto" or "rig")
 	FromConfig    bool   // True if values were read from existing config.json
 	DefaultBranch string // Default branch from existing config (if any)
 }
@@ -1656,6 +1692,15 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 		if strings.EqualFold(opts.Name, reserved) {
 			return nil, fmt.Errorf("rig name %q is reserved for town-level infrastructure", opts.Name)
 		}
+	}
+
+	requestedBeadsMode := ""
+	if opts.BeadsMode != "" {
+		mode, err := config.ParseRigBeadsMode(opts.BeadsMode)
+		if err != nil {
+			return nil, err
+		}
+		requestedBeadsMode = mode
 	}
 
 	rigPath := filepath.Join(m.townRoot, opts.Name)
@@ -1793,6 +1838,14 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 		}
 	}
 
+	// Record the beads mode before the caller initializes beads: InitBeads and
+	// every tracked-beads decision read it from config.json.
+	beadsMode, err := m.persistRegisterBeadsMode(rigPath, existingConfig, result, requestedBeadsMode)
+	if err != nil {
+		return nil, err
+	}
+	result.BeadsMode = beadsMode
+
 	// Register in town config
 	m.config.Rigs[opts.Name] = config.RigEntry{
 		GitURL:      result.GitURL,
@@ -1801,10 +1854,66 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 		AddedAt:     time.Now(),
 		BeadsConfig: &config.BeadsConfig{
 			Prefix: result.BeadsPrefix,
+			Mode:   beadsMode,
 		},
 	}
 
 	return result, nil
+}
+
+// persistRegisterBeadsMode records an explicitly requested beads mode in
+// <rig>/config.json (writing a minimal config.json when the adopted directory
+// has none) and returns the effective mode. With no request it returns the
+// mode already recorded (auto when none) and writes nothing.
+func (m *Manager) persistRegisterBeadsMode(rigPath string, existing *RigConfig, result *RegisterRigResult, requested string) (string, error) {
+	if requested == "" {
+		return config.RigBeadsModeOf(rigPath), nil
+	}
+	var updated RigConfig
+	if existing != nil {
+		updated = *existing
+	} else {
+		updated = RigConfig{
+			Type:          "rig",
+			Version:       CurrentRigConfigVersion,
+			Name:          result.Name,
+			GitURL:        result.GitURL,
+			DefaultBranch: result.DefaultBranch,
+			CreatedAt:     time.Now(),
+		}
+	}
+	beadsCfg := BeadsConfig{Prefix: result.BeadsPrefix}
+	if updated.Beads != nil {
+		beadsCfg = *updated.Beads
+		if beadsCfg.Prefix == "" {
+			beadsCfg.Prefix = result.BeadsPrefix
+		}
+	}
+	beadsCfg.Mode = requested
+	updated.Beads = &beadsCfg
+	if err := m.saveRigConfig(rigPath, &updated); err != nil {
+		return "", fmt.Errorf("recording beads mode in config.json: %w", err)
+	}
+	return requested, nil
+}
+
+// beadsModeNotice returns the lines gt rig add prints about where the rig's
+// beads will live. In auto mode with a tracked .beads/ that has sync.remote it
+// adds a one-line recommendation for --beads rig.
+func beadsModeNotice(mode string, sourceTracksBeads, sourceHasSyncRemote bool) []string {
+	switch {
+	case mode == config.RigBeadsModeRig && sourceTracksBeads:
+		return []string{"  Beads mode: rig (self-contained <rig>/.beads/; the repo's tracked .beads/ is left untouched)"}
+	case mode == config.RigBeadsModeRig:
+		return []string{"  Beads mode: rig (self-contained <rig>/.beads/)"}
+	case !sourceTracksBeads:
+		return []string{"  Beads mode: auto (repo does not track .beads/; self-contained <rig>/.beads/)"}
+	}
+	lines := []string{"  Beads mode: auto (repo tracks .beads/; rig uses mayor/rig/.beads)"}
+	if sourceHasSyncRemote {
+		lines = append(lines, "  Warning: the repo's .beads/config.yaml sets sync.remote; if the project tracks its own issues with bd, re-add the rig with --beads rig")
+	}
+	return lines
 }
 
 // detectPushURL attempts to detect a custom push URL from an existing repository.

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/steveyegge/gastown/internal/beads"
 )
 
 // StaleDoltPortCheck detects stale Dolt port files that point to wrong ports.
@@ -193,10 +195,11 @@ func (c *StaleDoltPortCheck) findPortFiles(townRoot string) []string {
 		}
 		if json.Unmarshal(data, &rigs) == nil {
 			for rigName := range rigs.Rigs {
-				locations = append(locations,
-					filepath.Join(townRoot, rigName, "mayor", "rig", ".beads", "dolt-server.port"),
-					filepath.Join(townRoot, rigName, ".beads", "dolt-server.port"),
-				)
+				// Tracked mayor/rig/.beads is skipped in beads.mode=rig.
+				if mayorBeads, tracked := beads.TrackedRigBeadsDir(filepath.Join(townRoot, rigName)); tracked {
+					locations = append(locations, filepath.Join(mayorBeads, "dolt-server.port"))
+				}
+				locations = append(locations, filepath.Join(townRoot, rigName, ".beads", "dolt-server.port"))
 			}
 		}
 	}
@@ -248,7 +251,13 @@ func (c *StaleDoltPortCheck) findMetadataFiles(townRoot string) []string {
 		}
 		if json.Unmarshal(data, &rigs) == nil {
 			for rigName := range rigs.Rigs {
-				rigMeta := filepath.Join(townRoot, rigName, "mayor", "rig", ".beads", "metadata.json")
+				// Never inspect (or fix) the project's tracked metadata.json
+				// in beads.mode=rig.
+				mayorBeads, tracked := beads.TrackedRigBeadsDir(filepath.Join(townRoot, rigName))
+				if !tracked {
+					continue
+				}
+				rigMeta := filepath.Join(mayorBeads, "metadata.json")
 				if _, err := os.Stat(rigMeta); err == nil {
 					files = append(files, rigMeta)
 				}

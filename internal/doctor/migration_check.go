@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/atomicfile"
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/doltserver"
-	"github.com/steveyegge/gastown/internal/atomicfile"
 )
 
 var verifyExpectedDatabasesAtConfig = doltserver.VerifyExpectedDatabasesAtConfig
@@ -387,9 +388,10 @@ func (c *DoltServerReachableCheck) findServerModeRigs(townRoot string) map[strin
 	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigs := loadRigNames(rigsPath)
 	for rigName := range rigs {
-		// Check mayor/rig/.beads first (canonical), then rig/.beads
-		beadsDir := filepath.Join(townRoot, rigName, "mayor", "rig", ".beads")
-		if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		// Check mayor/rig/.beads first (canonical tracked beads, unless
+		// beads.mode=rig), then rig/.beads
+		beadsDir, tracked := beads.TrackedRigBeadsDir(filepath.Join(townRoot, rigName))
+		if !tracked {
 			beadsDir = filepath.Join(townRoot, rigName, ".beads")
 		}
 		if addr, ok := c.getServerAddr(beadsDir, townRoot); ok {

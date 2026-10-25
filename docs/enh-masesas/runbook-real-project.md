@@ -53,8 +53,10 @@ Setelah install, isi `<town>/settings/config.json` (model per peran, Claude saja
 git clone --bare <path-repo-asli> ~/gastown/mirror/<repo>.git
 git -C ~/gastown/mirror/<repo>.git remote remove origin        # rig tidak pernah tahu origin asli
 git ls-remote ~/gastown/mirror/<repo>.git | head -3              # harus mengiklankan HEAD + branch
-gt rig add <rig> file://$HOME/gastown/mirror/<repo>.git --prefix <px>
+gt rig add <rig> file://$HOME/gastown/mirror/<repo>.git --prefix <px> --beads rig
 ```
+
+`--beads rig` wajib untuk proyek yang melacak issue-nya sendiri dengan bd (`.beads/` ter-track, mis. oto-rent-pro prefix `oto` dengan `sync.remote` ke GitHub): rig mendapat `<rig>/.beads/` sendiri dan gt tidak pernah menjalankan `bd init`, menulis ulang, atau me-redirect ke `.beads/` proyek, sehingga `sync.remote` proyek tidak terbawa ke config bd rig. Mode tersimpan sebagai `beads.mode` di `<rig>/config.json`; satu-satunya file yang ditambah di clone `mayor/rig` adalah `.beads/redirect` (diabaikan oleh `.beads/.gitignore` bawaan bd), sedangkan worktree refinery/crew/polecat tetap memakai redirect biasa ke `<rig>/.beads`.
 
 Lalu smoke test `refs/gt/archive/*` (§ 2) dan cek `gt doctor` menunjukkan `rig-prepush-guard` OK. Directives crew/polecat dipasang oleh `gt rig add`.
 

@@ -643,6 +643,9 @@ type RigEntry struct {
 type BeadsConfig struct {
 	Repo   string `json:"repo"`   // "local" | path | git-url
 	Prefix string `json:"prefix"` // issue prefix
+	// Mode is the rig beads mode (RigBeadsModeAuto or RigBeadsModeRig).
+	// Empty means auto. See ParseRigBeadsMode.
+	Mode string `json:"mode,omitempty"`
 }
 
 // CurrentTownVersion is the current schema version for TownConfig.

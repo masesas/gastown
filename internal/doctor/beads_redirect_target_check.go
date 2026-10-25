@@ -195,13 +195,13 @@ func (c *BeadsRedirectTargetCheck) Fix(ctx *CheckContext) error {
 
 		rigRoot := filepath.Join(ctx.TownRoot, parts[0])
 		rigBeads := filepath.Join(rigRoot, ".beads")
-		mayorBeads := filepath.Join(rigRoot, "mayor", "rig", ".beads")
 
 		// Check if either canonical location exists and has beads
+		// (tracked mayor/rig/.beads never counts in beads.mode=rig).
 		canonicalExists := false
 		if hasBeadsSetup(rigBeads) {
 			canonicalExists = true
-		} else if hasBeadsSetup(mayorBeads) {
+		} else if mayorBeads, tracked := beads.TrackedRigBeadsDir(rigRoot); tracked && hasBeadsSetup(mayorBeads) {
 			canonicalExists = true
 		}
 
@@ -268,7 +268,7 @@ func recomputeRedirect(townRoot, worktreePath string) error {
 
 	rigRoot := filepath.Join(townRoot, parts[0])
 	rigBeads := filepath.Join(rigRoot, ".beads")
-	mayorBeads := filepath.Join(rigRoot, "mayor", "rig", ".beads")
+	mayorBeads, tracked := beads.TrackedRigBeadsDir(rigRoot)
 
 	// Compute depth from worktree to rig root
 	depth := len(parts) - 1
@@ -293,7 +293,7 @@ func recomputeRedirect(townRoot, worktreePath string) error {
 			}
 		}
 		redirectContent = upPath + ".beads"
-	case hasBeadsSetup(mayorBeads):
+	case tracked && hasBeadsSetup(mayorBeads):
 		redirectContent = upPath + "mayor/rig/.beads"
 	default:
 		return fmt.Errorf("no valid beads location found")

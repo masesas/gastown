@@ -203,6 +203,13 @@ refinery/rig/.beads/redirect   → ../../mayor/rig/.beads
 `ResolveBeadsDir()` follows redirect chains (max depth 3) with circular detection.
 This ensures all agents in a rig share a single beads database via the Dolt server.
 
+The canonical location depends on the rig's `beads.mode` (`<rig>/config.json`):
+in `auto` (default) a repo that tracks `.beads/` uses `mayor/rig/.beads`; otherwise,
+and always in `rig` mode, worktrees redirect to the rig's own `<rig>/.beads`
+(`../../.beads`). In `rig` mode the mayor clone gets an ignored
+`mayor/rig/.beads/redirect` → `../../.beads`, and the repo's tracked `.beads/` files
+are never written. `beads.TrackedRigBeadsDir()` is the single decision point.
+
 ## Merge Queue: Batch-then-Bisect
 
 The refinery processes MRs through a batch-then-bisect merge queue (Bors-style).

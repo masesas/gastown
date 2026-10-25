@@ -50,6 +50,7 @@ town-level Gas Town beads.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `default_branch` | `string` | `"main"` | Default branch for the rig. Auto-detected from remote during `gt rig add`. Used as the merge target by the Refinery and as the base for polecats when no integration branch is active. |
+| `beads.mode` | `string` | `"auto"` | Where the rig keeps its beads (set by `gt rig add --beads`). `auto`: if the repo tracks `.beads/`, use it in `mayor/rig` (`<rig>/.beads/redirect` → `mayor/rig/.beads`), else a self-contained `<rig>/.beads/`. `rig`: always a self-contained `<rig>/.beads/`; Gas Town never initializes, rewrites or redirects into the repo's tracked `.beads/` (only an ignored `mayor/rig/.beads/redirect` → `../../.beads` is added). Missing or unknown values mean `auto`. |
 
 ### Settings (`settings/config.json`)
 
@@ -594,6 +595,7 @@ export OPENCODE_PERMISSION='{"*":"allow"}'
 
 ```bash
 gt rig add <name> <url>
+gt rig add <name> <url> --beads rig     # Self-contained <rig>/.beads/, never touch the repo's tracked .beads/
 gt rig list
 gt rig remove <name>
 ```
