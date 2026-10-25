@@ -45,7 +45,11 @@ source ~/gastown/env.sh
 gt install ~/gastown/town --name gastown --dolt-port <port-bebas> --owner <email-anda>
 ```
 
-Setelah install, isi `<town>/settings/config.json` (model per peran, Claude saja), `<town>/mayor/daemon.json` (idle shutdown, § 6), dan `scheduler.max_polecats` (§ 5). Aset S1c (formula `mol-contract-*`, `directives/mayor.md`) dipasang oleh `gt install` (§ 1); cek dengan `gt formula list | grep contract` dan `gt directive list`.
+Setelah install, isi `<town>/settings/config.json` (model per peran, Claude saja; contoh terpasang: `claude-haiku` untuk boot/deacon/dog, `claude-sonnet` untuk mayor/refinery/witness, `role_effort`, `cost_tier: economy`, `scheduler.max_polecats: 2`, § 5) dan tambahkan `patrols.idle_shutdown {enabled: true, idle_timeout: "30m"}` ke `<town>/mayor/daemon.json` (§ 6; default `gt install` sudah memuat patrol lifecycle lain). Aset S1c (formula `mol-contract-*`, `directives/mayor.md`) dipasang oleh `gt install` (§ 1); cek dengan `gt formula list | grep contract` dan `gt directive list`.
+
+- Jalankan `gt git-init` di town root lalu buat commit awal (town pilot juga di-git); ini sekaligus menutup peringatan doctor `town-git` dan `runtime-gitignore`.
+- Perbaikan doctor di town baru: `gt doctor --fix --no-start` (tanpa menyalakan daemon/agent). Aman di town baru karena belum ada polecat atau branch; di town yang sudah hidup tetap berlaku larangan lama, karena `--fix` tanpa `--no-start` juga menyalakan agent dan mem-push branch polecat yang macet.
+- **Jangan jalankan `gt enable`** (peringatan doctor `global-state`) tanpa keputusan user: ia memasang shell hook global dan mendaftarkan repo git lain sebagai rig secara otomatis. Peringatan itu boleh dibiarkan, begitu juga `daemon: not running` selama town belum di-`gt up`.
 
 ### 0.4 Rig lewat mirror
 
@@ -61,7 +65,10 @@ gt rig add <rig> file://$HOME/gastown/mirror/<repo>.git --prefix <px> --beads ri
 - Jangan pernah menjalankan `bd` interaktif dengan cwd `mayor/rig` (terutama `bd bootstrap`, `bd sync`, `bd dolt remote add`): bd mencari config viper dengan naik direktori sehingga memuat `.beads/config.yaml` proyek yang ter-track (termasuk `sync.remote`); redirect hanya memilih database. Panggilan bd milik gt selalu memasang `BEADS_DIR` dan tidak terpengaruh. `bd dolt push` juga tidak melewati pre-push guard git, jadi kebersihan `sync.remote` adalah kontrol yang sebenarnya.
 - Migrasi rig lama `auto` → `rig` (atau sebaliknya) manual: `gt rig add <rig> --adopt --beads rig` menolak bila `<rig>/.beads/redirect` masih ada.
 
-Lalu smoke test `refs/gt/archive/*` (§ 2) dan cek `gt doctor` menunjukkan `rig-prepush-guard` OK. Directives crew/polecat dipasang oleh `gt rig add`.
+- Nama rig hanya huruf, angka, dan underscore (`oto_rent_pro`, bukan `oto-rent-pro`); nama script gate bebas.
+- Bila `gt rig add` memperingatkan "pre-push guard conflict: core.hooksPath=.../.beads/hooks": clone itu memakai hooks beads milik proyek (dipasang bd saat clone), dan hooks itu tidak dibutuhkan di clone rig. Perbaikan: `git -C <rig>/mayor/rig config --unset core.hooksPath`, lalu `gt doctor --fix --no-start` memasang hook gt di `.git/hooks/pre-push`. Dengan `--beads rig` konflik ini tidak muncul karena bd tidak dijalankan di clone.
+
+Lalu smoke test `refs/gt/archive/*` (§ 2) dan cek `gt doctor` menunjukkan `rig-prepush-guard` OK. Directives crew/polecat dipasang oleh `gt rig add`. Bukti guard land (25 Okt 2026, rig `oto_rent_pro`): dari `refinery/rig`, `GT_ROLE=refinery GT_INTEGRATION_LAND=1 git push origin refs/remotes/origin/integration/smoke:refs/heads/main` ditolak dengan `BLOCKED: push to main lands integration branch ...`, dan `main` mirror tetap `8936596`.
 
 Mirror yang sudah ada: `~/gastown/mirror/oto-rent-pro.git` (dari `/Users/maskapai/masesas/Projects/otomotives/rent/mobile/oto-rent-pro`, `main` `8936596`, origin dihapus, smoke test arsip lolos 25 Okt 2026). Memperbarui mirror hanya lewat `git -C ~/gastown/mirror/oto-rent-pro.git fetch <path-repo-asli> main:main` sebagai manusia; repo asli dan `.beads`-nya tidak pernah disentuh.
 
@@ -83,6 +90,8 @@ Mirror yang sudah ada: `~/gastown/mirror/oto-rent-pro.git` (dari `/Users/maskapa
   }
 }
 ```
+
+Nilai terpasang untuk `oto_rent_pro` (25 Okt 2026): `setup_command` = `oto-rent-pro-gate setup`, `test_command` = `oto-rent-pro-gate test`, `on_conflict: assign_back`, `delete_merged_branches: true`, `retry_flaky_tests: 1`, `max_concurrent: 1`, `allowed_paths` sesuai § 0.6. Blok `namepool` yang ditulis `gt rig add` dipertahankan di file yang sama.
 
 ### 0.6 Gate per proyek
 
