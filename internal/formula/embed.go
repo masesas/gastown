@@ -17,11 +17,8 @@ import (
 //go:embed formulas/*.formula.toml
 var formulasFS embed.FS
 
-// InstalledRecord tracks which formulas were installed and their checksums.
-// Stored in .beads/formulas/.installed.json (assetsync record, key "formulas").
-type InstalledRecord struct {
-	Formulas map[string]string `json:"formulas"` // filename -> sha256 at install time
-}
+// Install hashes are recorded in .beads/formulas/.installed.json under the key
+// "formulas" ({"formulas": {"<file>": "<sha256>"}}); see assetsync.
 
 // FormulaStatus represents the status of a single formula during health check.
 type FormulaStatus struct {
@@ -114,31 +111,6 @@ func formulaSetFor(formulasDir string) assetsync.Set {
 // formulaSet returns the set for <beadsPath>/.beads/formulas/.
 func formulaSet(beadsPath string) assetsync.Set {
 	return formulaSetFor(filepath.Join(beadsPath, ".beads", "formulas"))
-}
-
-// computeHash computes SHA256 hash of data.
-func computeHash(data []byte) string {
-	return assetsync.Hash(data)
-}
-
-// getEmbeddedFormulas returns a map of filename -> sha256 for all embedded formulas.
-func getEmbeddedFormulas() (map[string]string, error) {
-	// DestDir is not used by EmbeddedHashes; any non-empty value satisfies the Set.
-	return assetsync.EmbeddedHashes(formulaSetFor(filepath.Join(".beads", "formulas")))
-}
-
-// loadInstalledRecord loads the installed record from disk.
-func loadInstalledRecord(formulasDir string) (*InstalledRecord, error) {
-	rec, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
-	if err != nil {
-		return nil, err
-	}
-	return &InstalledRecord{Formulas: rec}, nil
-}
-
-// saveInstalledRecord saves the installed record to disk.
-func saveInstalledRecord(formulasDir string, record *InstalledRecord) error {
-	return assetsync.SaveRecord(formulaSetFor(formulasDir), record.Formulas)
 }
 
 // ProvisionFormulas creates the .beads/formulas/ directory with embedded formulas.

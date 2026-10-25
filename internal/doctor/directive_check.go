@@ -3,6 +3,8 @@ package doctor
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -38,30 +40,36 @@ type scopedSet struct {
 	set   assetsync.Set
 }
 
-// directiveSets returns the town set and one set per registered rig, rigs sorted by name.
-func directiveSets(townRoot string) ([]scopedSet, error) {
-	sets := []scopedSet{{scope: "town", set: directives.TownSet(townRoot)}}
+// directiveSets returns the town set and one set per registered rig, rigs
+// sorted by name. It never aborts: a rig with an invalid name or an
+// unreadable rigs.json is reported in errs and the remaining sets are still
+// returned. Rigs whose directory does not exist are skipped silently, so a
+// fix never creates a phantom <town>/<rig>/directives/.
+func directiveSets(townRoot string) (sets []scopedSet, errs []error) {
+	sets = []scopedSet{{scope: "town", set: directives.TownSet(townRoot)}}
 	rigs, err := discoverRigs(townRoot)
 	if err != nil {
-		return nil, fmt.Errorf("discovering rigs: %w", err)
+		return sets, []error{fmt.Errorf("discovering rigs: %w", err)}
 	}
 	sort.Strings(rigs)
 	for _, r := range rigs {
 		s, err := directives.RigSet(townRoot, r)
 		if err != nil {
-			return nil, err
+			errs = append(errs, err)
+			continue
+		}
+		if fi, err := os.Stat(filepath.Join(townRoot, r)); err != nil || !fi.IsDir() {
+			continue
 		}
 		sets = append(sets, scopedSet{scope: r, set: s})
 	}
-	return sets, nil
+	return sets, errs
 }
 
-// Run checks if directives need installing or updating.
+// Run checks if directives need installing or updating. Errors in one set
+// do not hide the status of the others.
 func (c *DirectiveCheck) Run(ctx *CheckContext) *CheckResult {
-	sets, err := directiveSets(ctx.TownRoot)
-	if err != nil {
-		return c.warn(err)
-	}
+	sets, errs := directiveSets(ctx.TownRoot)
 
 	var total assetsync.Report
 	var details []string
@@ -69,7 +77,8 @@ func (c *DirectiveCheck) Run(ctx *CheckContext) *CheckResult {
 	for _, ss := range sets {
 		r, err := assetsync.Check(ss.set)
 		if err != nil {
-			return c.warn(fmt.Errorf("%s: %w", ss.scope, err))
+			errs = append(errs, fmt.Errorf("%s: %w", ss.scope, err))
+			continue
 		}
 		total.OK += r.OK
 		total.Outdated += r.Outdated
@@ -87,6 +96,10 @@ func (c *DirectiveCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	for _, err := range errs {
+		details = append(details, fmt.Sprintf("  error: %v", err))
+	}
+
 	if len(details) == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -95,25 +108,27 @@ func (c *DirectiveCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	parts := []string{}
+	if counts := directiveCounts(total); counts != "" {
+		parts = append(parts, counts)
+	}
+	if len(errs) > 0 {
+		parts = append(parts, fmt.Sprintf("%d error(s)", len(errs)))
+	}
+	message := "Directives: " + strings.Join(parts, ", ")
 	result := &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusOK,
-		Message: "Directives: " + directiveCounts(total),
+		Message: message,
 		Details: details,
 	}
-	if needsFix {
+	if needsFix || len(errs) > 0 {
 		result.Status = StatusWarning
+	}
+	if needsFix {
 		result.FixHint = "Run 'gt doctor --fix' (or 'gt upgrade') to install or update directives"
 	}
 	return result
-}
-
-func (c *DirectiveCheck) warn(err error) *CheckResult {
-	return &CheckResult{
-		Name:    c.Name(),
-		Status:  StatusWarning,
-		Message: fmt.Sprintf("Could not check directives: %v", err),
-	}
 }
 
 // directiveDetail returns the detail text for a file status and whether Fix acts on it.
@@ -128,7 +143,7 @@ func directiveDetail(status string) (string, bool) {
 	case assetsync.StatusModified:
 		return "locally modified (skipping)", false
 	case assetsync.StatusError:
-		return "unreadable (skipping)", false
+		return "unreadable or symlink (skipping)", false
 	}
 	return "", false
 }
@@ -155,11 +170,7 @@ func directiveCounts(r assetsync.Report) string {
 // Fix installs new and missing directives and refreshes unmodified ones in
 // every set. A failing set does not stop the others; all errors are returned.
 func (c *DirectiveCheck) Fix(ctx *CheckContext) error {
-	sets, err := directiveSets(ctx.TownRoot)
-	if err != nil {
-		return err
-	}
-	var errs []error
+	sets, errs := directiveSets(ctx.TownRoot)
 	for _, ss := range sets {
 		if _, _, _, err := assetsync.Update(ss.set); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ss.scope, err))

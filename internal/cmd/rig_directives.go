@@ -11,19 +11,18 @@ import (
 // provisionRigDirectives installs the default rig-level role directives into
 // <townRoot>/<rigName>/directives/. Existing files are kept; gt upgrade and
 // gt doctor --fix refresh only files unmodified since install. Non-fatal:
-// failures are printed. Returns the number of files written.
-func provisionRigDirectives(townRoot, rigName string) int {
+// failures are printed.
+func provisionRigDirectives(townRoot, rigName string) {
 	set, err := directives.RigSet(townRoot, rigName)
-	if err == nil {
-		var count int
-		count, err = assetsync.Provision(set)
-		if err == nil {
-			if count > 0 {
-				fmt.Printf("  %s Provisioned %d rig directives\n", style.Success.Render("✓"), count)
-			}
-			return count
-		}
+	if err != nil {
+		fmt.Printf("  %s Could not provision rig directives: %v\n", style.Warning.Render("!"), err)
+		return
 	}
-	fmt.Printf("  %s Could not provision rig directives: %v\n", style.Warning.Render("!"), err)
-	return 0
+	count, err := assetsync.Provision(set)
+	if count > 0 {
+		fmt.Printf("  %s Provisioned %d rig directives\n", style.Success.Render("✓"), count)
+	}
+	if err != nil {
+		fmt.Printf("  %s Could not provision rig directives: %v\n", style.Warning.Render("!"), err)
+	}
 }

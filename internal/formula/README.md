@@ -203,7 +203,7 @@ deps := f.GetDependencies("build")  // Returns ["test"]
 
 ## Embedded Formulas
 
-The package embeds common formulas for Gas Town workflows:
+The package embeds common formulas for Gas Town workflows (`formulas/*.formula.toml`), including the S1c contract-first formulas `mol-contract-brief`, `mol-contract-brief-review` and `mol-contract-work`. Provisioning, health check and update use the hash record (`.beads/formulas/.installed.json`, key `formulas`) implemented in `internal/assetsync`, which `internal/directives` shares for the default role directives:
 
 ```go
 // Provision embedded formulas to a beads workspace

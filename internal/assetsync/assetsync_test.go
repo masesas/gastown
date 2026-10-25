@@ -2,8 +2,10 @@ package assetsync
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"testing/fstest"
 )
@@ -34,11 +36,17 @@ func readRecord(t *testing.T, dir, key string) map[string]string {
 	if err != nil {
 		t.Fatalf("reading record: %v", err)
 	}
-	var raw map[string]map[string]string
+	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("parsing record: %v", err)
 	}
-	return raw[key]
+	var entries map[string]string
+	if msg, ok := raw[key]; ok {
+		if err := json.Unmarshal(msg, &entries); err != nil {
+			t.Fatalf("parsing record key %q: %v", key, err)
+		}
+	}
+	return entries
 }
 
 func TestProvision_FreshWritesAndRecords(t *testing.T) {
@@ -101,15 +109,200 @@ func TestProvision_CorruptRecordFails(t *testing.T) {
 	}
 }
 
-func TestProvision_RecordKeyIsolation(t *testing.T) {
+func TestRecordKeys_TwoSetsShareOneRecord(t *testing.T) {
 	dest := t.TempDir()
-	s := testSet(dest, false)
-	s.RecordKey = "formulas"
-	if _, err := Provision(s); err != nil {
+	first := testSet(dest, false)
+	first.RecordKey = "first"
+	second := Set{
+		FS:        fstest.MapFS{"other/z.md": {Data: []byte("zeta\n")}},
+		SrcDir:    "other",
+		DestDir:   dest,
+		RecordKey: "second",
+	}
+	if _, err := Provision(first); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := Provision(second); err != nil {
+		t.Fatal(err)
+	}
+	// Update of the first set rewrites the record; the second key must survive.
+	if _, _, _, err := Update(first); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRecord(t, dest, "first"); len(got) != 2 {
+		t.Errorf("first key = %v, want 2 entries", got)
+	}
+	if got := readRecord(t, dest, "second"); got["z.md"] != Hash([]byte("zeta\n")) || len(got) != 1 {
+		t.Errorf("second key clobbered: %v", got)
+	}
+}
+
+func TestRecord_ForeignKeyOfAnyShapeIsPreserved(t *testing.T) {
+	dest := t.TempDir()
+	// Old-shape formulas record plus a foreign key whose value is not an object.
+	legacy := `{"formulas": {"a.md": "` + Hash([]byte("alpha v1\n")) + `"}, "version": 3, "note": "kept"}`
+	if err := os.WriteFile(filepath.Join(dest, RecordFile), []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+	s := testSet(dest, false)
+	s.RecordKey = "formulas"
+
+	rec, err := LoadRecord(s)
+	if err != nil {
+		t.Fatalf("LoadRecord with foreign scalar key: %v", err)
+	}
+	if rec["a.md"] != Hash([]byte("alpha v1\n")) {
+		t.Errorf("old-shape formulas entry not read: %v", rec)
+	}
+	if _, err := Check(s); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if _, _, _, err := Update(s); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(dest, RecordFile))
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["version"]) != "3" || string(raw["note"]) != `"kept"` {
+		t.Errorf("foreign keys not preserved: %s", data)
+	}
 	if len(readRecord(t, dest, "formulas")) != 2 {
-		t.Errorf("record not stored under configured key")
+		t.Errorf("formulas key not updated: %s", data)
+	}
+}
+
+func TestRecord_OwnKeyMalformedFails(t *testing.T) {
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, RecordFile), []byte(`{"files": 7}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(testSet(dest, false)); err == nil {
+		t.Error("Check accepted a malformed value under its own key")
+	}
+}
+
+func TestPartialWriteFailure_RecordsWrittenFiles(t *testing.T) {
+	dest := t.TempDir()
+	orig := writeFile
+	t.Cleanup(func() { writeFile = orig })
+	writeFile = func(dir, name string, data []byte) error {
+		if name == "b.md" {
+			return errors.New("injected write failure")
+		}
+		return orig(dir, name, data)
+	}
+
+	n, err := Provision(testSet(dest, true))
+	if err == nil {
+		t.Fatal("Provision hid the write failure")
+	}
+	if n != 1 {
+		t.Errorf("provisioned %d, want 1 (a.md)", n)
+	}
+	rec := readRecord(t, dest, "files")
+	if rec["a.md"] != Hash([]byte("alpha v1\n")) {
+		t.Errorf("a.md written but not recorded: %v", rec)
+	}
+	if _, ok := rec["b.md"]; ok {
+		t.Errorf("b.md failed but was recorded: %v", rec)
+	}
+
+	// a.md must not read as modified on the next check.
+	writeFile = orig
+	r, err := Check(testSet(dest, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.OK != 1 || r.New != 1 || r.Modified != 0 {
+		t.Errorf("after partial provision check = %+v, want 1 ok, 1 new", r)
+	}
+
+	// Same guarantee for Update.
+	dest2 := t.TempDir()
+	writeFile = func(dir, name string, data []byte) error {
+		if name == "a.md" {
+			return errors.New("injected write failure")
+		}
+		return orig(dir, name, data)
+	}
+	updated, _, _, err := Update(testSet(dest2, true))
+	if err == nil || updated != 1 {
+		t.Errorf("Update = %d, %v; want 1 and an error", updated, err)
+	}
+	writeFile = orig
+	if readRecord(t, dest2, "files")["b.md"] == "" {
+		t.Error("Update wrote b.md but did not record it")
+	}
+}
+
+func TestSymlinks_Refused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on windows")
+	}
+	dest := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "victim.md")
+	// Dangling symlink at a target: must not be followed to create outside.
+	if err := os.Symlink(outside, filepath.Join(dest, "a.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := Provision(testSet(dest, false))
+	if err == nil {
+		t.Error("Provision wrote through a dangling symlink without error")
+	}
+	if n != 1 {
+		t.Errorf("provisioned %d, want 1 (b.md still written)", n)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Errorf("symlink target outside DestDir was created")
+	}
+	if _, _, _, err := Update(testSet(dest, false)); err == nil {
+		t.Error("Update wrote through a dangling symlink without error")
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Errorf("Update created the symlink target outside DestDir")
+	}
+	r, err := Check(testSet(dest, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Error != 1 {
+		t.Errorf("check = %+v, want the symlink reported as error", r)
+	}
+
+	// Symlinked record file.
+	dest2 := t.TempDir()
+	if err := os.Symlink(filepath.Join(t.TempDir(), "rec.json"), filepath.Join(dest2, RecordFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Provision(testSet(dest2, false)); err == nil {
+		t.Error("Provision used a symlinked record")
+	}
+
+	// Symlinked DestDir.
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Provision(testSet(link, false)); err == nil {
+		t.Error("Provision used a symlinked DestDir")
+	}
+	if _, err := Check(testSet(link, false)); err == nil {
+		t.Error("Check used a symlinked DestDir")
+	}
+}
+
+func TestDestDirNotADirectory(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Provision(testSet(file, false)); err == nil {
+		t.Error("Provision accepted a regular file as DestDir")
 	}
 }
 

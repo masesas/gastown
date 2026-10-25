@@ -5,7 +5,12 @@
 // directory. The hashes of the files gt wrote are kept in
 // <DestDir>/.installed.json under Set.RecordKey. That record is what lets an
 // upgrade tell "unmodified since install" (safe to refresh) from "edited by
-// the user" (kept as is).
+// the user" (kept as is). Other top-level keys in the record are preserved.
+//
+// Safety rules: every write goes to a temporary file in the same directory
+// and is renamed into place; DestDir, the record and each target are never
+// written through a symlink; a failure on one file does not stop the others,
+// and the record is saved for every file that was written.
 //
 // Formulas (internal/formula) and default role directives
 // (internal/directives) both use this package.
@@ -35,7 +40,7 @@ const (
 	StatusMissing   = "missing"   // installed earlier, deleted since
 	StatusNew       = "new"       // never installed, not on disk
 	StatusUntracked = "untracked" // on disk, differs, no record entry (see Set.PreserveUntracked)
-	StatusError     = "error"     // could not be read
+	StatusError     = "error"     // unreadable, or a symlink (never written through)
 )
 
 // Set describes one embedded source directory and where it is installed.
@@ -84,6 +89,55 @@ func Hash(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// writeFile writes data to dir/name atomically. A variable so tests can
+// inject write failures.
+var writeFile = writeFileAtomic
+
+// refuseSymlink returns an error if p exists and is a symlink.
+func refuseSymlink(p string) error {
+	fi, err := os.Lstat(p)
+	switch {
+	case err == nil && fi.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("%s is a symlink; refusing to write through it", p)
+	case err != nil && !os.IsNotExist(err):
+		return fmt.Errorf("checking %s: %w", p, err)
+	}
+	return nil
+}
+
+// writeFileAtomic writes data to a temp file in dir and renames it to dir/name.
+// It refuses to replace a symlink.
+func writeFileAtomic(dir, name string, data []byte) (err error) {
+	target := filepath.Join(dir, name)
+	if err := refuseSymlink(target); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", name, err)
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmp.Name())
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing %s: %w", name, err)
+	}
+	if err = tmp.Chmod(0644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing %s: %w", name, err)
+	}
+	if err = tmp.Close(); err != nil {
+		return fmt.Errorf("writing %s: %w", name, err)
+	}
+	if err = os.Rename(tmp.Name(), target); err != nil {
+		return fmt.Errorf("writing %s: %w", name, err)
+	}
+	return nil
+}
+
 func (s Set) validate() error {
 	switch {
 	case s.FS == nil:
@@ -98,7 +152,24 @@ func (s Set) validate() error {
 	return nil
 }
 
-// embedded returns name -> content for the files of the Set, sorted by name.
+// checkDestDir fails if DestDir exists as a symlink or as a non-directory.
+// It reports whether DestDir exists.
+func (s Set) checkDestDir() (bool, error) {
+	fi, err := os.Lstat(s.DestDir)
+	switch {
+	case os.IsNotExist(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("checking %s: %w", s.DestDir, err)
+	case fi.Mode()&os.ModeSymlink != 0:
+		return false, fmt.Errorf("%s is a symlink; refusing to use it", s.DestDir)
+	case !fi.IsDir():
+		return false, fmt.Errorf("%s is not a directory", s.DestDir)
+	}
+	return true, nil
+}
+
+// embedded returns the names (sorted) and contents of the files of the Set.
 func (s Set) embedded() ([]string, map[string][]byte, error) {
 	entries, err := fs.ReadDir(s.FS, s.SrcDir)
 	if err != nil {
@@ -139,7 +210,7 @@ func EmbeddedHashes(s Set) (map[string]string, error) {
 }
 
 // LoadRecord returns the recorded install hashes of the Set (name -> hash).
-// A missing record yields an empty map.
+// A missing record or a record without the Set's key yields an empty map.
 func LoadRecord(s Set) (map[string]string, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
@@ -147,7 +218,8 @@ func LoadRecord(s Set) (map[string]string, error) {
 	return s.loadRecord()
 }
 
-// SaveRecord replaces the recorded install hashes of the Set.
+// SaveRecord replaces the recorded install hashes of the Set, keeping the
+// entries of other record keys.
 func SaveRecord(s Set, rec map[string]string) error {
 	if err := s.validate(); err != nil {
 		return err
@@ -155,37 +227,76 @@ func SaveRecord(s Set, rec map[string]string) error {
 	return s.saveRecord(rec)
 }
 
-func (s Set) loadRecord() (map[string]string, error) {
-	data, err := os.ReadFile(filepath.Join(s.DestDir, RecordFile))
+// loadRaw reads the whole record as top-level key -> raw JSON.
+func (s Set) loadRaw() (map[string]json.RawMessage, error) {
+	p := filepath.Join(s.DestDir, RecordFile)
+	if err := refuseSymlink(p); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
 	if os.IsNotExist(err) {
-		return make(map[string]string), nil
+		return make(map[string]json.RawMessage), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading installed record: %w", err)
 	}
-	var raw map[string]map[string]string
+	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing installed record: %w", err)
 	}
-	rec := raw[s.RecordKey]
-	if rec == nil {
-		rec = make(map[string]string)
+	if raw == nil {
+		raw = make(map[string]json.RawMessage)
+	}
+	return raw, nil
+}
+
+func (s Set) loadRecord() (map[string]string, error) {
+	raw, err := s.loadRaw()
+	if err != nil {
+		return nil, err
+	}
+	rec := make(map[string]string)
+	if msg, ok := raw[s.RecordKey]; ok {
+		var entries map[string]string
+		if err := json.Unmarshal(msg, &entries); err != nil {
+			return nil, fmt.Errorf("parsing installed record key %q: %w", s.RecordKey, err)
+		}
+		for k, v := range entries {
+			rec[k] = v
+		}
 	}
 	return rec, nil
 }
 
 func (s Set) saveRecord(rec map[string]string) error {
-	data, err := json.MarshalIndent(map[string]map[string]string{s.RecordKey: rec}, "", "  ")
+	raw, err := s.loadRaw()
+	if err != nil {
+		return fmt.Errorf("saving installed record: %w", err)
+	}
+	if rec == nil {
+		rec = map[string]string{}
+	}
+	entries, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("encoding installed record: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(s.DestDir, RecordFile), data, 0644); err != nil {
+	merged := make(map[string]json.RawMessage, len(raw)+1)
+	for k, v := range raw {
+		merged[k] = v
+	}
+	merged[s.RecordKey] = entries
+	data, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding installed record: %w", err)
+	}
+	if err := writeFile(s.DestDir, RecordFile, data); err != nil {
 		return fmt.Errorf("saving installed record: %w", err)
 	}
 	return nil
 }
 
-// prepare validates the Set, creates DestDir and loads the embedded files and the record.
+// prepare validates the Set, ensures DestDir is a real directory (creating
+// it if absent) and loads the embedded files and the record.
 func (s Set) prepare() ([]string, map[string][]byte, map[string]string, error) {
 	if err := s.validate(); err != nil {
 		return nil, nil, nil, err
@@ -194,8 +305,14 @@ func (s Set) prepare() ([]string, map[string][]byte, map[string]string, error) {
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if err := os.MkdirAll(s.DestDir, 0755); err != nil {
-		return nil, nil, nil, fmt.Errorf("creating %s: %w", s.DestDir, err)
+	exists, err := s.checkDestDir()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if !exists {
+		if err := os.MkdirAll(s.DestDir, 0755); err != nil {
+			return nil, nil, nil, fmt.Errorf("creating %s: %w", s.DestDir, err)
+		}
 	}
 	rec, err := s.loadRecord()
 	if err != nil {
@@ -205,40 +322,57 @@ func (s Set) prepare() ([]string, map[string][]byte, map[string]string, error) {
 }
 
 // Provision writes every embedded file that does not exist yet in DestDir
-// and records its hash. Existing files are left untouched and unrecorded.
-// Used on first install. Returns the number of files written.
+// and records its hash. Existing files are left untouched and unrecorded;
+// a symlink at a target is refused with an error. A failure on one file does
+// not stop the others; the record is saved for the files written and all
+// errors are returned joined. Used on first install. Returns the number of
+// files written.
 func Provision(s Set) (int, error) {
 	names, contents, rec, err := s.prepare()
 	if err != nil {
 		return 0, err
 	}
 	count := 0
+	var errs []error
 	for _, name := range names {
 		dest := filepath.Join(s.DestDir, name)
-		if _, err := os.Stat(dest); err == nil {
+		fi, err := os.Lstat(dest)
+		switch {
+		case err == nil && fi.Mode()&os.ModeSymlink != 0:
+			errs = append(errs, fmt.Errorf("%s is a symlink; refusing to write through it", dest))
 			continue
-		} else if !os.IsNotExist(err) {
-			return count, fmt.Errorf("checking %s: %w", name, err)
+		case err == nil:
+			continue // exists: never overwrite on provision
+		case !os.IsNotExist(err):
+			errs = append(errs, fmt.Errorf("checking %s: %w", name, err))
+			continue
 		}
-		if err := os.WriteFile(dest, contents[name], 0644); err != nil {
-			return count, fmt.Errorf("writing %s: %w", name, err)
+		if err := writeFile(s.DestDir, name, contents[name]); err != nil {
+			errs = append(errs, err)
+			continue
 		}
 		rec[name] = Hash(contents[name])
 		count++
 	}
 	if err := s.saveRecord(rec); err != nil {
-		return count, err
+		errs = append(errs, err)
 	}
-	return count, nil
+	return count, errors.Join(errs...)
 }
 
 // classify determines the status of one embedded file at its destination.
-func (s Set) classify(name string, content []byte, rec map[string]string) Status {
+// The returned error is non-nil only when the target is a symlink.
+func (s Set) classify(name string, content []byte, rec map[string]string) (Status, error) {
 	st := Status{Name: name, EmbeddedHash: Hash(content)}
 	installedHash, wasInstalled := rec[name]
 	st.InstalledHash = installedHash
 
-	data, err := os.ReadFile(filepath.Join(s.DestDir, name))
+	dest := filepath.Join(s.DestDir, name)
+	if err := refuseSymlink(dest); err != nil {
+		st.Status = StatusError
+		return st, err
+	}
+	data, err := os.ReadFile(dest)
 	switch {
 	case os.IsNotExist(err):
 		if wasInstalled {
@@ -246,10 +380,10 @@ func (s Set) classify(name string, content []byte, rec map[string]string) Status
 		} else {
 			st.Status = StatusNew
 		}
-		return st
+		return st, nil
 	case err != nil:
 		st.Status = StatusError
-		return st
+		return st, nil
 	}
 
 	st.CurrentHash = Hash(data)
@@ -263,7 +397,7 @@ func (s Set) classify(name string, content []byte, rec map[string]string) Status
 	default:
 		st.Status = StatusUntracked
 	}
-	return st
+	return st, nil
 }
 
 // Check reports the status of every embedded file. It does not write.
@@ -275,13 +409,16 @@ func Check(s Set) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.checkDestDir(); err != nil {
+		return nil, err
+	}
 	rec, err := s.loadRecord()
 	if err != nil {
 		return nil, err
 	}
 	report := &Report{}
 	for _, name := range names {
-		st := s.classify(name, contents[name], rec)
+		st, _ := s.classify(name, contents[name], rec) // a symlink is reported as StatusError
 		switch st.Status {
 		case StatusOK:
 			report.OK++
@@ -305,9 +442,11 @@ func Check(s Set) (*Report, error) {
 
 // Update writes the embedded version of every file that is outdated,
 // missing, new or untracked (unless PreserveUntracked), and records it.
-// Modified files are skipped. A file on disk that already equals the
-// embedded one but has no record entry is adopted into the record, so a
-// later release can refresh it.
+// Modified and unreadable files are skipped; a symlink at a target is
+// refused with an error. A file on disk that already equals the embedded
+// one but has no record entry is adopted into the record, so a later release
+// can refresh it. A failure on one file does not stop the others; the record
+// is saved for the files written and all errors are returned joined.
 // Returns counts of files updated (incl. new), skipped (modified) and
 // reinstalled (missing).
 func Update(s Set) (updated, skipped, reinstalled int, err error) {
@@ -315,8 +454,9 @@ func Update(s Set) (updated, skipped, reinstalled int, err error) {
 	if err != nil {
 		return 0, 0, 0, err
 	}
+	var errs []error
 	for _, name := range names {
-		st := s.classify(name, contents[name], rec)
+		st, symErr := s.classify(name, contents[name], rec)
 		switch st.Status {
 		case StatusOK:
 			rec[name] = st.EmbeddedHash
@@ -325,10 +465,14 @@ func Update(s Set) (updated, skipped, reinstalled int, err error) {
 			skipped++
 			continue
 		case StatusError:
+			if symErr != nil {
+				errs = append(errs, symErr)
+			}
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(s.DestDir, name), contents[name], 0644); err != nil {
-			return updated, skipped, reinstalled, fmt.Errorf("writing %s: %w", name, err)
+		if err := writeFile(s.DestDir, name, contents[name]); err != nil {
+			errs = append(errs, err)
+			continue
 		}
 		rec[name] = st.EmbeddedHash
 		if st.Status == StatusMissing {
@@ -338,7 +482,7 @@ func Update(s Set) (updated, skipped, reinstalled int, err error) {
 		}
 	}
 	if err := s.saveRecord(rec); err != nil {
-		return updated, skipped, reinstalled, err
+		errs = append(errs, err)
 	}
-	return updated, skipped, reinstalled, nil
+	return updated, skipped, reinstalled, errors.Join(errs...)
 }

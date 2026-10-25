@@ -8,13 +8,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/steveyegge/gastown/internal/assetsync"
 )
 
 // TestGetEmbeddedFormulas verifies embedded formulas can be read and hashed.
 func TestGetEmbeddedFormulas(t *testing.T) {
-	embedded, err := getEmbeddedFormulas()
+	embedded, err := assetsync.EmbeddedHashes(formulaSetFor("."))
 	if err != nil {
-		t.Fatalf("getEmbeddedFormulas() error: %v", err)
+		t.Fatalf("EmbeddedHashes() error: %v", err)
 	}
 	if len(embedded) == 0 {
 		t.Error("should have embedded formulas")
@@ -58,12 +60,12 @@ func TestProvisionFormulas_FreshInstall(t *testing.T) {
 	}
 
 	// Verify installed record contains the right checksums
-	installed, err := loadInstalledRecord(formulasDir)
+	installed, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
 	if err != nil {
-		t.Fatalf("loadInstalledRecord() error: %v", err)
+		t.Fatalf("LoadRecord() error: %v", err)
 	}
-	if len(installed.Formulas) != count {
-		t.Errorf("installed record has %d entries, want %d", len(installed.Formulas), count)
+	if len(installed) != count {
+		t.Errorf("installed record has %d entries, want %d", len(installed), count)
 	}
 }
 
@@ -214,19 +216,19 @@ func TestCheckFormulaHealth_Outdated(t *testing.T) {
 	// Simulate "old" installed record by changing the installed hash for a formula
 	// This mimics what happens when a new binary has updated formula content
 	formulasDir := filepath.Join(tmpDir, ".beads", "formulas")
-	installed, err := loadInstalledRecord(formulasDir)
+	installed, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	embedded, err := getEmbeddedFormulas()
+	embedded, err := assetsync.EmbeddedHashes(formulaSetFor("."))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Pick a formula that exists
 	var targetFormula string
-	for name := range installed.Formulas {
+	for name := range installed {
 		targetFormula = name
 		break
 	}
@@ -243,9 +245,9 @@ func TestCheckFormulaHealth_Outdated(t *testing.T) {
 
 	// Update installed record to match the old content's hash
 	hash := sha256.Sum256(oldContent)
-	installed.Formulas[targetFormula] = hex.EncodeToString(hash[:])
+	installed[targetFormula] = hex.EncodeToString(hash[:])
 
-	if err := saveInstalledRecord(formulasDir, installed); err != nil {
+	if err := assetsync.SaveRecord(formulaSetFor(formulasDir), installed); err != nil {
 		t.Fatal(err)
 	}
 
@@ -261,7 +263,7 @@ func TestCheckFormulaHealth_Outdated(t *testing.T) {
 
 	// Verify the embedded hash is different from installed
 	embeddedHash := embedded[targetFormula]
-	if embeddedHash == installed.Formulas[targetFormula] {
+	if embeddedHash == installed[targetFormula] {
 		t.Error("embedded hash should differ from installed hash for this test")
 	}
 }
@@ -278,13 +280,13 @@ func TestUpdateFormulas_UpdatesOutdated(t *testing.T) {
 
 	// Simulate outdated formula
 	formulasDir := filepath.Join(tmpDir, ".beads", "formulas")
-	installed, err := loadInstalledRecord(formulasDir)
+	installed, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var targetFormula string
-	for name := range installed.Formulas {
+	for name := range installed {
 		targetFormula = name
 		break
 	}
@@ -301,8 +303,8 @@ func TestUpdateFormulas_UpdatesOutdated(t *testing.T) {
 
 	// Update installed record with old content's hash
 	hash := sha256.Sum256(oldContent)
-	installed.Formulas[targetFormula] = hex.EncodeToString(hash[:])
-	if err := saveInstalledRecord(formulasDir, installed); err != nil {
+	installed[targetFormula] = hex.EncodeToString(hash[:])
+	if err := assetsync.SaveRecord(formulaSetFor(formulasDir), installed); err != nil {
 		t.Fatal(err)
 	}
 
@@ -344,13 +346,13 @@ func TestUpdateFormulas_SkipsModified(t *testing.T) {
 
 	// Modify a formula (user customization)
 	formulasDir := filepath.Join(tmpDir, ".beads", "formulas")
-	installed, err := loadInstalledRecord(formulasDir)
+	installed, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var targetFormula string
-	for name := range installed.Formulas {
+	for name := range installed {
 		targetFormula = name
 		break
 	}
@@ -397,13 +399,13 @@ func TestUpdateFormulas_ReinstallsMissing(t *testing.T) {
 
 	// Delete a formula
 	formulasDir := filepath.Join(tmpDir, ".beads", "formulas")
-	installed, err := loadInstalledRecord(formulasDir)
+	installed, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var targetFormula string
-	for name := range installed.Formulas {
+	for name := range installed {
 		targetFormula = name
 		break
 	}
@@ -443,8 +445,8 @@ func TestUpdateFormulas_InstallsNew(t *testing.T) {
 	}
 
 	// Write empty installed record
-	emptyInstalled := &InstalledRecord{Formulas: make(map[string]string)}
-	if err := saveInstalledRecord(formulasDir, emptyInstalled); err != nil {
+	emptyInstalled := make(map[string]string)
+	if err := assetsync.SaveRecord(formulaSetFor(formulasDir), emptyInstalled); err != nil {
 		t.Fatal(err)
 	}
 
@@ -455,7 +457,7 @@ func TestUpdateFormulas_InstallsNew(t *testing.T) {
 	}
 
 	// All formulas should be installed
-	embedded, err := getEmbeddedFormulas()
+	embedded, err := assetsync.EmbeddedHashes(formulaSetFor("."))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,13 +483,13 @@ func TestInstalledRecordPersistence(t *testing.T) {
 
 	// Load and verify
 	formulasDir := filepath.Join(tmpDir, ".beads", "formulas")
-	installed, err := loadInstalledRecord(formulasDir)
+	installed, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(installed.Formulas) != count {
-		t.Errorf("installed has %d formulas, want %d", len(installed.Formulas), count)
+	if len(installed) != count {
+		t.Errorf("installed has %d formulas, want %d", len(installed), count)
 	}
 
 	// Verify file is valid JSON
@@ -497,9 +499,13 @@ func TestInstalledRecordPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var decoded InstalledRecord
+	// Pin the on-disk format: {"formulas": {"<file>": "<sha256>"}}.
+	var decoded map[string]map[string]string
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Errorf("installed.json is not valid JSON: %v", err)
+	}
+	if len(decoded["formulas"]) != count {
+		t.Errorf("installed.json has %d entries under \"formulas\", want %d", len(decoded["formulas"]), count)
 	}
 }
 
@@ -514,8 +520,8 @@ func TestCheckFormulaHealth_NewFormula(t *testing.T) {
 	}
 
 	// Write empty installed record - simulates pre-existing install without this formula
-	emptyInstalled := &InstalledRecord{Formulas: make(map[string]string)}
-	if err := saveInstalledRecord(formulasDir, emptyInstalled); err != nil {
+	emptyInstalled := make(map[string]string)
+	if err := assetsync.SaveRecord(formulaSetFor(formulasDir), emptyInstalled); err != nil {
 		t.Fatal(err)
 	}
 
@@ -525,7 +531,7 @@ func TestCheckFormulaHealth_NewFormula(t *testing.T) {
 		t.Fatalf("CheckFormulaHealth() error: %v", err)
 	}
 
-	embedded, _ := getEmbeddedFormulas()
+	embedded, _ := assetsync.EmbeddedHashes(formulaSetFor("."))
 	if report.New != len(embedded) {
 		t.Errorf("New = %d, want %d", report.New, len(embedded))
 	}
@@ -540,7 +546,7 @@ func TestCheckFormulaHealth_Untracked(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Get embedded formulas
-	embedded, err := getEmbeddedFormulas()
+	embedded, err := assetsync.EmbeddedHashes(formulaSetFor("."))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +594,7 @@ func TestUpdateFormulas_UpdatesUntracked(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Get embedded formulas
-	embedded, err := getEmbeddedFormulas()
+	embedded, err := assetsync.EmbeddedHashes(formulaSetFor("."))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,21 +636,21 @@ func TestUpdateFormulas_UpdatesUntracked(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s: %v", name, err)
 		}
-		actualHash := computeHash(content)
+		actualHash := assetsync.Hash(content)
 		if actualHash != expectedHash {
 			t.Errorf("%s hash mismatch after update", name)
 		}
 	}
 
 	// Verify .installed.json was created with correct hashes
-	installed, err := loadInstalledRecord(formulasDir)
+	installed, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, expectedHash := range embedded {
-		if installed.Formulas[name] != expectedHash {
+		if installed[name] != expectedHash {
 			t.Errorf(".installed.json hash for %s = %q, want %q",
-				name, installed.Formulas[name], expectedHash)
+				name, installed[name], expectedHash)
 		}
 	}
 
@@ -667,7 +673,7 @@ func TestProvisionFormulas_StatError(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Get at least one embedded formula name
-	embedded, err := getEmbeddedFormulas()
+	embedded, err := assetsync.EmbeddedHashes(formulaSetFor("."))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,13 +736,13 @@ func TestCheckFormulaHealth_ErrorCounter(t *testing.T) {
 
 	// Make one formula file unreadable
 	formulasDir := filepath.Join(tmpDir, ".beads", "formulas")
-	installed, err := loadInstalledRecord(formulasDir)
+	installed, err := assetsync.LoadRecord(formulaSetFor(formulasDir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var targetFormula string
-	for name := range installed.Formulas {
+	for name := range installed {
 		targetFormula = name
 		break
 	}
@@ -782,7 +788,7 @@ func TestCheckFormulaHealth_MixedScenarios(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Get embedded formulas
-	embedded, err := getEmbeddedFormulas()
+	embedded, err := assetsync.EmbeddedHashes(formulaSetFor("."))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,7 +802,7 @@ func TestCheckFormulaHealth_MixedScenarios(t *testing.T) {
 	}
 
 	// Prepare installed record with only some formulas tracked
-	installed := &InstalledRecord{Formulas: make(map[string]string)}
+	installed := make(map[string]string)
 
 	i := 0
 	var okFormula, untrackedFormula, modifiedFormula string
@@ -809,7 +815,7 @@ func TestCheckFormulaHealth_MixedScenarios(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(formulasDir, name), content, 0644); err != nil {
 				t.Fatal(err)
 			}
-			installed.Formulas[name] = computeHash(content)
+			installed[name] = assetsync.Hash(content)
 
 		case 1:
 			// Second formula: write old content, don't track -> should be untracked
@@ -824,12 +830,12 @@ func TestCheckFormulaHealth_MixedScenarios(t *testing.T) {
 			// Third formula: write different content, track with original hash -> should be modified
 			modifiedFormula = name
 			originalContent, _ := formulasFS.ReadFile("formulas/" + name)
-			originalHash := computeHash(originalContent)
+			originalHash := assetsync.Hash(originalContent)
 			modifiedContent := []byte("# user modified version\n[molecule]\nid = \"custom\"\n")
 			if err := os.WriteFile(filepath.Join(formulasDir, name), modifiedContent, 0644); err != nil {
 				t.Fatal(err)
 			}
-			installed.Formulas[name] = originalHash // Track with original hash
+			installed[name] = originalHash // Track with original hash
 		}
 		i++
 		if i >= 3 {
@@ -837,7 +843,7 @@ func TestCheckFormulaHealth_MixedScenarios(t *testing.T) {
 		}
 	}
 
-	if err := saveInstalledRecord(formulasDir, installed); err != nil {
+	if err := assetsync.SaveRecord(formulaSetFor(formulasDir), installed); err != nil {
 		t.Fatal(err)
 	}
 
