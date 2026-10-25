@@ -56,7 +56,10 @@ git ls-remote ~/gastown/mirror/<repo>.git | head -3              # harus mengikl
 gt rig add <rig> file://$HOME/gastown/mirror/<repo>.git --prefix <px> --beads rig
 ```
 
-`--beads rig` wajib untuk proyek yang melacak issue-nya sendiri dengan bd (`.beads/` ter-track, mis. oto-rent-pro prefix `oto` dengan `sync.remote` ke GitHub): rig mendapat `<rig>/.beads/` sendiri dan gt tidak pernah menjalankan `bd init`, menulis ulang, atau me-redirect ke `.beads/` proyek, sehingga `sync.remote` proyek tidak terbawa ke config bd rig. Mode tersimpan sebagai `beads.mode` di `<rig>/config.json`; satu-satunya file yang ditambah di clone `mayor/rig` adalah `.beads/redirect` (diabaikan oleh `.beads/.gitignore` bawaan bd), sedangkan worktree refinery/crew/polecat tetap memakai redirect biasa ke `<rig>/.beads`.
+`--beads rig` wajib untuk proyek yang melacak issue-nya sendiri dengan bd (`.beads/` ter-track, mis. oto-rent-pro prefix `oto` dengan `sync.remote` ke GitHub): rig mendapat `<rig>/.beads/` sendiri dan gt tidak pernah menjalankan `bd init`, menulis ulang, atau me-redirect ke `.beads/` proyek, sehingga `sync.remote` proyek tidak terbawa ke config bd rig. Mode tersimpan sebagai `beads.mode` di `<rig>/config.json` dan `mayor/rigs.json`; satu-satunya file yang ditambah di clone `mayor/rig` adalah `.beads/redirect` (disembunyikan lewat `.git/info/exclude` clone, tidak bergantung `.gitignore` proyek), sedangkan worktree refinery/crew/polecat tetap memakai redirect biasa ke `<rig>/.beads`.
+
+- Jangan pernah menjalankan `bd` interaktif dengan cwd `mayor/rig` (terutama `bd bootstrap`, `bd sync`, `bd dolt remote add`): bd mencari config viper dengan naik direktori sehingga memuat `.beads/config.yaml` proyek yang ter-track (termasuk `sync.remote`); redirect hanya memilih database. Panggilan bd milik gt selalu memasang `BEADS_DIR` dan tidak terpengaruh. `bd dolt push` juga tidak melewati pre-push guard git, jadi kebersihan `sync.remote` adalah kontrol yang sebenarnya.
+- Migrasi rig lama `auto` → `rig` (atau sebaliknya) manual: `gt rig add <rig> --adopt --beads rig` menolak bila `<rig>/.beads/redirect` masih ada.
 
 Lalu smoke test `refs/gt/archive/*` (§ 2) dan cek `gt doctor` menunjukkan `rig-prepush-guard` OK. Directives crew/polecat dipasang oleh `gt rig add`.
 

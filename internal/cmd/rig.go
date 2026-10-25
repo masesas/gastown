@@ -1406,7 +1406,9 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  Repository: %s\n", result.GitURL)
 	fmt.Printf("  Prefix: %s\n", result.BeadsPrefix)
-	fmt.Printf("  Beads mode: %s\n", result.BeadsMode)
+	if result.BeadsMode == config.RigBeadsModeRig {
+		fmt.Printf("  Beads mode: rig (self-contained <rig>/.beads/)\n")
+	}
 	if result.DefaultBranch != "" {
 		fmt.Printf("  Default branch: %s\n", result.DefaultBranch)
 	}

@@ -423,7 +423,7 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		CreatedAt:   time.Now(),
 		Beads: &BeadsConfig{
 			Prefix: opts.BeadsPrefix,
-			Mode:   beadsMode,
+			Mode:   config.StoredRigBeadsMode(beadsMode),
 		},
 	}
 	if err := m.saveRigConfig(rigPath, rigConfig); err != nil {
@@ -932,7 +932,7 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 		AddedAt:     time.Now(),
 		BeadsConfig: &config.BeadsConfig{
 			Prefix: opts.BeadsPrefix,
-			Mode:   beadsMode,
+			Mode:   config.StoredRigBeadsMode(beadsMode),
 		},
 	}
 
@@ -1716,6 +1716,12 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 		return nil, fmt.Errorf("not a directory: %s", rigPath)
 	}
 
+	// Mode switches on an existing rig are manual migrations: refuse them
+	// before any side effect instead of leaving a state doctor cannot fix.
+	if err := checkRegisterBeadsModeSwitch(rigPath, requestedBeadsMode); err != nil {
+		return nil, err
+	}
+
 	result := &RegisterRigResult{Name: opts.Name}
 
 	// Try to load existing config.json
@@ -1854,20 +1860,46 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 		AddedAt:     time.Now(),
 		BeadsConfig: &config.BeadsConfig{
 			Prefix: result.BeadsPrefix,
-			Mode:   beadsMode,
+			Mode:   config.StoredRigBeadsMode(beadsMode),
 		},
 	}
 
 	return result, nil
 }
 
-// persistRegisterBeadsMode records an explicitly requested beads mode in
-// <rig>/config.json (writing a minimal config.json when the adopted directory
-// has none) and returns the effective mode. With no request it returns the
-// mode already recorded (auto when none) and writes nothing.
-func (m *Manager) persistRegisterBeadsMode(rigPath string, existing *RigConfig, result *RegisterRigResult, requested string) (string, error) {
+// checkRegisterBeadsModeSwitch rejects adopt requests that would switch an
+// existing rig between beads modes; both directions need a manual migration:
+//   - auto -> rig while <rig>/.beads/redirect exists: the redirect would keep
+//     sending agents to the repo's tracked beads.
+//   - rig -> auto: the rig's own <rig>/.beads holds data that the auto-mode
+//     doctor would treat as conflicting with tracked beads.
+func checkRegisterBeadsModeSwitch(rigPath, requested string) error {
 	if requested == "" {
+		return nil
+	}
+	current := config.RigBeadsModeOf(rigPath)
+	switch {
+	case requested == config.RigBeadsModeRig && current != config.RigBeadsModeRig:
+		redirect := filepath.Join(rigPath, ".beads", "redirect")
+		if _, err := os.Lstat(redirect); err == nil {
+			return fmt.Errorf("migrasi auto→rig manual: hapus %s dan jalankan ulang (rig %s masih me-redirect ke tracked beads)", redirect, filepath.Base(rigPath))
+		}
+	case requested == config.RigBeadsModeAuto && current == config.RigBeadsModeRig:
+		return fmt.Errorf("migrasi rig→auto manual: rig %s tercatat beads.mode=rig dan memakai <rig>/.beads sendiri; ubah beads.mode di config.json dan mayor/rigs.json secara manual bila memang diinginkan", filepath.Base(rigPath))
+	}
+	return nil
+}
+
+// persistRegisterBeadsMode records an explicit --beads rig in
+// <rig>/config.json (writing a minimal config.json when the adopted directory
+// has none) and returns the effective mode. auto is never written, so an auto
+// adopt leaves config.json byte-for-byte unchanged.
+func (m *Manager) persistRegisterBeadsMode(rigPath string, existing *RigConfig, result *RegisterRigResult, requested string) (string, error) {
+	if requested != config.RigBeadsModeRig {
 		return config.RigBeadsModeOf(rigPath), nil
+	}
+	if existing != nil && existing.Beads != nil && existing.Beads.Mode == config.RigBeadsModeRig {
+		return config.RigBeadsModeRig, nil // already recorded; leave config.json untouched
 	}
 	var updated RigConfig
 	if existing != nil {
@@ -1889,31 +1921,27 @@ func (m *Manager) persistRegisterBeadsMode(rigPath string, existing *RigConfig, 
 			beadsCfg.Prefix = result.BeadsPrefix
 		}
 	}
-	beadsCfg.Mode = requested
+	beadsCfg.Mode = config.RigBeadsModeRig
 	updated.Beads = &beadsCfg
 	if err := m.saveRigConfig(rigPath, &updated); err != nil {
 		return "", fmt.Errorf("recording beads mode in config.json: %w", err)
 	}
-	return requested, nil
+	return config.RigBeadsModeRig, nil
 }
 
 // beadsModeNotice returns the lines gt rig add prints about where the rig's
-// beads will live. In auto mode with a tracked .beads/ that has sync.remote it
-// adds a one-line recommendation for --beads rig.
+// beads will live. Auto mode prints nothing (output unchanged), except one
+// warning recommending --beads rig when the tracked .beads/ sets sync.remote.
 func beadsModeNotice(mode string, sourceTracksBeads, sourceHasSyncRemote bool) []string {
 	switch {
 	case mode == config.RigBeadsModeRig && sourceTracksBeads:
 		return []string{"  Beads mode: rig (self-contained <rig>/.beads/; the repo's tracked .beads/ is left untouched)"}
 	case mode == config.RigBeadsModeRig:
 		return []string{"  Beads mode: rig (self-contained <rig>/.beads/)"}
-	case !sourceTracksBeads:
-		return []string{"  Beads mode: auto (repo does not track .beads/; self-contained <rig>/.beads/)"}
+	case sourceTracksBeads && sourceHasSyncRemote:
+		return []string{"  Warning: the repo's tracked .beads/config.yaml sets sync.remote; if the project tracks its own issues with bd, re-add the rig with --beads rig"}
 	}
-	lines := []string{"  Beads mode: auto (repo tracks .beads/; rig uses mayor/rig/.beads)"}
-	if sourceHasSyncRemote {
-		lines = append(lines, "  Warning: the repo's .beads/config.yaml sets sync.remote; if the project tracks its own issues with bd, re-add the rig with --beads rig")
-	}
-	return lines
+	return nil
 }
 
 // detectPushURL attempts to detect a custom push URL from an existing repository.

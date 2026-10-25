@@ -72,6 +72,17 @@ func TestTrackedRigBeadsDir(t *testing.T) {
 	})
 }
 
+func TestMayorCloneHasBeads(t *testing.T) {
+	t.Parallel()
+	_, rigPath := setupRigBeadsLayout(t, "")
+	if !MayorCloneHasBeads(rigPath) {
+		t.Fatal("MayorCloneHasBeads must be true when mayor/rig/.beads is a directory")
+	}
+	if MayorCloneHasBeads(filepath.Join(t.TempDir(), "none")) {
+		t.Fatal("MayorCloneHasBeads must be false without mayor/rig/.beads")
+	}
+}
+
 func TestComputeRedirectTarget_RigModeUsesRigOwnBeads(t *testing.T) {
 	t.Parallel()
 	town, rigPath := setupRigBeadsLayout(t, "rig")
@@ -151,6 +162,46 @@ func TestEnsureMayorCloneRedirect(t *testing.T) {
 		// Idempotent.
 		if wrote, err := EnsureMayorCloneRedirect(rigPath); err != nil || wrote {
 			t.Fatalf("second EnsureMayorCloneRedirect = (%v, %v), want (false, nil)", wrote, err)
+		}
+	})
+
+	t.Run("rig mode excludes the redirect in the clone's .git/info/exclude", func(t *testing.T) {
+		t.Parallel()
+		_, rigPath := setupRigBeadsLayout(t, "rig")
+		gitDir := filepath.Join(rigPath, "mayor", "rig", ".git")
+		if err := os.MkdirAll(gitDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		excludePath := filepath.Join(gitDir, "info", "exclude")
+		if err := os.MkdirAll(filepath.Dir(excludePath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(excludePath, []byte("# git ls-files --others --exclude-from=.git/info/exclude\n*.swp"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if _, err := EnsureMayorCloneRedirect(rigPath); err != nil {
+				t.Fatalf("EnsureMayorCloneRedirect #%d: %v", i, err)
+			}
+		}
+		data, err := os.ReadFile(excludePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "# git ls-files --others --exclude-from=.git/info/exclude\n*.swp\n" + MayorCloneExcludeEntry + "\n"
+		if string(data) != want {
+			t.Fatalf("info/exclude = %q, want %q (entry appended once, existing lines kept)", data, want)
+		}
+	})
+
+	t.Run("rig mode with .git file (worktree) skips exclude gracefully", func(t *testing.T) {
+		t.Parallel()
+		_, rigPath := setupRigBeadsLayout(t, "rig")
+		if err := os.WriteFile(filepath.Join(rigPath, "mayor", "rig", ".git"), []byte("gitdir: /nowhere\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if wrote, err := EnsureMayorCloneRedirect(rigPath); err != nil || !wrote {
+			t.Fatalf("EnsureMayorCloneRedirect = (%v, %v), want (true, nil)", wrote, err)
 		}
 	})
 

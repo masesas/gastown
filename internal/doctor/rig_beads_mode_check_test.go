@@ -116,6 +116,158 @@ func TestBeadsRedirectCheck_RigMode_FlagsRedirectToTrackedBeads(t *testing.T) {
 	}
 }
 
+func TestBeadsRedirectCheck_RigMode_FixInitializesMissingRigBeads(t *testing.T) {
+	installMockBdInitOnly(t)
+	townRoot, rigName, rigDir := setupRigModeRig(t)
+	if err := os.RemoveAll(filepath.Join(rigDir, ".beads")); err != nil {
+		t.Fatal(err)
+	}
+	trackedBeads := filepath.Join(rigDir, "mayor", "rig", ".beads")
+	before := snapshotDir(t, trackedBeads)
+
+	check := NewBeadsRedirectCheck()
+	ctx := &CheckContext{TownRoot: townRoot, RigName: rigName}
+	if result := check.Run(ctx); result.Status != StatusError {
+		t.Fatalf("missing rig beads in rig mode: status = %v, want error", result.Status)
+	}
+	if err := check.Fix(ctx); err != nil {
+		t.Fatalf("Fix: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rigDir, ".beads", "metadata.json")); err != nil {
+		t.Fatalf("Fix must initialize <rig>/.beads with metadata.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rigDir, ".beads", "redirect")); !os.IsNotExist(err) {
+		t.Fatal("Fix must not write <rig>/.beads/redirect in rig mode")
+	}
+	after := snapshotDir(t, trackedBeads)
+	for name, content := range before {
+		if after[name] != content {
+			t.Fatalf("tracked mayor/rig/.beads/%s changed", name)
+		}
+	}
+	if len(after) != len(before)+1 || after["redirect"] != "../../.beads\n" {
+		t.Fatalf("tracked dir must only gain redirect=../../.beads, got %v", after)
+	}
+	if result := check.Run(ctx); result.Status != StatusOK {
+		t.Fatalf("after Fix: status = %v (%s), want OK", result.Status, result.Message)
+	}
+}
+
+func snapshotDir(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	snap := map[string]string{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		data, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+		snap[e.Name()] = string(data)
+	}
+	return snap
+}
+
+func TestMissingDoltDBInitTarget_RigModeNeverUsesTrackedBeads(t *testing.T) {
+	townRoot, rigName, rigDir := setupRigModeRig(t)
+	if err := os.RemoveAll(filepath.Join(rigDir, ".beads")); err != nil {
+		t.Fatal(err)
+	}
+	trackedBeads := filepath.Join(rigDir, "mayor", "rig", ".beads")
+	before := snapshotDir(t, trackedBeads)
+
+	beadsDir, cmdDir, err := missingDoltDBInitTarget(townRoot, rigName)
+	if err != nil {
+		t.Fatalf("missingDoltDBInitTarget: %v", err)
+	}
+	if beadsDir != filepath.Join(rigDir, ".beads") || cmdDir != rigDir {
+		t.Fatalf("rig mode init target = (%q, %q), want (<rig>/.beads, <rig>)", beadsDir, cmdDir)
+	}
+	if info, err := os.Stat(beadsDir); err != nil || !info.IsDir() {
+		t.Fatalf("rig mode must create <rig>/.beads before bd init: %v", err)
+	}
+	after := snapshotDir(t, trackedBeads)
+	if len(after) != len(before) {
+		t.Fatalf("tracked mayor/rig/.beads changed: %v -> %v", before, after)
+	}
+	for name, content := range before {
+		if after[name] != content {
+			t.Fatalf("tracked mayor/rig/.beads/%s changed", name)
+		}
+	}
+}
+
+func TestMissingDoltDBInitTarget_AutoModeKeepsMayorFallback(t *testing.T) {
+	townRoot := t.TempDir()
+	rigDir := filepath.Join(townRoot, "autorig")
+	if err := os.MkdirAll(filepath.Join(rigDir, "mayor", "rig", ".beads"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	beadsDir, cmdDir, err := missingDoltDBInitTarget(townRoot, "autorig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beadsDir != filepath.Join(rigDir, "mayor", "rig", ".beads") || cmdDir != filepath.Join(rigDir, "mayor", "rig") {
+		t.Fatalf("auto mode init target = (%q, %q), want mayor/rig", beadsDir, cmdDir)
+	}
+}
+
+func writeModeSyncTown(t *testing.T, configMode, registryMode string) (townRoot, rigDir string) {
+	t.Helper()
+	townRoot = t.TempDir()
+	rigDir = filepath.Join(townRoot, "msrig")
+	if err := os.MkdirAll(filepath.Join(rigDir, "mayor", "rig", ".beads"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"type":"rig","version":1,"name":"msrig","git_url":"file:///x","beads":{"prefix":"","mode":"` + configMode + `"}}`
+	if err := os.WriteFile(filepath.Join(rigDir, "config.json"), []byte(cfg), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := `{"version":1,"rigs":{"msrig":{"git_url":"file:///x","added_at":"2026-01-01T00:00:00Z","beads":{"repo":"","prefix":"","mode":"` + registryMode + `"}}}}`
+	if err := os.WriteFile(filepath.Join(townRoot, "mayor", "rigs.json"), []byte(reg), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return townRoot, rigDir
+}
+
+func TestRigConfigSyncCheck_BeadsModeMismatch(t *testing.T) {
+	tests := []struct {
+		name         string
+		configMode   string
+		registryMode string
+	}{
+		{name: "registry rig, config.json empty: copy from rigs.json", configMode: "", registryMode: "rig"},
+		{name: "config.json rig, registry empty: never downgrade", configMode: "rig", registryMode: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			townRoot, rigDir := writeModeSyncTown(t, tt.configMode, tt.registryMode)
+			check := NewRigConfigSyncCheck()
+			ctx := &CheckContext{TownRoot: townRoot}
+			result := check.Run(ctx)
+			if !strings.Contains(strings.Join(result.Details, "\n"), "beads.mode mismatch") {
+				t.Fatalf("Run details %v must report beads.mode mismatch", result.Details)
+			}
+			if err := check.Fix(ctx); err != nil {
+				t.Fatalf("Fix: %v", err)
+			}
+			cfgData, _ := os.ReadFile(filepath.Join(rigDir, "config.json"))
+			regData, _ := os.ReadFile(filepath.Join(townRoot, "mayor", "rigs.json"))
+			if !strings.Contains(string(cfgData), `"mode": "rig"`) {
+				t.Fatalf("config.json after Fix must carry mode rig:\n%s", cfgData)
+			}
+			if !strings.Contains(string(regData), `"mode": "rig"`) {
+				t.Fatalf("rigs.json after Fix must carry mode rig:\n%s", regData)
+			}
+			if result := check.Run(ctx); strings.Contains(strings.Join(result.Details, "\n"), "beads.mode mismatch") {
+				t.Fatalf("mismatch must be gone after Fix: %v", result.Details)
+			}
+		})
+	}
+}
+
 func TestStaleDoltPortCheck_RigModeSkipsTrackedMetadata(t *testing.T) {
 	townRoot, rigName, _ := setupRigModeRig(t)
 	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0755); err != nil {

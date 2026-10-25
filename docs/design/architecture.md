@@ -206,9 +206,10 @@ This ensures all agents in a rig share a single beads database via the Dolt serv
 The canonical location depends on the rig's `beads.mode` (`<rig>/config.json`):
 in `auto` (default) a repo that tracks `.beads/` uses `mayor/rig/.beads`; otherwise,
 and always in `rig` mode, worktrees redirect to the rig's own `<rig>/.beads`
-(`../../.beads`). In `rig` mode the mayor clone gets an ignored
-`mayor/rig/.beads/redirect` → `../../.beads`, and the repo's tracked `.beads/` files
-are never written. `beads.TrackedRigBeadsDir()` is the single decision point.
+(`../../.beads`). In `rig` mode the mayor clone gets
+`mayor/rig/.beads/redirect` → `../../.beads` (hidden via its `.git/info/exclude`), and
+the repo's tracked `.beads/` files are never written. The mode resolver fails closed
+toward `rig` (see `beads.mode` in [reference](../reference.md)). `beads.TrackedRigBeadsDir()` is the single decision point.
 
 ## Merge Queue: Batch-then-Bisect
 
