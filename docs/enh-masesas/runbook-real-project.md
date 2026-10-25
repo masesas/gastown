@@ -1,10 +1,105 @@
 # Runbook: Gas Town di real project (tahap awal)
 
-Syarat minimum sebelum Gas Town dipakai di repo sungguhan, diturunkan dari pilot S1c (`pilot/epic-1-s1c.md`) dan perbaikan gt-pd1c.50–56. Ruang lingkup: satu rig, paling banyak 2 polecat, operator aktif, land manual.
+Syarat minimum sebelum Gas Town dipakai di repo sungguhan, diturunkan dari pilot S1c (`pilot/epic-1-s1c.md`, `pilot/epic-2-s1c.md`) dan perbaikan gt-pd1c.50–56. Ruang lingkup: satu rig, paling banyak 2 polecat, operator aktif, land manual.
+
+## 0. Town baru dari nol (ditambahkan 25 Okt 2026)
+
+Urutan untuk memasang Gas Town versi fork di mesin ini dan menautkan proyek sungguhan lewat mirror. Dikerjakan sekali per mesin; langkah per rig diulang untuk setiap proyek.
+
+### 0.1 Binary dari fork, bukan upstream
+
+```bash
+cd <repo-fork-gastown>
+git worktree add --detach .worktrees/build-global main            # tree bersih → versi tanpa "-dirty"
+make -C .worktrees/build-global install BUILD_DIR=<dir-scratch>  # → ~/.local/bin/gt
+git worktree remove .worktrees/build-global
+gt version --verbose                                             # commit harus = main fork
+```
+
+`make install` juga menjalankan `gt plugin sync` dan me-restart daemon bila ada town yang hidup; tanpa town keduanya dilewati. Jangan `go install github.com/steveyegge/gastown/...`, itu versi upstream.
+
+### 0.2 Prasyarat dan isolasi
+
+| Alat | Syarat | Keadaan mesin ini (25 Okt 2026) |
+| --- | --- | --- |
+| `bd` | ≥ 0.57 | 1.3.0 di `~/.local/bin` |
+| Dolt | ≥ 2.0.7 | `/usr/local/bin/dolt` 1.83.3 dipakai Dolt proyek lain; **jangan diganti**. Pakai Dolt 2.x di PATH town saja: `~/gastown/tools/bin/dolt` (2.3.5, salinan dari pilot) |
+| tmux | ≥ 3.0 | 3.8 |
+| Claude Code | ≥ 2.0.20 | 2.1.310 |
+
+Layout: `~/gastown/{tools/bin,mirror,town}`. File `~/gastown/env.sh` di-`source` sebelum setiap perintah `gt`:
+
+```bash
+export GASTOWN="$HOME/gastown"
+export PATH="$GASTOWN/tools/bin:$PATH"       # dolt 2.x menang atas /usr/local/bin/dolt
+export DOLT_ROOT_PATH="$GASTOWN/dolt-root"   # config dolt terpisah dari proyek lain
+export GT_DOLT_HOST=127.0.0.1
+```
+
+Port Dolt town harus berbeda dari Dolt proyek lain yang hidup (cek `lsof -iTCP -sTCP:LISTEN -P -n | grep dolt`). Pilot memakai 3417; default `gt install` 3307.
+
+### 0.3 Town
+
+```bash
+source ~/gastown/env.sh
+gt install ~/gastown/town --name gastown --dolt-port <port-bebas> --owner <email-anda>
+```
+
+Setelah install, isi `<town>/settings/config.json` (model per peran, Claude saja), `<town>/mayor/daemon.json` (idle shutdown, § 6), dan `scheduler.max_polecats` (§ 5). Aset S1c (formula `mol-contract-*`, `directives/mayor.md`) dipasang oleh `gt install` (§ 1); cek dengan `gt formula list | grep contract` dan `gt directive list`.
+
+### 0.4 Rig lewat mirror
+
+```bash
+git clone --bare <path-repo-asli> ~/gastown/mirror/<repo>.git
+git -C ~/gastown/mirror/<repo>.git remote remove origin        # rig tidak pernah tahu origin asli
+git ls-remote ~/gastown/mirror/<repo>.git | head -3              # harus mengiklankan HEAD + branch
+gt rig add <rig> file://$HOME/gastown/mirror/<repo>.git --prefix <px>
+```
+
+Lalu smoke test `refs/gt/archive/*` (§ 2) dan cek `gt doctor` menunjukkan `rig-prepush-guard` OK. Directives crew/polecat dipasang oleh `gt rig add`.
+
+Mirror yang sudah ada: `~/gastown/mirror/oto-rent-pro.git` (dari `/Users/maskapai/masesas/Projects/otomotives/rent/mobile/oto-rent-pro`, `main` `8936596`, origin dihapus, smoke test arsip lolos 25 Okt 2026). Memperbarui mirror hanya lewat `git -C ~/gastown/mirror/oto-rent-pro.git fetch <path-repo-asli> main:main` sebagai manusia; repo asli dan `.beads`-nya tidak pernah disentuh.
+
+### 0.5 Settings rig minimum
+
+`<rig>/settings/config.json` dibuat tangan; `gt rig add` tidak menulis blok ini:
+
+```json
+{
+  "merge_queue": {
+    "enabled": true,
+    "integration_branch_template": "integration/{epic}",
+    "integration_branch_auto_land": false,
+    "merge_strategy": "direct",
+    "run_tests": true,
+    "test_command": "/Users/<anda>/gastown/tools/bin/<rig>-gate test",
+    "max_concurrent": 1,
+    "allowed_paths": ["<path yang boleh diubah MR>"]
+  }
+}
+```
+
+### 0.6 Gate per proyek
+
+Gate adalah script per repo di `~/gastown/tools/bin/<rig>-gate`, dijalankan refinery dari root worktree. Syarat § 3 tetap berlaku (uji negatif sekali sebelum epic pertama).
+
+Contoh oto-rent-pro (Flutter, FVM `3.38.2`; kode generated di-commit sehingga `build_runner` tidak perlu di gate; sumber perintah: `docs/claude/workflows.md` proyek):
+
+```bash
+#!/bin/sh
+set -eu
+fvm flutter pub get
+fvm dart analyze lib test        # harus 0 issues (info tidak menggagalkan)
+fvm flutter test                 # harus all passed
+```
+
+Script ini terpasang di `~/gastown/tools/bin/oto-rent-pro-gate` (sub-perintah `setup` dan `test`). Bukti 25 Okt 2026 pada `main` mirror `8936596` di clone sementara: gate hijau (52 tes lulus, 3 issue `info`, 31,7 detik), dan uji negatif (satu panggilan ke fungsi tak terdefinisi di `lib/main_dev.dart`) gagal dengan exit 3. Catatan: `lib/firebase_options.dart` dan file generated dikecualikan analyzer, jadi kerusakan di file itu tidak tertangkap gate.
+
+`allowed_paths` awal untuk oto-rent-pro: `["lib/**", "test/**", "packages/**", "pubspec.yaml", "pubspec.lock"]`; perluas hanya bila epic memang menyentuh path lain.
 
 ## 1. Binary dan formula
 
-- Pakai binary dari `main` fork yang memuat PR #25–#32 dan perbaikan G3 (PR #26). Cek dengan `gt version`.
+- Pakai binary dari `main` fork (§ 0.1). Cek dengan `gt version`.
 - **Salinan formula di town mengalahkan formula di binary.** `gt install` menyalin formula ke `<town>/.beads/formulas/`. Setiap kali binary diperbarui, bandingkan salinan itu dengan `internal/formula/formulas/` di commit binary:
   ```bash
   for f in <town>/.beads/formulas/*.formula.toml; do
