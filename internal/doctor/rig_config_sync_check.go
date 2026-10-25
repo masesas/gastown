@@ -30,6 +30,8 @@ type RigConfigSyncCheck struct {
 	missingExportCfg []string         // Rigs missing export.auto=false in config.yaml
 	dbNameMismatches []dbMismatch     // Dolt database name doesn't match prefix
 	dbCheckErrors    []string         // Rigs whose Dolt DB status could not be verified
+	// Rigs whose beads.mode differs between config.json and rigs.json
+	beadsModeMismatches []string
 }
 
 type prefixMismatch struct {
@@ -86,6 +88,7 @@ func (c *RigConfigSyncCheck) Run(ctx *CheckContext) *CheckResult {
 	c.missingExportCfg = nil
 	c.dbNameMismatches = nil
 	c.dbCheckErrors = nil
+	c.beadsModeMismatches = nil
 	var details []string
 	townDB := readDoltDatabase(filepath.Join(ctx.TownRoot, ".beads"))
 
@@ -134,6 +137,21 @@ func (c *RigConfigSyncCheck) Run(ctx *CheckContext) *CheckResult {
 			details = append(details, fmt.Sprintf(
 				"Rig %s prefix mismatch: config.json has %q, registry has %q",
 				rigName, configPrefix, expectedPrefix))
+		}
+
+		// Compare beads.mode (config.json vs rigs.json mirror).
+		configMode, registryMode := "", ""
+		if rigCfg.Beads != nil {
+			configMode = rigCfg.Beads.Mode
+		}
+		if entry.BeadsConfig != nil {
+			registryMode = entry.BeadsConfig.Mode
+		}
+		if normalizedBeadsMode(configMode) != normalizedBeadsMode(registryMode) {
+			c.beadsModeMismatches = append(c.beadsModeMismatches, rigName)
+			details = append(details, fmt.Sprintf(
+				"Rig %s beads.mode mismatch: config.json has %q, registry has %q (effective: %s)",
+				rigName, configMode, registryMode, config.RigBeadsModeOf(rigPath)))
 		}
 
 		beadsDir := doltserver.FindRigBeadsDir(ctx.TownRoot, rigName)
@@ -266,7 +284,7 @@ func (c *RigConfigSyncCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	// Check for summary
-	issueCount := len(c.missingConfig) + len(c.prefixMismatches) + len(c.missingRigBeads) + len(c.missingDoltDB) + len(c.missingMetadata) + len(c.missingPrefixCfg) + len(c.missingExportCfg) + len(c.dbNameMismatches) + len(c.dbCheckErrors)
+	issueCount := len(c.missingConfig) + len(c.prefixMismatches) + len(c.missingRigBeads) + len(c.missingDoltDB) + len(c.missingMetadata) + len(c.missingPrefixCfg) + len(c.missingExportCfg) + len(c.dbNameMismatches) + len(c.dbCheckErrors) + len(c.beadsModeMismatches)
 	if issueCount == 0 {
 		return &CheckResult{
 			Name:    c.Name(),
@@ -303,6 +321,9 @@ func (c *RigConfigSyncCheck) Run(ctx *CheckContext) *CheckResult {
 	if len(c.dbCheckErrors) > 0 {
 		parts = append(parts, fmt.Sprintf("%d Dolt DB status unknown", len(c.dbCheckErrors)))
 	}
+	if len(c.beadsModeMismatches) > 0 {
+		parts = append(parts, fmt.Sprintf("%d beads.mode mismatch(es)", len(c.beadsModeMismatches)))
+	}
 
 	return &CheckResult{
 		Name:    c.Name(),
@@ -321,6 +342,12 @@ func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
 		return fmt.Errorf("could not load rigs registry: %w", err)
 	}
 
+	// Align beads.mode first: every later repair decides between the rig's
+	// own beads and the repo's tracked beads from it.
+	if err := c.fixBeadsModeMismatches(ctx, rigsConfigPath, rigsConfig); err != nil {
+		return err
+	}
+
 	// Fix missing config.json files
 	for _, rigName := range c.missingConfig {
 		entry, ok := rigsConfig.Rigs[rigName]
@@ -331,9 +358,10 @@ func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
 		rigPath := filepath.Join(ctx.TownRoot, rigName)
 		configPath := filepath.Join(rigPath, "config.json")
 
-		prefix := ""
+		prefix, beadsMode := "", ""
 		if entry.BeadsConfig != nil {
 			prefix = entry.BeadsConfig.Prefix
+			beadsMode = entry.BeadsConfig.Mode
 		}
 
 		rigCfg := &rig.RigConfig{
@@ -343,8 +371,10 @@ func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
 			GitURL:    entry.GitURL,
 			CreatedAt: entry.AddedAt,
 		}
-		if prefix != "" {
-			rigCfg.Beads = &rig.BeadsConfig{Prefix: prefix}
+		if prefix != "" || beadsMode != "" {
+			// Carry beads.mode over so a recreated config.json keeps a
+			// beads.mode=rig rig away from the repo's tracked .beads/.
+			rigCfg.Beads = &rig.BeadsConfig{Prefix: prefix, Mode: beadsMode}
 		}
 
 		data, err := json.MarshalIndent(rigCfg, "", "  ")
@@ -415,23 +445,16 @@ func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
 			continue
 		}
 
-		rigPath := filepath.Join(ctx.TownRoot, rigName)
-		beadsDir := doltserver.FindRigBeadsDir(ctx.TownRoot, rigName)
-		cmdDir := rigPath
-		mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
-		if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
-			if _, statErr := os.Stat(mayorRigPath); statErr == nil {
-				beadsDir = filepath.Join(mayorRigPath, ".beads")
-			}
-		}
-		if beadsDir == filepath.Join(mayorRigPath, ".beads") {
-			cmdDir = mayorRigPath
-		}
 		if exists, err := c.doltDatabaseExists(ctx, rigName); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: skipping Dolt DB initialization for %s because database status could not be verified: %v\n", rigName, err)
 			continue
 		} else if exists {
 			continue
+		}
+
+		beadsDir, cmdDir, err := missingDoltDBInitTarget(ctx.TownRoot, rigName)
+		if err != nil {
+			return err
 		}
 
 		// Run bd init against the rig-name database, not the prefix-derived default.
@@ -546,6 +569,92 @@ func (c *RigConfigSyncCheck) Fix(ctx *CheckContext) error {
 		_ = cmd.Run() // Best effort - ignore errors
 	}
 
+	return nil
+}
+
+// missingDoltDBInitTarget returns the beads dir and working dir for the
+// missing-Dolt-DB repair (bd init --force --destroy-token).
+//
+// In auto mode a missing <rig>/.beads falls back to the mayor clone (historical
+// tracked-beads behaviour). In beads.mode=rig the target is always the rig's
+// own <rig>/.beads (created here when missing): the repository's tracked
+// mayor/rig/.beads must never be initialized or rewritten.
+func missingDoltDBInitTarget(townRoot, rigName string) (beadsDir, cmdDir string, err error) {
+	rigPath := filepath.Join(townRoot, rigName)
+	beadsDir = doltserver.FindRigBeadsDir(townRoot, rigName)
+	cmdDir = rigPath
+	if config.RigUsesOwnBeads(rigPath) {
+		beadsDir = filepath.Join(rigPath, ".beads")
+		if err := os.MkdirAll(beadsDir, 0755); err != nil {
+			return "", "", fmt.Errorf("creating %s: %w", beadsDir, err)
+		}
+		return beadsDir, cmdDir, nil
+	}
+	mayorRigPath := filepath.Join(rigPath, "mayor", "rig")
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		if _, statErr := os.Stat(mayorRigPath); statErr == nil {
+			beadsDir = filepath.Join(mayorRigPath, ".beads")
+		}
+	}
+	if beadsDir == filepath.Join(mayorRigPath, ".beads") {
+		cmdDir = mayorRigPath
+	}
+	return beadsDir, cmdDir, nil
+}
+
+// normalizedBeadsMode maps a stored beads.mode to its canonical stored form
+// ("" for auto, "rig"); unknown values are kept verbatim so they mismatch.
+func normalizedBeadsMode(raw string) string {
+	mode, err := config.ParseRigBeadsMode(raw)
+	if err != nil {
+		return raw
+	}
+	return config.StoredRigBeadsMode(mode)
+}
+
+// fixBeadsModeMismatches makes <rig>/config.json and mayor/rigs.json agree on
+// beads.mode, using the effective fail-closed mode (config.RigBeadsModeOf):
+// a rigs.json "rig" is copied into config.json, and a config.json "rig" is
+// copied into rigs.json instead of being downgraded.
+func (c *RigConfigSyncCheck) fixBeadsModeMismatches(ctx *CheckContext, rigsConfigPath string, rigsConfig *config.RigsConfig) error {
+	if len(c.beadsModeMismatches) == 0 {
+		return nil
+	}
+	for _, rigName := range c.beadsModeMismatches {
+		rigPath := filepath.Join(ctx.TownRoot, rigName)
+		target := config.StoredRigBeadsMode(config.RigBeadsModeOf(rigPath))
+
+		rigCfg, err := rig.LoadRigConfig(rigPath)
+		if err != nil {
+			return fmt.Errorf("could not read config.json for %s: %w", rigName, err)
+		}
+		updated := *rigCfg
+		beadsCfg := rig.BeadsConfig{}
+		if rigCfg.Beads != nil {
+			beadsCfg = *rigCfg.Beads
+		}
+		beadsCfg.Mode = target
+		updated.Beads = &beadsCfg
+		data, err := json.MarshalIndent(&updated, "", "  ")
+		if err != nil {
+			return fmt.Errorf("could not serialize config for %s: %w", rigName, err)
+		}
+		if err := os.WriteFile(filepath.Join(rigPath, "config.json"), data, 0644); err != nil {
+			return fmt.Errorf("could not write config.json for %s: %w", rigName, err)
+		}
+
+		entry := rigsConfig.Rigs[rigName]
+		regBeads := config.BeadsConfig{}
+		if entry.BeadsConfig != nil {
+			regBeads = *entry.BeadsConfig
+		}
+		regBeads.Mode = target
+		entry.BeadsConfig = &regBeads
+		rigsConfig.Rigs[rigName] = entry
+	}
+	if err := config.SaveRigsConfig(rigsConfigPath, rigsConfig); err != nil {
+		return fmt.Errorf("could not save rigs registry: %w", err)
+	}
 	return nil
 }
 

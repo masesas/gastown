@@ -918,12 +918,17 @@ func (c *BeadsRedirectCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	rigPath := ctx.RigPath()
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
 	rigBeadsDir := filepath.Join(rigPath, ".beads")
 	redirectPath := filepath.Join(rigBeadsDir, "redirect")
 
+	// beads.mode=rig: self-contained rig beads even though the repo may track
+	// .beads/. Never expect (or create) a redirect to mayor/rig/.beads.
+	if config.RigUsesOwnBeads(rigPath) {
+		return c.runRigMode(rigPath, rigBeadsDir, redirectPath, ctx.RigName)
+	}
+
 	// Check if this rig has tracked beads (mayor/rig/.beads exists)
-	if _, err := os.Stat(mayorRigBeads); os.IsNotExist(err) {
+	if _, tracked := beads.TrackedRigBeadsDir(rigPath); !tracked {
 		// No tracked beads - check if rig/.beads exists (local beads)
 		if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
 			return &CheckResult{
@@ -1008,22 +1013,71 @@ func (c *BeadsRedirectCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 }
 
+// runRigMode validates a rig in beads.mode=rig: <rig>/.beads must exist and
+// must not redirect anywhere, and when the repo tracks .beads/ the mayor clone
+// must redirect to the rig's own beads (beads.MayorCloneRedirectTarget).
+func (c *BeadsRedirectCheck) runRigMode(rigPath, rigBeadsDir, redirectPath, rigName string) *CheckResult {
+	if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusError,
+			Message: "No .beads directory found at rig root (beads.mode=rig)",
+			Details: []string{
+				"Rig is configured for self-contained beads (config.json beads.mode=rig)",
+				"Beads database not initialized for this rig",
+			},
+			FixHint: "Run 'gt doctor --fix --rig " + rigName + "' to initialize beads",
+		}
+	}
+	if _, err := os.Stat(redirectPath); err == nil {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusError,
+			Message: "Rig has beads.mode=rig but .beads/redirect exists",
+			Details: []string{
+				"beads.mode=rig requires self-contained beads at .beads/ (no redirect)",
+				"The redirect may send agents to the repository's own tracked beads",
+				"Not auto-fixed: inspect .beads/redirect, remove it, then run 'gt doctor --fix --rig " + rigName + "'",
+			},
+		}
+	}
+	if beads.MayorCloneHasBeads(rigPath) && !beads.MayorCloneRedirectOK(rigPath) {
+		return &CheckResult{
+			Name:    c.Name(),
+			Status:  StatusError,
+			Message: "Missing mayor clone redirect to rig beads (beads.mode=rig)",
+			Details: []string{
+				"The repo tracks .beads/; mayor/rig/.beads/redirect must contain " + beads.MayorCloneRedirectTarget,
+				"Without it, gt and bd calls rooted in mayor/rig bind to the project's own beads",
+			},
+			FixHint: "Run 'gt doctor --fix --rig " + rigName + "' to create the redirect",
+		}
+	}
+	return &CheckResult{
+		Name:    c.Name(),
+		Status:  StatusOK,
+		Message: "Rig uses self-contained beads (beads.mode=rig)",
+	}
+}
+
 // Fix creates or corrects the rig-level beads redirect, or initializes beads if missing.
+// In beads.mode=rig it only initializes missing rig beads and writes the mayor
+// clone redirect; it never removes <rig>/.beads.
 func (c *BeadsRedirectCheck) Fix(ctx *CheckContext) error {
 	if ctx.RigName == "" {
 		return nil
 	}
 
 	rigPath := ctx.RigPath()
-	mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
+	if config.RigUsesOwnBeads(rigPath) {
+		return c.fixRigMode(ctx, rigPath)
+	}
+
 	rigBeadsDir := filepath.Join(rigPath, ".beads")
 	redirectPath := filepath.Join(rigBeadsDir, "redirect")
 
 	// Check if tracked beads exist
-	hasTrackedBeads := true
-	if _, err := os.Stat(mayorRigBeads); os.IsNotExist(err) {
-		hasTrackedBeads = false
-	}
+	_, hasTrackedBeads := beads.TrackedRigBeadsDir(rigPath)
 
 	// Check if local beads exist
 	hasLocalBeads := true
@@ -1033,55 +1087,7 @@ func (c *BeadsRedirectCheck) Fix(ctx *CheckContext) error {
 
 	// Case 1: No beads at all - initialize with bd init
 	if !hasTrackedBeads && !hasLocalBeads {
-		// Get the rig's beads prefix from rigs.json (falls back to "gt" if not found)
-		prefix := config.GetRigPrefix(ctx.TownRoot, ctx.RigName)
-
-		// Create .beads directory
-		if err := os.MkdirAll(rigBeadsDir, 0755); err != nil {
-			return fmt.Errorf("creating .beads directory: %w", err)
-		}
-
-		// Run bd init with the configured prefix (Dolt is the only backend since bd v0.51.0).
-		// Gas Town rigs use Dolt server mode via the shared town Dolt sql-server.
-		initArgs := []string{"init"}
-		if prefix != "" {
-			initArgs = append(initArgs, "--prefix", prefix)
-		}
-		initArgs = append(initArgs, "--database", ctx.RigName)
-		initArgs = append(initArgs, "--server")
-		doltCfg := doltserver.DefaultConfig(ctx.TownRoot)
-		initArgs = append(initArgs, "--server-port", strconv.Itoa(doltCfg.Port))
-		bdEnv := append(stripEnvPrefixes(os.Environ(), "BEADS_DIR=", "BEADS_DB=", "BEADS_DOLT_SERVER_DATABASE="),
-			"BEADS_DIR="+rigBeadsDir,
-			"BEADS_DOLT_SERVER_DATABASE="+ctx.RigName,
-		)
-		cmd := exec.Command("bd", initArgs...)
-		cmd.Dir = rigPath
-		cmd.Env = bdEnv
-		if output, err := cmd.CombinedOutput(); err != nil {
-			// bd might not be installed — create config.yaml via shared helper.
-			if writeErr := beads.EnsureConfigYAML(rigBeadsDir, prefix); writeErr != nil {
-				return fmt.Errorf("bd init failed (%v) and fallback config creation failed: %w", err, writeErr)
-			}
-			// Continue - minimal config created
-		} else {
-			_ = output // bd init succeeded
-			// Configure Gas Town bead types (beads v0.46.0+). Rig remains durable,
-			// not infra/wisp-backed.
-			for _, cfg := range []struct{ key, value string }{
-				{"types.custom", constants.BeadsCustomTypes},
-				{"types.infra", constants.BeadsInfraTypes},
-			} {
-				configCmd := exec.Command("bd", "config", "set", cfg.key, cfg.value)
-				configCmd.Dir = rigPath
-				configCmd.Env = bdEnv
-				_, _ = configCmd.CombinedOutput() // Ignore errors - older beads don't need this
-			}
-		}
-		if err := doltserver.EnsureMetadataForBeadsDir(ctx.TownRoot, rigBeadsDir, ctx.RigName, ctx.RigName); err != nil {
-			return fmt.Errorf("ensuring metadata.json: %w", err)
-		}
-		return nil
+		return c.initLocalBeads(ctx, rigPath, rigBeadsDir)
 	}
 
 	// Case 2: Tracked beads exist - create redirect (may need to remove conflicting local beads)
@@ -1105,6 +1111,76 @@ func (c *BeadsRedirectCheck) Fix(ctx *CheckContext) error {
 		}
 	}
 
+	return nil
+}
+
+// fixRigMode repairs a beads.mode=rig rig: initialize <rig>/.beads when it is
+// missing, then point the mayor clone at it. It never removes <rig>/.beads and
+// never writes <rig>/.beads/redirect.
+func (c *BeadsRedirectCheck) fixRigMode(ctx *CheckContext, rigPath string) error {
+	rigBeadsDir := filepath.Join(rigPath, ".beads")
+	if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
+		if err := c.initLocalBeads(ctx, rigPath, rigBeadsDir); err != nil {
+			return err
+		}
+	}
+	if _, err := beads.EnsureMayorCloneRedirect(rigPath); err != nil {
+		return fmt.Errorf("pointing mayor clone at rig beads: %w", err)
+	}
+	return nil
+}
+
+// initLocalBeads creates a self-contained <rig>/.beads with bd init (falling
+// back to a minimal config.yaml when bd is unavailable) and its metadata.json.
+func (c *BeadsRedirectCheck) initLocalBeads(ctx *CheckContext, rigPath, rigBeadsDir string) error {
+	// Get the rig's beads prefix from rigs.json (falls back to "gt" if not found)
+	prefix := config.GetRigPrefix(ctx.TownRoot, ctx.RigName)
+
+	// Create .beads directory
+	if err := os.MkdirAll(rigBeadsDir, 0755); err != nil {
+		return fmt.Errorf("creating .beads directory: %w", err)
+	}
+
+	// Run bd init with the configured prefix (Dolt is the only backend since bd v0.51.0).
+	// Gas Town rigs use Dolt server mode via the shared town Dolt sql-server.
+	initArgs := []string{"init"}
+	if prefix != "" {
+		initArgs = append(initArgs, "--prefix", prefix)
+	}
+	initArgs = append(initArgs, "--database", ctx.RigName)
+	initArgs = append(initArgs, "--server")
+	doltCfg := doltserver.DefaultConfig(ctx.TownRoot)
+	initArgs = append(initArgs, "--server-port", strconv.Itoa(doltCfg.Port))
+	bdEnv := append(stripEnvPrefixes(os.Environ(), "BEADS_DIR=", "BEADS_DB=", "BEADS_DOLT_SERVER_DATABASE="),
+		"BEADS_DIR="+rigBeadsDir,
+		"BEADS_DOLT_SERVER_DATABASE="+ctx.RigName,
+	)
+	cmd := exec.Command("bd", initArgs...)
+	cmd.Dir = rigPath
+	cmd.Env = bdEnv
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// bd might not be installed — create config.yaml via shared helper.
+		if writeErr := beads.EnsureConfigYAML(rigBeadsDir, prefix); writeErr != nil {
+			return fmt.Errorf("bd init failed (%v) and fallback config creation failed: %w", err, writeErr)
+		}
+		// Continue - minimal config created
+	} else {
+		_ = output // bd init succeeded
+		// Configure Gas Town bead types (beads v0.46.0+). Rig remains durable,
+		// not infra/wisp-backed.
+		for _, cfg := range []struct{ key, value string }{
+			{"types.custom", constants.BeadsCustomTypes},
+			{"types.infra", constants.BeadsInfraTypes},
+		} {
+			configCmd := exec.Command("bd", "config", "set", cfg.key, cfg.value)
+			configCmd.Dir = rigPath
+			configCmd.Env = bdEnv
+			_, _ = configCmd.CombinedOutput() // Ignore errors - older beads don't need this
+		}
+	}
+	if err := doltserver.EnsureMetadataForBeadsDir(ctx.TownRoot, rigBeadsDir, ctx.RigName, ctx.RigName); err != nil {
+		return fmt.Errorf("ensuring metadata.json: %w", err)
+	}
 	return nil
 }
 

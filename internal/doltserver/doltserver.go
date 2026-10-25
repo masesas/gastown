@@ -3782,9 +3782,9 @@ func FindRigBeadsDir(townRoot, rigName string) string {
 		return filepath.Join(townRoot, ".beads")
 	}
 
-	// Prefer mayor/rig/.beads (canonical location for tracked beads)
-	mayorBeads := filepath.Join(townRoot, rigName, "mayor", "rig", ".beads")
-	if _, err := os.Stat(mayorBeads); err == nil {
+	// Prefer mayor/rig/.beads (canonical location for tracked beads), unless
+	// the rig is in beads.mode=rig and must use its own <rig>/.beads.
+	if mayorBeads, ok := beads.TrackedRigBeadsDir(filepath.Join(townRoot, rigName)); ok {
 		return mayorBeads
 	}
 
@@ -3824,8 +3824,8 @@ func FindOrCreateRigBeadsDir(townRoot, rigName string) (string, error) {
 	// Check mayor/rig/.beads first (canonical location).
 	// Use MkdirAll as an idempotent existence check+create to close the
 	// TOCTOU window between os.Stat and the caller's file operations.
-	mayorBeads := filepath.Join(townRoot, rigName, "mayor", "rig", ".beads")
-	if _, err := os.Stat(mayorBeads); err == nil {
+	// In beads.mode=rig the tracked mayor/rig/.beads is never used.
+	if mayorBeads, ok := beads.TrackedRigBeadsDir(filepath.Join(townRoot, rigName)); ok {
 		// Ensure it still exists (no-op if present, recreates if deleted)
 		if err := os.MkdirAll(mayorBeads, 0755); err != nil {
 			return "", fmt.Errorf("ensuring mayor beads dir: %w", err)

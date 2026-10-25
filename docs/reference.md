@@ -50,6 +50,7 @@ town-level Gas Town beads.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `default_branch` | `string` | `"main"` | Default branch for the rig. Auto-detected from remote during `gt rig add`. Used as the merge target by the Refinery and as the base for polecats when no integration branch is active. |
+| `beads.mode` | `string` | `"auto"` | Where the rig keeps its beads (set by `gt rig add --beads`). `auto`: if the repo tracks `.beads/`, use it in `mayor/rig` (`<rig>/.beads/redirect` → `mayor/rig/.beads`), else a self-contained `<rig>/.beads/`. `rig`: always a self-contained `<rig>/.beads/`; Gas Town never initializes, rewrites or redirects into the repo's tracked `.beads/` (only `mayor/rig/.beads/redirect` → `../../.beads` is added, hidden via the clone's `.git/info/exclude`). Only `rig` is written (auto is the absent field); it is mirrored in `mayor/rigs.json`. Resolution fails closed: `rig` if either file says `rig`, or if `config.json` is unreadable/has an unknown mode and `rigs.json` does not say `auto`; otherwise `auto`. `gt doctor` (`rig-config-sync`) reports a mismatch between the two files and `--fix` aligns both to the effective mode. |
 
 ### Settings (`settings/config.json`)
 
@@ -594,6 +595,7 @@ export OPENCODE_PERMISSION='{"*":"allow"}'
 
 ```bash
 gt rig add <name> <url>
+gt rig add <name> <url> --beads rig     # Self-contained <rig>/.beads/, never touch the repo's tracked .beads/
 gt rig list
 gt rig remove <name>
 ```

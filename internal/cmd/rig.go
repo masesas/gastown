@@ -79,9 +79,17 @@ Use --adopt to register an existing directory instead of creating new:
 For a repo you don't own, use fork mode (fetch upstream, push to fork).
 See docs/guides/fork-rig-setup.md for setup, verification, and recovery.
 
+Beads mode (--beads, stored as beads.mode in <rig>/config.json):
+  auto  Default. If the repo tracks .beads/, the rig uses that tracked
+        directory in mayor/rig; otherwise a self-contained <rig>/.beads/.
+  rig   Always a self-contained <rig>/.beads/. Gas Town never initializes,
+        rewrites or redirects into the repo's tracked .beads/. Use it for
+        projects that track their own issues with bd (e.g. with sync.remote).
+
 Example:
   gt rig add gastown https://github.com/steveyegge/gastown
   gt rig add my_project git@github.com:user/repo.git --prefix mp
+  gt rig add my_app git@github.com:org/my-app.git --prefix ma --beads rig
   gt rig add existing_rig --adopt
   gt rig add gastown https://github.com/gastownhall/gastown \
     --push-url https://github.com/you/gastown \
@@ -304,6 +312,7 @@ Examples:
 // Flags
 var (
 	rigAddPrefix         string
+	rigAddBeadsMode      string
 	rigAddLocalRepo      string
 	rigAddBranch         string
 	rigAddPushURL        string
@@ -367,6 +376,7 @@ func init() {
 	rigRemoveCmd.Flags().BoolVarP(&rigRemoveForce, "force", "f", false, "Kill running tmux sessions before removing (may lose uncommitted work)")
 
 	rigAddCmd.Flags().StringVar(&rigAddPrefix, "prefix", "", "Beads issue prefix (default: derived from name)")
+	rigAddCmd.Flags().StringVar(&rigAddBeadsMode, "beads", "", "Beads mode: auto (use the repo's tracked .beads/ if any) or rig (always self-contained <rig>/.beads/, never touch the repo's .beads/) (default: auto; with --adopt: keep recorded mode)")
 	rigAddCmd.Flags().StringVar(&rigAddLocalRepo, "local-repo", "", "Local repo path to share git objects (optional)")
 	rigAddCmd.Flags().StringVar(&rigAddBranch, "branch", "", "Default branch name (default: auto-detected from remote)")
 	rigAddCmd.Flags().StringVar(&rigAddPushURL, "push-url", "", "Push URL for read-only upstreams, i.e. push to fork (see docs/guides/fork-rig-setup.md)")
@@ -486,6 +496,10 @@ func checkUncommittedWork(r *rig.Rig, rigName, operation string, force bool) (pr
 func runRigAdd(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
+	if _, err := config.ParseRigBeadsMode(rigAddBeadsMode); err != nil {
+		return fmt.Errorf("--beads: %w", err)
+	}
+
 	// Handle --adopt mode: register existing directory
 	if rigAddAdopt {
 		return runRigAdopt(cmd, args)
@@ -573,6 +587,7 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 		PushURL:        rigAddPushURL,
 		UpstreamURL:    rigAddUpstreamURL,
 		BeadsPrefix:    rigAddPrefix,
+		BeadsMode:      rigAddBeadsMode,
 		LocalRepo:      rigAddLocalRepo,
 		DefaultBranch:  rigAddBranch,
 		CloneFilter:    rigAddFilter,
@@ -593,8 +608,7 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 	// to avoid "no route found" warnings (#1424). Determine beadsWorkDir for rig identity bead.
 	var beadsWorkDir string
 	if newRig.Config.Prefix != "" {
-		mayorRigBeads := filepath.Join(townRoot, name, "mayor", "rig", ".beads")
-		if _, err := os.Stat(mayorRigBeads); err == nil {
+		if _, tracked := beads.TrackedRigBeadsDir(filepath.Join(townRoot, name)); tracked {
 			beadsWorkDir = filepath.Join(townRoot, name, "mayor", "rig")
 		} else {
 			beadsWorkDir = filepath.Join(townRoot, name)
@@ -1165,6 +1179,7 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 		PushURL:     rigAddPushURL,
 		UpstreamURL: rigAddUpstreamURL,
 		BeadsPrefix: rigAddPrefix,
+		BeadsMode:   rigAddBeadsMode,
 		Force:       rigAddAdoptForce,
 	})
 	if err != nil {
@@ -1184,8 +1199,7 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 	// Add route to town-level routes.jsonl for prefix-based routing
 	if result.BeadsPrefix != "" {
 		routePath := name
-		mayorRigBeads := filepath.Join(townRoot, name, "mayor", "rig", ".beads")
-		if _, err := os.Stat(mayorRigBeads); err == nil {
+		if _, tracked := beads.TrackedRigBeadsDir(filepath.Join(townRoot, name)); tracked {
 			routePath = name + "/mayor/rig"
 		}
 		route := beads.Route{
@@ -1202,10 +1216,12 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 	commitTownConfigChanges(townRoot, name)
 
 	// Check for tracked beads and initialize database if missing (Issue #72)
+	// In beads.mode=rig the repo's tracked mayor/rig/.beads is never a
+	// candidate: its prefix and database belong to the project.
 	rigPath := filepath.Join(townRoot, name)
-	beadsDirCandidates := []string{
-		filepath.Join(rigPath, ".beads"),
-		filepath.Join(rigPath, "mayor", "rig", ".beads"),
+	beadsDirCandidates := []string{filepath.Join(rigPath, ".beads")}
+	if trackedBeads, tracked := beads.TrackedRigBeadsDir(rigPath); tracked {
+		beadsDirCandidates = append(beadsDirCandidates, trackedBeads)
 	}
 	foundBeadsCandidate := false
 	for _, beadsDir := range beadsDirCandidates {
@@ -1314,11 +1330,16 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 		}
 	}
 
+	// beads.mode=rig: point the mayor clone at the rig's own beads (no-op in
+	// auto mode or when the repo does not track .beads/).
+	if _, err := beads.EnsureMayorCloneRedirect(rigPath); err != nil {
+		fmt.Printf("  %s Could not point mayor clone at rig beads: %v\n", style.Warning.Render("!"), err)
+	}
+
 	// Create rig identity bead if prefix is set
 	if result.BeadsPrefix != "" {
-		mayorRigBeads := filepath.Join(rigPath, "mayor", "rig", ".beads")
 		beadsWorkDir := rigPath
-		if _, err := os.Stat(mayorRigBeads); err == nil {
+		if _, tracked := beads.TrackedRigBeadsDir(rigPath); tracked {
 			beadsWorkDir = filepath.Join(rigPath, "mayor", "rig")
 		}
 
@@ -1385,6 +1406,9 @@ func runRigAdopt(_ *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  Repository: %s\n", result.GitURL)
 	fmt.Printf("  Prefix: %s\n", result.BeadsPrefix)
+	if result.BeadsMode == config.RigBeadsModeRig {
+		fmt.Printf("  Beads mode: rig (self-contained <rig>/.beads/)\n")
+	}
 	if result.DefaultBranch != "" {
 		fmt.Printf("  Default branch: %s\n", result.DefaultBranch)
 	}
