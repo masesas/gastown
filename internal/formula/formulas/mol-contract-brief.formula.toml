@@ -43,7 +43,7 @@ Draft the brief for epic {{epic}}.
    `bd create --type=decision --title "Brief: {{epic}}" --labels gt:brief,gt:keep --parent {{epic}}`
    Do not use type `gate`: `bd list` hides gate beads, so `gt convoy stage`
    never sees them and would not hold the consumers.
-2. Fill its design field from the template $GT_ROOT/templates/contract/brief.md:
+2. Fill its design field from the brief template below:
    Contract, Ownership map, Consumers, Decisions and rationale, Questions and assumptions.
 3. Make every consumer bead depend on the brief bead (it is the approval gate):
    `bd dep add <consumer> <brief>`
@@ -57,6 +57,51 @@ contract owner as part of the skeleton PR.
 
 **Exit criteria:** brief bead filled; every consumer bead depends on the brief
 bead and on its skeleton bead; all of them are children of {{epic}}.
+
+### Brief template
+
+~~~markdown
+# Brief: <epic-id> — <epic title>
+
+Status: draft | in review (round n) | approved (<date>; this bead closed)
+
+## 1. Contract
+
+| Item | Kind | Owner bead | Definition |
+| --- | --- | --- | --- |
+| `GET /api/v1/...` | endpoint | <skeleton-bead> | request, response, error codes, pagination |
+| `<Name>Response` | DTO / response type | <skeleton-bead> | fields with type and nullability |
+| `<nnnn>_<name>.sql` | migration (reserved number) | <skeleton-bead> | tables/columns |
+
+## 2. Ownership map
+
+| Path glob | Owner bead | Rig |
+| --- | --- | --- |
+| `<app>/internal/<shared-pkg>/**` | <owner-bead> | <rig> |
+
+Every hot path the epic touches appears here exactly once.
+
+## 3. Consumers
+
+| Consumer bead | Rig | Uses contract items |
+| --- | --- | --- |
+| <bead> | <rig or app path> | `GET /api/v1/...`, `<Name>Response` |
+
+## 4. Decisions and rationale
+
+| Decision | Options rejected | Why |
+| --- | --- | --- |
+
+## 5. Questions and assumptions
+
+| Q-id | Class | Question | Assumed (proceed) | Affected beads |
+| --- | --- | --- | --- | --- |
+
+## 6. Review log
+
+| Round | Synthesis report | Result |
+| --- | --- | --- |
+~~~
 """
 
 [[steps]]
@@ -90,7 +135,7 @@ title = "Mechanical consistency check"
 needs = ["review"]
 target = "mayor"
 description = """
-Fill $GT_ROOT/templates/contract/brief-check.md into the brief bead notes
+Fill the check template below into the brief bead notes
 (`bd update <brief> --append-notes ...`).
 Every item needs the command and its output as evidence, not a judgement:
 
@@ -103,6 +148,27 @@ Every item needs the command and its output as evidence, not a judgement:
   open integration/* branch.
 
 **Exit criteria:** all check items pass. If any fails, go back to draft.
+
+### Check template
+
+~~~markdown
+# Brief mechanical check: <epic-id>
+
+Each item needs the command run and the relevant output. A judgement without evidence does not count.
+
+- [ ] **Single owner per hot path.** Every path glob in § 2 maps to exactly one owner bead, and every hot path changed by the epic's beads is covered.
+  Evidence:
+- [ ] **Consumers depend on their skeleton.** For each consumer bead, `bd dep list <bead>` shows the skeleton bead(s) it uses and the brief bead (the approval gate). All of them are children of the epic.
+  Evidence:
+- [ ] **No dependency cycle.** `gt convoy stage <epic> --no-validate --json` (stages without launching) or `bd blocked` shows valid waves.
+  Evidence:
+- [ ] **Contract items have acceptance criteria.** Every row of § 1 appears as an AC item in its owner bead.
+  Evidence:
+- [ ] **Migration numbers reserved.** Reserved numbers do not exist on `main` or any open `integration/*` branch (`git ls-remote` / `git log --all -- <migration dir>`).
+  Evidence:
+
+Result: pass | fail (back to draft)
+~~~
 """
 
 [[steps]]
@@ -113,7 +179,7 @@ target = "mayor"
 description = """
 1. Remaining conflicts and open business questions: apply the crucial-question
    table in your directives. Crucial items become question beads
-   (template $GT_ROOT/templates/contract/question.md):
+   (question template below):
    - class block: add a dependency from the affected tasks to the question
      bead and send `gt mail send --human -s "[BLOCK] Q-<epic>-<n>: <summary>" --stdin`;
    - class proceed: record the assumed option, label affected tasks
@@ -127,6 +193,39 @@ Never approve a brief that skipped review or failed the check.
 
 **Exit criteria:** brief bead closed; every crucial question exists as a bead with
 all fields; affected tasks are labeled or blocked.
+
+### Question template
+
+~~~markdown
+Bead title: `Q-<epic>-<n>: <one-line question>`
+Labels: `gt:question,gt:keep`
+Type: `decision`, child of the epic (`--parent <epic>`). Never dispatched; closing it means the question is answered.
+
+Description:
+
+```
+id: Q-<epic>-<n>
+class: proceed | block
+question: <one sentence, answerable without opening code>
+context: <requirement/AC it relates to; why the Mayor cannot decide>
+options:
+  A: <option> — <consequence>
+  B: <option> — <consequence>
+assumed: <A|B|...> — <why: consistency with existing code, reversibility, safest/most restrictive, superset>
+                            # block: the safe default used only for work that may proceed (see directives § 4)
+change_seam: <the single place the decision lives (constant, query param, role check, prop)> — <what changes for each other option>
+affected: <bead>, <bead>    # every implementer and consumer, incl. the contract owner's bead when the seam is in the contract; updated as marks propagate
+rework_cost: <number of affected beads, rough size, given the change_seam>
+```
+
+Every affected task gets the acceptance criterion: "the decision for Q-<id> lives only at its change_seam; switching options touches only that seam and its tests".
+
+Answer format expected from the human (one line per question):
+
+```
+Q-<epic>-<n>: <option or text>
+```
+~~~
 """
 
 [vars]

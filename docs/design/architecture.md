@@ -346,6 +346,9 @@ instructions where they conflict.
 Both levels concatenate (rig content appears last and wins conflicts).
 Implemented in `internal/config/directives.go` (`LoadRoleDirective`),
 integrated via `outputRoleDirectives()` in `internal/cmd/prime_output.go`.
+Default directives embedded in `internal/directives/defaults/` are provisioned
+by `gt install` (town) and `gt rig add` (rig) and refreshed by `gt upgrade`
+like embedded formulas, never overwriting operator-edited files.
 
 ### Formula Overlays
 

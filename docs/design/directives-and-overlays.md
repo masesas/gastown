@@ -47,6 +47,15 @@ instructions.
 - Integration: `internal/cmd/prime_output.go` → `outputRoleDirectives(ctx RoleContext)`
 - Called in the `gt prime` pipeline after `outputPrimeContext()`
 
+**Shipped defaults:** the binary embeds default directives in
+`internal/directives/defaults/{town,rig}/<role>.md`. `gt install` writes the
+town ones to `~/gt/directives/`, `gt rig add` (incl. `--adopt`) writes the rig
+ones to `~/gt/<rig>/directives/`. Provisioning uses `internal/assetsync`, the
+same mechanism as embedded formulas: a file is written only if absent, its hash
+is recorded in `directives/.installed.json`, and `gt upgrade` / `gt doctor --fix`
+(check `directives`) refresh only files unmodified since install. A directive
+file gt did not install is treated as operator-authored and never overwritten.
+
 ### Level 2: Formula Overlays
 
 Per-formula, per-step overrides at rig or town scope. CSS-like step
@@ -305,6 +314,9 @@ effect immediately on the next `gt prime`.
 |------|---------|
 | `internal/config/directives.go` | Directive loader (`LoadRoleDirective`) |
 | `internal/config/directives_test.go` | Directive tests |
+| `internal/directives/` | Embedded default directives (`TownSet`, `RigSet`) |
+| `internal/assetsync/` | Shared provision/check/update of embedded files (formulas, directives) |
+| `internal/doctor/directive_check.go` | Doctor check and auto-fix for default directives |
 | `internal/formula/overlay.go` | Overlay loader and applier |
 | `internal/formula/overlay_test.go` | Overlay tests |
 | `internal/cmd/prime_output.go` | `outputRoleDirectives()` integration |

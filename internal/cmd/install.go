@@ -15,11 +15,13 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/assetsync"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/cli"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/deps"
+	"github.com/steveyegge/gastown/internal/directives"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/formula"
 	"github.com/steveyegge/gastown/internal/hooks"
@@ -429,6 +431,14 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Printf("   %s Could not provision slash commands: %v\n", style.Dim.Render("⚠"), err)
 	} else {
 		fmt.Printf("   ✓ Created .claude/commands/ (slash commands for all agents)\n")
+	}
+
+	// Provision default town-level role directives (directives/<role>.md).
+	// Existing files are kept; gt upgrade refreshes only unmodified ones.
+	if count, err := assetsync.Provision(directives.TownSet(absPath)); err != nil {
+		fmt.Printf("   %s Could not provision directives: %v\n", style.Dim.Render("⚠"), err)
+	} else if count > 0 {
+		fmt.Printf("   ✓ Provisioned %d town directives\n", count)
 	}
 
 	// Sync hooks to generate .claude/settings.json files for all targets.

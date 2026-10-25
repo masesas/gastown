@@ -19,22 +19,17 @@ Spec: [`../spec/S1c-koordinasi-prosedural.md`](../spec/S1c-koordinasi-prosedural
 
 ## 1. Artefak dan lokasi sumber
 
-Sumber artefak disimpan di fork agar terversi: `docs/enh-masesas/assets/` (bukan core). Dipasang ke town dengan salin manual (Langkah 5).
+Pilot memakai salinan manual dari `docs/enh-masesas/assets/` (Langkah 5). Sejak 25 Okt 2026 aset ikut binary dan dipasang otomatis (lihat `../assets/README.md`):
 
 ```
-docs/enh-masesas/assets/
-├── formulas/
-│   ├── mol-contract-brief.formula.toml         # workflow: draf → review → cek → approval
-│   ├── mol-contract-brief-review.formula.toml  # convoy: leg per area konsumen + sintesis
-│   └── mol-contract-work.formula.toml          # workflow crew contract_owner
-├── directives/
-│   ├── town/mayor.md        # → <town>/directives/mayor.md
-│   ├── rig/crew.md          # → <town>/<rig>/directives/crew.md (crew = contract_owner)
-│   └── rig/polecat.md       # → <town>/<rig>/directives/polecat.md
-└── templates/
-    ├── brief.md             # struktur brief
-    ├── brief-check.md       # checklist cek mekanis
-    └── question.md          # format bead pertanyaan
+internal/formula/formulas/                    # → <town>/.beads/formulas/ (gt install)
+├── mol-contract-brief.formula.toml           # workflow: draf → review → cek → approval; memuat template brief, cek mekanis, pertanyaan
+├── mol-contract-brief-review.formula.toml    # convoy: leg per area konsumen + sintesis
+└── mol-contract-work.formula.toml            # workflow crew contract_owner
+internal/directives/defaults/
+├── town/mayor.md        # → <town>/directives/mayor.md (gt install)
+├── rig/crew.md          # → <town>/<rig>/directives/crew.md (gt rig add; crew = contract_owner)
+└── rig/polecat.md       # → <town>/<rig>/directives/polecat.md (gt rig add)
 ```
 
 Spec menyebut dua formula; review dipisah menjadi formula convoy ketiga karena leg paralel hanya tersedia di tipe convoy.

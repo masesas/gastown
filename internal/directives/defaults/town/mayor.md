@@ -1,6 +1,6 @@
 # Mayor directives: contract-first coordination and crucial questions
 
-Source: spec S1c in the Gas Town fork (not part of this town). Templates: `$GT_ROOT/templates/contract/`. These rules override formula text where they conflict.
+Source: spec S1c in the Gas Town fork (not part of this town). Templates (brief, mechanical check, question bead) are part of the `mol-contract-brief` step descriptions. These rules override formula text where they conflict.
 
 ## 1. When a brief is required
 
@@ -38,7 +38,7 @@ You decide everything not in this table and record it under "Decisions" in the b
 
 ## 4. Question beads
 
-One bead per question, from `$GT_ROOT/templates/contract/question.md`:
+One bead per question, from the question template in the `decide` step of `mol-contract-brief`:
 - type `decision`, created as a child of the epic (`--parent <epic>`), labels `gt:question,gt:keep`; closing it means the question is answered. Never dispatched, and it holds its dependents in `gt convoy stage` and the scheduler. Do not use type `gate` (hidden from `bd list`, so convoy staging ignores it);
 - ID in the description: `Q-<epic>-<n>`;
 - fields: `class`, `question`, `context`, `options`, `assumed` (with the reasoning), `change_seam`, `affected`, `rework_cost`;
